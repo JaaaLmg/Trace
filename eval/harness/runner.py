@@ -41,15 +41,22 @@ def run_clean(strategy_spec, make_llm, repeat: int, workdir: Path) -> CleanRun:
     clean_root = dataset.materialize_clean(Path(workdir) / "clean")
     ctx = ToolContext(root=clean_root, test_write_dir=clean_root / "tests" / "generated")
     rec = InMemoryRecorder()
-    outcome = execute_run(
-        tools=ctx,
-        registry=default_registry(),
-        llm=make_llm(),
-        recorder=rec,
-        strategy_spec=strategy_spec,
-        plan_input=PlanInput(target_scope=[], goal=GOAL, allow_reflection=True),
-        artifacts_dir=Path(workdir) / "artifacts",
-    )
+    llm = make_llm()
+    try:
+        outcome = execute_run(
+            tools=ctx,
+            registry=default_registry(),
+            llm=llm,
+            recorder=rec,
+            strategy_spec=strategy_spec,
+            plan_input=PlanInput(target_scope=[], goal=GOAL, allow_reflection=True),
+            artifacts_dir=Path(workdir) / "artifacts",
+        )
+    finally:
+        # 真实 LLM 用完关 httpx 连接，别让每个 run 泄漏一个 client；MockLLM 无 close，跳过
+        close = getattr(llm, "close", None)
+        if close:
+            close()
     fts = final_test_set(rec, outcome.run)
     m = outcome.report.metrics if outcome.report else {}
     return CleanRun(

@@ -5,6 +5,7 @@ import os
 from typing import Literal, Optional
 
 from app.agents.llm import LLMClient
+from app.agents.llm_http import DEFAULT_MAX_OUTPUT_TOKENS
 from app.agents.llm_openai import DEFAULT_MODEL as OPENAI_DEFAULT_MODEL
 from app.agents.llm_openai import OpenAILLM
 from app.agents.llm_openai_chat_compat import OpenAIChatCompatLLM
@@ -44,7 +45,7 @@ def create_llm(
     model: Optional[str] = None,
     *,
     temperature: Optional[float] = None,
-    max_output_tokens: int = 4096,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     base_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     client: Optional[object] = None,

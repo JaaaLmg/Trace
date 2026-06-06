@@ -70,7 +70,7 @@ def test_aggregate_repeat_stats():
 def test_format_run_error_keeps_smoke_failure_actionable():
     run = _mk("s", 0, [], False, 0, ["b0"])
     run.status = "failed"
-    run.error_code = "RUNNER_INTERNAL_ERROR"
-    run.error_message = "RuntimeError: OpenAI API HTTP 401 Unauthorized: bad key"
+    run.error_code = "LLM_PROVIDER_ERROR"
+    run.error_message = "OpenAI API HTTP 401 Unauthorized: bad key"
 
-    assert _format_run_error(run) == "RUNNER_INTERNAL_ERROR: RuntimeError: OpenAI API HTTP 401 Unauthorized: bad key"
+    assert _format_run_error(run) == "LLM_PROVIDER_ERROR: OpenAI API HTTP 401 Unauthorized: bad key"

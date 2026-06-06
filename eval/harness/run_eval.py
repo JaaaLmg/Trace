@@ -98,7 +98,10 @@ def main() -> None:
             llm = create_llm(args.provider, args.model, base_url=args.base_url)
         except ValueError as e:
             raise SystemExit(str(e)) from e
-        models = llm.list_models()
+        try:
+            models = llm.list_models()
+        finally:
+            llm.close()  # 列模型用完即关，别泄漏 httpx 连接
         if not models:
             print("(no models returned)")
             return
@@ -116,40 +119,36 @@ def main() -> None:
         model = resolve_model(provider, args.model)
         if not model:
             raise SystemExit("openai_chat_compat 需要 --model 或 TRACE_LLM_MODEL/OPENAI_CHAT_COMPAT_MODEL")
-        temperature = args.temperature
+
+        # 单一来源：实跑参数与落库快照（strategy_snapshot.model_params）同出这一份 dict，
+        # 避免「快照写 temperature=0.2、实际跑的是别的值」这种自相矛盾的复现记录。
+        model_params: dict = {}
+        if args.temperature is not None:
+            model_params["temperature"] = args.temperature
+        if args.base_url:
+            model_params["base_url"] = args.base_url
+        if args.reasoning_effort:
+            model_params["reasoning_effort"] = args.reasoning_effort
+
+        # 提前构造一次做校验（chat_compat 缺 base_url、reasoning_effort 冲突等），失败立即退出；
+        # 校验实例用完即关，不留泄漏的连接。
         try:
-            create_llm(
-                provider,
-                model,
-                temperature=temperature,
-                base_url=args.base_url,
-                reasoning_effort=args.reasoning_effort,
-            )
+            create_llm(provider, model, **model_params).close()
         except ValueError as e:
             raise SystemExit(str(e)) from e
 
         def make_llm():
-            return create_llm(
-                provider,
-                model,
-                temperature=temperature,
-                base_url=args.base_url,
-                reasoning_effort=args.reasoning_effort,
-            )
+            return create_llm(provider, model, **model_params)
 
     else:
         make_llm = None  # run_full_eval 默认 MockLLM
 
     specs = seed_list()
     if args.real:
-        params = {}
-        if args.temperature is not None:
-            params["temperature"] = args.temperature
-        if args.base_url:
-            params["base_url"] = args.base_url
-        if args.reasoning_effort:
-            params["reasoning_effort"] = args.reasoning_effort
-        specs = [s.model_copy(update={"model_provider": provider, "model_name": model, "model_params": params}) for s in specs]
+        specs = [
+            s.model_copy(update={"model_provider": provider, "model_name": model, "model_params": model_params})
+            for s in specs
+        ]
     if args.smoke:
         specs = specs[:1]
     repeats = 1 if args.smoke else args.repeats

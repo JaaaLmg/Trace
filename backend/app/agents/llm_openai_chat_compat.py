@@ -1,4 +1,5 @@
 # OpenAI Chat Completions 兼容客户端：DeepSeek/Qwen/兼容网关可走这条薄 adapter。
+# HTTP 调用、瞬态重试、错误脱敏统一走 llm_http，与官方 Responses adapter 共用一套。
 from __future__ import annotations
 
 import os
@@ -7,6 +8,8 @@ from typing import Optional
 import httpx
 
 from app.agents.llm import LLMResponse, Message, estimate_tokens
+from app.agents.llm_http import DEFAULT_MAX_OUTPUT_TOKENS, request_json
+from app.core.errors import ErrorCode, TraceError
 
 
 class OpenAIChatCompatLLM:
@@ -14,7 +17,9 @@ class OpenAIChatCompatLLM:
 
     - 凭据：默认从 TRACE_LLM_API_KEY 读取；兼容 OPENAI_CHAT_COMPAT_API_KEY / OPENAI_API_KEY。
     - 地址：必须显式提供 base URL，或设置 TRACE_LLM_BASE_URL / OPENAI_CHAT_COMPAT_BASE_URL。
+    - 瞬态错误（连接抖动 / 429 / 5xx）由 llm_http 退避重试；4xx 快速失败。
     - client 可注入：单测用 httpx.MockTransport / stub 顶替，不打网络。
+    - close() / 上下文管理：只关自己创建的 client，注入的 client 由调用方负责。
     """
 
     def __init__(
@@ -22,10 +27,12 @@ class OpenAIChatCompatLLM:
         model: Optional[str] = None,
         *,
         temperature: Optional[float] = None,
-        max_output_tokens: int = 4096,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         timeout: float = 120.0,
+        max_retries: int = 2,
+        retry_backoff: float = 0.5,
         client: Optional[object] = None,
     ):
         env_model = (
@@ -52,7 +59,10 @@ class OpenAIChatCompatLLM:
             raise ValueError("openai_chat_compat 需要 --base-url 或 TRACE_LLM_BASE_URL/OPENAI_CHAT_COMPAT_BASE_URL")
         self.base_url = raw_base.rstrip("/")
         self._endpoint = _chat_endpoint(self.base_url)
+        self._max_retries = max_retries
+        self._retry_backoff = retry_backoff
         self._client = client or httpx.Client(timeout=timeout)
+        self._owns_client = client is None
 
     def complete(self, messages: list[Message], **params) -> LLMResponse:
         if not self.model:
@@ -66,28 +76,43 @@ class OpenAIChatCompatLLM:
         if temperature is not None:
             payload["temperature"] = temperature
 
-        resp = self._client.post(self._endpoint, headers=self._headers(), json=payload)
-        if hasattr(resp, "raise_for_status"):
-            try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                raise RuntimeError(_format_http_error(e.response, self.api_key)) from e
-        data = resp.json()
+        data = request_json(
+            self._client,
+            "POST",
+            self._endpoint,
+            headers=self._headers(),
+            json_body=payload,
+            error_label="OpenAI-compatible Chat API",
+            api_key=self.api_key,
+            max_retries=self._max_retries,
+            backoff=self._retry_backoff,
+        )
 
         text = _extract_chat_text(data)
+        # 响应被截断（finish_reason=length）且无文本：max_tokens 太小。给可定位错误，
+        # 而不是让空串去撞下游笼统的「JSON 解析失败」。
+        if not text and _finish_reason(data) == "length":
+            raise TraceError(
+                ErrorCode.INVALID_MODEL_OUTPUT,
+                f"兼容端点响应被截断（finish_reason=length）：未产出文本；"
+                f"max_tokens（当前 {self.max_output_tokens}）可能过小，请调大",
+            )
         tokens = _extract_usage_tokens(data) or (
             sum(estimate_tokens(m.content) for m in messages) + estimate_tokens(text)
         )
         return LLMResponse(text=text, tokens=tokens)
 
     def list_models(self) -> list[str]:
-        resp = self._client.get(_models_endpoint(self.base_url), headers=self._headers())
-        if hasattr(resp, "raise_for_status"):
-            try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                raise RuntimeError(_format_http_error(e.response, self.api_key)) from e
-        data = resp.json()
+        # 列模型是交互命令，失败就报错，不重试
+        data = request_json(
+            self._client,
+            "GET",
+            _models_endpoint(self.base_url),
+            headers=self._headers(),
+            error_label="OpenAI-compatible Chat API",
+            api_key=self.api_key,
+            max_retries=0,
+        )
         items = data.get("data", data if isinstance(data, list) else [])
         ids: list[str] = []
         for item in items:
@@ -96,6 +121,16 @@ class OpenAIChatCompatLLM:
             elif isinstance(item, str):
                 ids.append(item)
         return sorted(ids)
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -137,6 +172,13 @@ def _extract_chat_text(data: dict) -> str:
     return ""
 
 
+def _finish_reason(data: dict) -> Optional[str]:
+    choices = data.get("choices") or []
+    if not choices:
+        return None
+    return choices[0].get("finish_reason")
+
+
 def _extract_usage_tokens(data: dict) -> int:
     usage = data.get("usage") or {}
     total = usage.get("total_tokens")
@@ -145,22 +187,6 @@ def _extract_usage_tokens(data: dict) -> int:
     prompt = usage.get("prompt_tokens", 0) or 0
     completion = usage.get("completion_tokens", 0) or 0
     return int(prompt) + int(completion)
-
-
-def _format_http_error(resp: httpx.Response, api_key: Optional[str]) -> str:
-    status = f"{resp.status_code} {resp.reason_phrase}".strip()
-    body = _redact(resp.text.strip(), api_key)
-    if len(body) > 500:
-        body = body[:497] + "..."
-    if body:
-        return f"OpenAI-compatible Chat API HTTP {status}: {body}"
-    return f"OpenAI-compatible Chat API HTTP {status}"
-
-
-def _redact(text: str, secret: Optional[str]) -> str:
-    if secret:
-        text = text.replace(secret, "[redacted]")
-    return text
 
 
 def _models_endpoint(base_url: str) -> str:

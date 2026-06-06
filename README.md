@@ -2,7 +2,7 @@
   <img src="assets/logo.svg" alt="TRACE logo" width="450">
 </p>
 
-TRACE 是一个面向 Python/FastAPI 后端项目的测试生成 Agent 原型。它把“模型生成 pytest 文本”推进成一条可执行、可追踪、可评测的工程闭环：
+TRACE（Test-generation Reflective Agent for Comparative Evaluation）是一个面向 Python/FastAPI 后端项目的测试生成 Agent 原型。它把“模型生成 pytest 文本”推进成一条可执行、可追踪、可评测的工程闭环：
 
 ```text
 分析项目 -> 生成测试 -> 执行 pytest -> 读取结构化失败 -> 一次受约束 Reflection -> 生成报告 -> seeded bug 评测
@@ -15,8 +15,8 @@ TRACE 是一个面向 Python/FastAPI 后端项目的测试生成 Agent 原型。
 - M0：工具契约、路径白名单、pytest 结构化执行已完成。
 - M1：MockLLM、三策略 Agent loop、Reflection 契约、trace/report 已完成。
 - M2：demo seeded bugs、污染隔离评测 harness、策略对比表已完成。
-- 真实 LLM：已接入官方 OpenAI Responses 与 OpenAI Chat Completions 兼容入口；具体中转站私有适配不写进主线。
-- 当前测试：`72/72 passed`。
+- 真实 LLM：已接入官方 OpenAI Responses 与 OpenAI Chat Completions 兼容入口；provider 失败会脱敏记录并用 `LLM_PROVIDER_ERROR` 标记。
+- 当前测试：`80/80 passed`。
 - 评测产物：`eval/results/comparison.md`、`eval/results/comparison.json`。
 
 本项目以 `需求分析.md`、`系统设计.md`、`V1实施清单.md` 为技术依据。`初步构想.md` 是旧草稿，不作为当前实现依据。
@@ -81,7 +81,7 @@ python eval/harness/run_eval.py --provider openai --list-models
 python eval/harness/run_eval.py --real --provider openai --model gpt-5 --smoke
 ```
 
-真实 API 只通过环境变量读取 key；最好不要把 key 写进命令、README、`.env` 示例或提交记录。`--list-models` 可验证当前 key 能访问哪些模型，`--smoke` 只跑 1 个策略 × 1 次重复，用来确认真实调用能走通。
+真实 API 只通过环境变量读取 key；最好不要把 key 写进命令、README、`.env` 示例或提交记录。`--list-models` 可验证当前 key 能访问哪些模型，`--smoke` 只跑 1 个策略 × 1 次重复，用来确认真实调用能走通。LLM HTTP 层会对连接抖动、429、5xx 做有限退避重试；401/400 等配置错误快速失败并脱敏报错。
 
 OpenAI Chat Completions 兼容端点（如 DeepSeek/Qwen/企业兼容网关）走 `openai_chat_compat`，必须显式给 base URL 和模型：
 

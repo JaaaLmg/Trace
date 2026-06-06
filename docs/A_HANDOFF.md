@@ -6,10 +6,11 @@
 ## 当前状态
 
 - M0/M1/M2 已完成：工具层、三策略 Agent、Reflection 契约、trace/report、demo seeded bug 评测。
-- 当前自动测试：`72/72 passed`。
+- 当前自动测试：`80/80 passed`。
 - 真实 LLM adapter 已有两个 provider：
   - `openai`：官方 OpenAI Responses API。
   - `openai_chat_compat`：OpenAI Chat Completions 兼容端点，如 DeepSeek/Qwen/企业兼容网关。
+- LLM provider 调用失败会统一落 `LLM_PROVIDER_ERROR`；瞬态错误有限重试，错误信息会脱敏。
 - Mock 评测产物已生成：
   - `eval/results/comparison.md`
   - `eval/results/comparison.json`
@@ -179,7 +180,7 @@ C 展示 trace，B 负责查询：
 
 - 工具调用 payload 通常是 `{"input": ...}`。
 - 工具 observation payload 通常是 `{"output": ...}`。
-- `tokens` 可为空；失败 LLM 重试已累计 token。
+- `tokens` 可为空；结构化输出失败重试会累计 token，provider 请求失败可能没有 token，但会落 `LLM_PROVIDER_ERROR`。
 
 ### 5. 工具和执行器边界
 

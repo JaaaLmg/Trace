@@ -10,6 +10,7 @@ from app.agents.llm import Message
 from app.agents.llm_factory import create_llm, normalize_provider, resolve_model
 from app.agents.llm_openai import OpenAILLM
 from app.agents.llm_openai_chat_compat import OpenAIChatCompatLLM
+from app.core.errors import ErrorCode, TraceError
 
 
 def _client(handler):
@@ -126,14 +127,56 @@ def test_chat_compat_http_error_is_readable_and_redacted():
         client=_client(handler),
     )
 
-    with pytest.raises(RuntimeError) as exc:
+    with pytest.raises(TraceError) as exc:
         llm.complete([Message("user", "U")])
 
-    text = str(exc.value)
+    assert exc.value.code == ErrorCode.LLM_PROVIDER_ERROR
+    text = exc.value.message
     assert "OpenAI-compatible Chat API HTTP 401 Unauthorized" in text
     assert "bad key" in text
     assert "sk-test" not in text
     assert "[redacted]" in text
+
+
+def test_chat_compat_retries_on_5xx_then_succeeds():
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(500, text="oops")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}], "usage": {"total_tokens": 7}})
+
+    llm = OpenAIChatCompatLLM(
+        "compat-model",
+        api_key="sk-test",
+        base_url="https://compat.test/v1",
+        client=_client(handler),
+        max_retries=2,
+        retry_backoff=0.0,
+    )
+    resp = llm.complete([Message("user", "U")])
+
+    assert calls["n"] == 3  # 前两次 500 重试，第三次成功
+    assert resp.text == "{}"
+    assert resp.tokens == 7
+
+
+def test_chat_compat_length_truncation_raises_readable_error():
+    def handler(_request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
+
+    llm = OpenAIChatCompatLLM(
+        "compat-model",
+        api_key="sk-test",
+        base_url="https://compat.test/v1",
+        client=_client(handler),
+    )
+    with pytest.raises(TraceError) as exc:
+        llm.complete([Message("user", "U")])
+
+    assert exc.value.code == ErrorCode.INVALID_MODEL_OUTPUT
+    assert "length" in exc.value.message
 
 
 def test_chat_compat_list_models_strips_chat_endpoint():

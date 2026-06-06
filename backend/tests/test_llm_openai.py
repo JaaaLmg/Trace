@@ -8,6 +8,7 @@ import pytest
 
 from app.agents.llm import Message
 from app.agents.llm_openai import OpenAILLM
+from app.core.errors import ErrorCode, TraceError
 
 
 def _client(handler):
@@ -149,14 +150,116 @@ def test_openai_http_error_is_readable_and_redacted():
 
     llm = OpenAILLM(api_key="sk-test", base_url="https://api.openai.test/v1", client=_client(handler))
 
-    with pytest.raises(RuntimeError) as exc:
+    with pytest.raises(TraceError) as exc:
         llm.complete([Message("user", "U")])
 
-    text = str(exc.value)
+    assert exc.value.code == ErrorCode.LLM_PROVIDER_ERROR
+    text = exc.value.message
     assert "OpenAI API HTTP 401 Unauthorized" in text
     assert "bad key" in text
     assert "sk-test" not in text
     assert "[redacted]" in text
+
+
+def test_openai_retries_on_5xx_then_succeeds():
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(503, text="overloaded")
+        return httpx.Response(200, json={"output_text": "{}", "usage": {"total_tokens": 5}})
+
+    # retry_backoff=0：退避 sleep(0)，测试不真的等
+    llm = OpenAILLM(api_key="sk-test", client=_client(handler), max_retries=2, retry_backoff=0.0)
+    resp = llm.complete([Message("user", "U")])
+
+    assert calls["n"] == 3  # 前两次 503 重试，第三次成功
+    assert resp.text == "{}"
+    assert resp.tokens == 5
+
+
+def test_openai_retries_on_connect_error_then_succeeds():
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise httpx.ConnectError("boom")
+        return httpx.Response(200, json={"output_text": "{}"})
+
+    llm = OpenAILLM(api_key="sk-test", client=_client(handler), max_retries=2, retry_backoff=0.0)
+    resp = llm.complete([Message("user", "U")])
+
+    assert calls["n"] == 2  # 第一次连接失败重试，第二次成功
+    assert resp.text == "{}"
+
+
+def test_openai_retries_exhausted_raises_provider_error():
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        return httpx.Response(503, text="overloaded")
+
+    llm = OpenAILLM(api_key="sk-test", client=_client(handler), max_retries=2, retry_backoff=0.0)
+    with pytest.raises(TraceError) as exc:
+        llm.complete([Message("user", "U")])
+
+    assert exc.value.code == ErrorCode.LLM_PROVIDER_ERROR
+    assert calls["n"] == 3  # max_retries=2 → 共 3 次尝试
+    assert "503" in exc.value.message
+
+
+def test_openai_does_not_retry_4xx():
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        return httpx.Response(400, text="bad request")
+
+    llm = OpenAILLM(api_key="sk-test", client=_client(handler), max_retries=2, retry_backoff=0.0)
+    with pytest.raises(TraceError):
+        llm.complete([Message("user", "U")])
+
+    assert calls["n"] == 1  # 4xx 是配置错误，不重试，快速失败
+
+
+def test_openai_incomplete_response_raises_readable_error():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}, "output": []},
+        )
+
+    llm = OpenAILLM(api_key="sk-test", client=_client(handler))
+    with pytest.raises(TraceError) as exc:
+        llm.complete([Message("user", "U")])
+
+    # 截断要给可定位错误，而不是让空串去撞下游笼统的「JSON 解析失败」
+    assert exc.value.code == ErrorCode.INVALID_MODEL_OUTPUT
+    assert "incomplete" in exc.value.message
+    assert "max_output_tokens" in exc.value.message
+
+
+def test_openai_respects_retry_after_header(monkeypatch):
+    slept = []
+    # 记录退避时长但不真的睡，验证 429 走 Retry-After 而非默认 backoff
+    monkeypatch.setattr("app.agents.llm_http.time.sleep", lambda s: slept.append(s))
+
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "2"}, text="slow down")
+        return httpx.Response(200, json={"output_text": "{}"})
+
+    llm = OpenAILLM(api_key="sk-test", client=_client(handler), max_retries=2, retry_backoff=0.5)
+    resp = llm.complete([Message("user", "U")])
+
+    assert resp.text == "{}"
+    assert slept == [2.0]  # 尊重服务端 Retry-After，而不是 backoff 的 0.5
 
 
 def test_list_models_uses_models_endpoint_and_sorts_ids():
