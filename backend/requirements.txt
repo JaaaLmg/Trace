@@ -1,0 +1,7 @@
+# TRACE backend V1 —— A 分工跑通端到端只需这几个
+# B 接 DB/队列时再加 sqlalchemy / alembic / psycopg / redis / celery
+pydantic
+fastapi
+httpx  # OpenAI Responses API adapter + FastAPI TestClient
+pytest
+pyyaml

@@ -1,0 +1,93 @@
+{
+  "rows": [
+    {
+      "strategy_id": "sv-direct-v1",
+      "strategy_name": "Direct v1",
+      "repeats": 3,
+      "captured_per_repeat": [
+        5,
+        5,
+        5
+      ],
+      "captured_mean": 5,
+      "total_in_scope": 6,
+      "capture_rate_mean": 0.8333333333333334,
+      "capture_rate_std": 0.0,
+      "false_positive_rate": 1.0,
+      "avg_tokens": 610,
+      "avg_tool_calls": 3,
+      "reflection_used": false,
+      "cost_per_captured_bug": 122.0
+    },
+    {
+      "strategy_id": "sv-plan-v1",
+      "strategy_name": "Plan-and-Execute v1",
+      "repeats": 3,
+      "captured_per_repeat": [
+        6,
+        6,
+        6
+      ],
+      "captured_mean": 6,
+      "total_in_scope": 6,
+      "capture_rate_mean": 1.0,
+      "capture_rate_std": 0.0,
+      "false_positive_rate": 0.0,
+      "avg_tokens": 2293,
+      "avg_tool_calls": 13,
+      "reflection_used": false,
+      "cost_per_captured_bug": 382.1666666666667
+    },
+    {
+      "strategy_id": "sv-react-v1",
+      "strategy_name": "ReAct+Reflection v1",
+      "repeats": 3,
+      "captured_per_repeat": [
+        6,
+        6,
+        6
+      ],
+      "captured_mean": 6,
+      "total_in_scope": 6,
+      "capture_rate_mean": 1.0,
+      "capture_rate_std": 0.0,
+      "false_positive_rate": 0.0,
+      "avg_tokens": 1342,
+      "avg_tool_calls": 5,
+      "reflection_used": true,
+      "cost_per_captured_bug": 223.66666666666666
+    }
+  ],
+  "capture_matrix": {
+    "cmp-flip-discount": {
+      "sv-direct-v1": true,
+      "sv-plan-v1": true,
+      "sv-react-v1": true
+    },
+    "cmp-flip-freeship": {
+      "sv-direct-v1": true,
+      "sv-plan-v1": true,
+      "sv-react-v1": true
+    },
+    "boundary-shipping": {
+      "sv-direct-v1": true,
+      "sv-plan-v1": true,
+      "sv-react-v1": true
+    },
+    "boundary-loyalty": {
+      "sv-direct-v1": true,
+      "sv-plan-v1": true,
+      "sv-react-v1": true
+    },
+    "missing-clamp": {
+      "sv-direct-v1": true,
+      "sv-plan-v1": true,
+      "sv-react-v1": true
+    },
+    "wrong-status": {
+      "sv-direct-v1": false,
+      "sv-plan-v1": true,
+      "sv-react-v1": true
+    }
+  }
+}

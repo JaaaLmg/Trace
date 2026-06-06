@@ -1,0 +1,58 @@
+docs/初步构想.md
+docs/PROGRESS.md
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.pytest_tmp/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.pyre/
+.pytype/
+.dmypy.json
+
+# Python build and coverage artifacts
+build/
+dist/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local TRACE pytest artifacts
+.trace_pytest_report.json
+.trace_junit.xml
+
+# Eval scratch：物化的 clean/variant + 生成测试 + 重放产物，纯一次性，不进版本库
+eval/.work/
+
+# Logs and generated local artifacts
+*.log
+logs/
+artifacts/
+
+# Frontend dependency/build caches
+node_modules/
+.vite/
+
+# Local config and editor noise
+.env
+.env.local
+.env.*
+!.env.example
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
