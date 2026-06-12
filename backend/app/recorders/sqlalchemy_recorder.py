@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.recorder import RunRecorder
@@ -54,10 +55,16 @@ class SQLAlchemyRunRecorder(RunRecorder):
 
     def save_run(self, run: TestRunRecord) -> None:
         # run 主记录是 upsert：A 线会在不同阶段反复更新 status/stage/summary。
+        if run.test_plan_id is None:
+            raise ValueError("test_plan_id is required when persisting a run")
         obj = self.session.get(TestRun, run.id)
         if obj is None:
             obj = TestRun(id=run.id)
             self.session.add(obj)
+            preserve_cancelled = False
+        else:
+            self.session.refresh(obj)
+            preserve_cancelled = obj.status == "cancelled" and run.status != "cancelled"
         obj.test_plan_id = run.test_plan_id
         obj.retry_of_run_id = run.retry_of_run_id
         obj.project_snapshot_id = run.project_snapshot_id
@@ -65,10 +72,11 @@ class SQLAlchemyRunRecorder(RunRecorder):
         obj.strategy_version_id = run.strategy_version_id
         obj.runtime_snapshot = run.runtime_snapshot
         obj.strategy_snapshot = run.strategy_snapshot
-        obj.status = run.status
-        obj.stage = run.stage
+        if not preserve_cancelled:
+            obj.status = run.status
+            obj.stage = run.stage
+            obj.finished_at = _parse_dt(run.finished_at)
         obj.started_at = _parse_dt(run.started_at)
-        obj.finished_at = _parse_dt(run.finished_at)
         obj.total_tokens = run.total_tokens
         obj.tool_call_count = run.tool_call_count
         obj.pytest_summary = run.pytest_summary
@@ -252,8 +260,11 @@ class SQLAlchemyRunRecorder(RunRecorder):
         # 每个 run 最终只保留一份汇总报告，因此这里仍是 upsert 语义。
         obj = self.session.get(TestReport, report.id)
         if obj is None:
-            obj = TestReport(id=report.id, run_id=report.run_id)
-            self.session.add(obj)
+            stmt = select(TestReport).where(TestReport.run_id == report.run_id)
+            obj = self.session.scalars(stmt).one_or_none()
+            if obj is None:
+                obj = TestReport(id=report.id, run_id=report.run_id)
+                self.session.add(obj)
         obj.run_id = report.run_id
         obj.summary = report.summary
         obj.metrics = report.metrics
@@ -261,3 +272,26 @@ class SQLAlchemyRunRecorder(RunRecorder):
         obj.markdown_uri = report.markdown_uri
         obj.json_uri = report.json_uri
         self._flush()
+
+    def list_plan_items(self, run_id: str) -> list[RunPlanItem]:
+        stmt = select(RunPlanItem).where(RunPlanItem.run_id == run_id).order_by(RunPlanItem.index.asc())
+        return list(self.session.scalars(stmt))
+
+    def list_attempts(self, run_id: str) -> list[RunAttempt]:
+        stmt = (
+            select(RunAttempt)
+            .join_from(RunAttempt, RunPlanItem)
+            .where(RunPlanItem.run_id == run_id)
+            .order_by(RunAttempt.attempt_no.asc())
+        )
+        return list(self.session.scalars(stmt))
+
+    def list_pytest_results(self, run_id: str) -> list[PytestCaseResult]:
+        stmt = (
+            select(PytestCaseResult)
+            .join_from(PytestCaseResult, RunAttempt)
+            .join_from(RunAttempt, RunPlanItem)
+            .where(RunPlanItem.run_id == run_id)
+            .order_by(PytestCaseResult.nodeid.asc())
+        )
+        return list(self.session.scalars(stmt))

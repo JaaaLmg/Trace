@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.agents.llm import MockLLM
-from app.agents.orchestrator import execute_run
+from app.agents.orchestrator import execute_run, freeze_runtime_snapshot, freeze_strategy_snapshot
 from app.agents.runtime import PlanInput
+from app.core.errors import ErrorCode
 from app.core.ids import new_id
 from app.models.trace import RunEvent
 from app.models.project import ProjectSnapshot
@@ -59,6 +61,10 @@ def _artifacts_dir(snapshot_root: Path, run_id: str) -> Path:
     return snapshot_root / ".trace_artifacts" / run_id
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _run_record_from_model(run: TestRun) -> TestRunRecord:
     # ORM 模型和 A 线 recorder/agent 使用的 Pydantic record 之间的桥接。
     return TestRunRecord(
@@ -80,6 +86,17 @@ def _run_record_from_model(run: TestRun) -> TestRunRecord:
         error_code=run.error_code,
         error_message=run.error_message,
     )
+
+
+def _runtime_snapshot(
+    *,
+    budget_override: dict | None = None,
+    output_options: dict | None = None,
+) -> dict:
+    snap = freeze_runtime_snapshot()
+    snap["budget_override"] = dict(budget_override or {})
+    snap["output_options"] = dict(output_options or {})
+    return snap
 
 
 def create_run(
@@ -105,15 +122,15 @@ def create_run(
     strategy = get_strategy_version(session, strategy_id)
     if strategy is None:
         raise ValueError("strategy not found")
+    strategy_spec = _strategy_spec_from_model(strategy)
 
     run = TestRun(
         id=new_id(),
         test_plan_id=plan.id,
         project_snapshot_id=snapshot.id,
         strategy_version_id=strategy.id,
-        # 这里先记录当前后端运行模式；后续若有远程 runner，可在 runtime_snapshot 扩展。
-        runtime_snapshot={"mode": "local_sync_v1"},
-        strategy_snapshot={},
+        runtime_snapshot=_runtime_snapshot(budget_override=budget_override, output_options=output_options),
+        strategy_snapshot=freeze_strategy_snapshot(strategy_spec),
         status="queued",
         pytest_summary={},
     )
@@ -164,46 +181,55 @@ def execute_run_sync(
     run = get_test_run(session, run_id)
     if run is None:
         raise ValueError("run not found")
-    plan = get_test_plan(session, run.test_plan_id) if run.test_plan_id else None
-    if plan is None:
-        raise ValueError("test plan not found")
-    snapshot = session.get(ProjectSnapshot, run.project_snapshot_id)
-    if snapshot is None:
-        raise ValueError("snapshot not found")
-    strategy = get_strategy_version(session, run.strategy_version_id)
-    if strategy is None:
-        raise ValueError("strategy not found")
-    project = get_project(session, snapshot.project_id)
-    if project is None:
-        raise ValueError("project not found")
+    if run.status in {"completed", "failed", "cancelled"}:
+        return run
+    plan = get_test_plan(session, run.test_plan_id)
+    try:
+        if plan is None:
+            raise ValueError("test plan not found")
+        snapshot = session.get(ProjectSnapshot, run.project_snapshot_id)
+        if snapshot is None:
+            raise ValueError("snapshot not found")
+        strategy = get_strategy_version(session, run.strategy_version_id)
+        if strategy is None:
+            raise ValueError("strategy not found")
+        project = get_project(session, snapshot.project_id)
+        if project is None:
+            raise ValueError("project not found")
 
-    # 为生成测试准备受控目录，A 线 write_test_file 只会写到这里。
-    root = Path(snapshot.root_path)
-    test_write_dir = root / "tests" / "generated"
-    test_write_dir.mkdir(parents=True, exist_ok=True)
-    recorder = SQLAlchemyRunRecorder(session)
-    strategy_spec = _strategy_spec_from_model(strategy)
-    budget = dict(plan.budget or {})
-    if budget_override:
-        # 本次 run 允许对计划默认预算做局部覆盖，如更短超时或关闭 reflection。
-        budget.update(budget_override)
-    llm = _mock_llm()
+        # 为生成测试准备受控目录，A 线 write_test_file 只会写到这里。
+        root = Path(snapshot.root_path)
+        test_write_dir = root / "tests" / "generated"
+        test_write_dir.mkdir(parents=True, exist_ok=True)
+        recorder = SQLAlchemyRunRecorder(session)
+        strategy_spec = _strategy_spec_from_model(strategy)
+        budget = dict(plan.budget or {})
+        stored_override = dict((run.runtime_snapshot or {}).get("budget_override") or {})
+        if stored_override:
+            budget.update(stored_override)
+        if budget_override:
+            # 本次 run 允许对计划默认预算做局部覆盖，如更短超时或关闭 reflection。
+            budget.update(budget_override)
+        llm = _mock_llm()
 
-    execute_run(
-        tools=ToolContext(root=root, test_write_dir=test_write_dir),
-        registry=default_registry(),
-        llm=llm,
-        recorder=recorder,
-        strategy_spec=strategy_spec,
-        plan_input=PlanInput(
-            target_scope=list(plan.target_scope or []),
-            goal=plan.goal,
-            allow_reflection=bool(budget.get("allow_reflection", False)),
-            timeout_seconds=int(budget.get("timeout_seconds", 120)),
-        ),
-        run=_run_record_from_model(run),
-        artifacts_dir=_artifacts_dir(root, run.id),
-    )
+        execute_run(
+            tools=ToolContext(root=root, test_write_dir=test_write_dir),
+            registry=default_registry(),
+            llm=llm,
+            recorder=recorder,
+            strategy_spec=strategy_spec,
+            plan_input=PlanInput(
+                target_scope=list(plan.target_scope or []),
+                goal=plan.goal,
+                allow_reflection=bool(budget.get("allow_reflection", False)),
+                timeout_seconds=int(budget.get("timeout_seconds", 120)),
+            ),
+            run=_run_record_from_model(run),
+            artifacts_dir=_artifacts_dir(root, run.id),
+        )
+    except Exception as exc:
+        _mark_run_failed(session, run.id, f"{type(exc).__name__}: {exc}")
+        raise
 
     refreshed = get_test_run(session, run.id)
     assert refreshed is not None
@@ -235,7 +261,8 @@ def retry_run(session: Session, *, run_id: str) -> TestRun:
 def retry_run_async(session: Session, *, run_id: str) -> TestRun:
     # 先克隆 run，再直接入队，作为 retry 的完整后端动作。
     clone = retry_run(session, run_id=run_id)
-    return enqueue_run(session, run_id=clone.id, budget_override=None)
+    budget_override = dict((clone.runtime_snapshot or {}).get("budget_override") or {})
+    return enqueue_run(session, run_id=clone.id, budget_override=budget_override)
 
 
 def cancel_run(session: Session, *, run_id: str) -> TestRun:
@@ -246,7 +273,43 @@ def cancel_run(session: Session, *, run_id: str) -> TestRun:
         raise ValueError("run not found")
     if run.status in {"completed", "failed", "cancelled"}:
         return run
+    session.add(
+        RunEvent(
+            id=new_id(),
+            run_id=run.id,
+            stage=run.stage,
+            event_type="run_cancelled",
+            status_before=run.status,
+            status_after="cancelled",
+            message="运行已标记为取消",
+        )
+    )
     run.status = "cancelled"
+    run.finished_at = _now()
     session.commit()
     session.refresh(run)
     return run
+
+
+def _mark_run_failed(session: Session, run_id: str, message: str) -> None:
+    session.rollback()
+    run = get_test_run(session, run_id)
+    if run is None or run.status in {"completed", "failed", "cancelled"}:
+        return
+    code = ErrorCode.RUNNER_INTERNAL_ERROR.value
+    session.add(
+        RunEvent(
+            id=new_id(),
+            run_id=run.id,
+            stage=run.stage,
+            event_type="run_failed",
+            status_before=run.status,
+            status_after="failed",
+            message=message,
+        )
+    )
+    run.status = "failed"
+    run.error_code = code
+    run.error_message = message
+    run.finished_at = _now()
+    session.commit()

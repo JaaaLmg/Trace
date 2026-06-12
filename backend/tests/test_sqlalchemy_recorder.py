@@ -1,7 +1,5 @@
 from app.core.ids import new_id
-from app.db.base import Base
 from app.db.session import get_engine
-from app.models import load_all_models
 from app.models.project import Project, ProjectSnapshot
 from app.models.strategy import StrategyVersion
 from app.recorders.sqlalchemy_recorder import SQLAlchemyRunRecorder
@@ -21,9 +19,12 @@ from sqlalchemy.orm import Session
 
 
 def _seed_fk_prereqs(session: Session):
+    from app.models.test_plan import TestPlan as TestPlanModel
+
     project_id = new_id()
     snapshot_id = new_id()
     strategy_id = "sv-recorder-test"
+    plan_id = new_id()
     session.add(
         Project(
             id=project_id,
@@ -46,43 +47,28 @@ def _seed_fk_prereqs(session: Session):
             workflow_type="direct",
         )
     )
+    session.add(
+        TestPlanModel(
+            id=plan_id,
+            project_id=project_id,
+            name="recorder-plan",
+            target_scope=[],
+            goal="测试 recorder",
+            default_strategy_version_id=strategy_id,
+        )
+    )
     session.commit()
-    return project_id, snapshot_id, strategy_id
+    return project_id, snapshot_id, strategy_id, plan_id
 
 
-def _truncate_all(session: Session):
-    tables = [
-        "test_reports",
-        "run_artifacts",
-        "trace_steps",
-        "run_events",
-        "pytest_case_results",
-        "generated_test_cases",
-        "generated_test_files",
-        "run_attempts",
-        "run_plan_items",
-        "test_runs",
-        "test_plans",
-        "strategy_versions",
-        "project_snapshots",
-        "projects",
-    ]
-    for table in tables:
-        session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
-    session.commit()
-
-
-def test_sqlalchemy_recorder_roundtrip():
-    load_all_models()
+def test_sqlalchemy_recorder_roundtrip(clean_db):
     engine = get_engine()
-    Base.metadata.create_all(bind=engine)
 
     with Session(engine) as session:
-        _truncate_all(session)
-        _, snapshot_id, strategy_id = _seed_fk_prereqs(session)
+        _, snapshot_id, strategy_id, plan_id = _seed_fk_prereqs(session)
         recorder = SQLAlchemyRunRecorder(session)
 
-        run = TestRunRecord(project_snapshot_id=snapshot_id, strategy_version_id=strategy_id)
+        run = TestRunRecord(test_plan_id=plan_id, project_snapshot_id=snapshot_id, strategy_version_id=strategy_id)
         run.status = "running"
         run.stage = "preparing"
         recorder.save_run(run)
@@ -157,6 +143,15 @@ def test_sqlalchemy_recorder_roundtrip():
                 json_uri="backend/artifacts/demo.json",
             )
         )
+        recorder.save_report(
+            TestReportRecord(
+                run_id=run.id,
+                summary="updated",
+                metrics={"final_passed": 2},
+                markdown_uri="backend/artifacts/demo2.md",
+                json_uri="backend/artifacts/demo2.json",
+            )
+        )
 
         counts = {
             "test_runs": session.execute(text("select count(*) from test_runs")).scalar_one(),
@@ -183,3 +178,42 @@ def test_sqlalchemy_recorder_roundtrip():
             "run_artifacts": 1,
             "test_reports": 1,
         }
+        saved_report = session.execute(
+            text("select summary, metrics from test_reports where run_id = :run_id"),
+            {"run_id": run.id},
+        ).one()
+        assert saved_report.summary == "updated"
+        assert saved_report.metrics == {"final_passed": 2}
+        assert [x.id for x in recorder.list_plan_items(run.id)] == [item.id]
+        assert [x.id for x in recorder.list_attempts(run.id)] == [attempt.id]
+        assert [x.id for x in recorder.list_pytest_results(run.id)] == [result.id]
+
+
+def test_sqlalchemy_recorder_does_not_overwrite_cancelled_run(clean_db):
+    from app.models.test_run import TestRun as TestRunModel
+
+    engine = get_engine()
+
+    with Session(engine) as session:
+        _, snapshot_id, strategy_id, plan_id = _seed_fk_prereqs(session)
+        recorder = SQLAlchemyRunRecorder(session)
+        run = TestRunRecord(test_plan_id=plan_id, project_snapshot_id=snapshot_id, strategy_version_id=strategy_id)
+        run.status = "running"
+        recorder.save_run(run)
+
+        with Session(engine) as canceller:
+            stored = canceller.get(TestRunModel, run.id)
+            assert stored is not None
+            stored.status = "cancelled"
+            canceller.commit()
+
+        run.status = "completed"
+        run.stage = "reporting"
+        run.pytest_summary = {"passed": 1}
+        recorder.save_run(run)
+
+    with Session(engine) as session:
+        stored = session.get(TestRunModel, run.id)
+        assert stored is not None
+        assert stored.status == "cancelled"
+        assert stored.pytest_summary == {"passed": 1}

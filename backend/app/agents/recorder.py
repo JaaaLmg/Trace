@@ -31,6 +31,9 @@ class RunRecorder(Protocol):
     def add_pytest_results(self, results: list[PytestCaseResultRecord]) -> None: ...
     def add_artifact(self, artifact: RunArtifactRecord) -> None: ...
     def save_report(self, report: TestReportRecord) -> None: ...
+    def list_plan_items(self, run_id: str) -> list[RunPlanItemRecord]: ...
+    def list_attempts(self, run_id: str) -> list[RunAttemptRecord]: ...
+    def list_pytest_results(self, run_id: str) -> list[PytestCaseResultRecord]: ...
 
 
 class InMemoryRecorder:
@@ -89,6 +92,17 @@ class InMemoryRecorder:
         self.reports.append(report)
 
     # ---- 查询便捷方法（报告/测试用）----
+    def list_plan_items(self, run_id: str) -> list[RunPlanItemRecord]:
+        return [i for i in self.plan_items if i.run_id == run_id]
+
+    def list_attempts(self, run_id: str) -> list[RunAttemptRecord]:
+        item_ids = {i.id for i in self.list_plan_items(run_id)}
+        return [a for a in self.attempts.values() if a.run_plan_item_id in item_ids]
+
+    def list_pytest_results(self, run_id: str) -> list[PytestCaseResultRecord]:
+        attempt_ids = {a.id for a in self.list_attempts(run_id)}
+        return [r for r in self.pytest_results if r.attempt_id in attempt_ids]
+
     def steps_of(self, run_id: str) -> list[TraceStep]:
         return [s for s in self.trace_steps if s.run_id == run_id]
 

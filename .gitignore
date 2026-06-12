@@ -33,6 +33,8 @@ env/
 # Local TRACE pytest artifacts
 .trace_pytest_report.json
 .trace_junit.xml
+.trace_artifacts/
+tests/generated/
 
 # Eval scratch：物化的 clean/variant + 生成测试 + 重放产物，纯一次性，不进版本库
 eval/.work/

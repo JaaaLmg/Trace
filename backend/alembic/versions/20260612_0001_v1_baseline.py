@@ -19,8 +19,7 @@ depends_on = None
 def upgrade() -> None:
     sql_path = Path(__file__).resolve().parents[2] / "sql" / "init_v1.sql"
     sql = sql_path.read_text(encoding="utf-8")
-    for stmt in [x.strip() for x in sql.split(";") if x.strip()]:
-        op.execute(stmt)
+    op.get_bind().exec_driver_sql(sql)
 
 
 def downgrade() -> None:

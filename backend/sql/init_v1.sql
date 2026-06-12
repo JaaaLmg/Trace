@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_test_plans_project_id ON test_plans(project_id);
 
 CREATE TABLE IF NOT EXISTS test_runs (
     id VARCHAR(36) PRIMARY KEY,
-    test_plan_id VARCHAR(36) NULL REFERENCES test_plans(id) ON DELETE SET NULL,
+    test_plan_id VARCHAR(36) NOT NULL REFERENCES test_plans(id) ON DELETE RESTRICT,
     retry_of_run_id VARCHAR(36) NULL REFERENCES test_runs(id) ON DELETE SET NULL,
     project_snapshot_id VARCHAR(36) NOT NULL REFERENCES project_snapshots(id) ON DELETE RESTRICT,
     runtime_profile_id VARCHAR(36) NULL,

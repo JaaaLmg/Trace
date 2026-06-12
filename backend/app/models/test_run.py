@@ -18,9 +18,9 @@ class TestRun(Base):
 
     # 一次具体执行的主键。
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    # 对应的测试计划。保留为可空，是为了兼容少量历史/扩展场景。
-    test_plan_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("test_plans.id", ondelete="SET NULL"), index=True
+    # 对应的测试计划。V1 的 run 必须来自一个明确 plan，避免孤儿 run 破坏 retry/execute 语义。
+    test_plan_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("test_plans.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     # 若这是一次 retry，则指向原 run。
     retry_of_run_id: Mapped[str | None] = mapped_column(

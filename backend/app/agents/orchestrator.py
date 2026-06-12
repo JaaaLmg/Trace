@@ -30,6 +30,23 @@ class RunOutcome:
     report: Optional[TestReportRecord]
 
 
+def freeze_strategy_snapshot(strategy_spec: StrategyVersionSpec) -> dict:
+    return {
+        "workflow_type": strategy_spec.workflow_type,
+        "model_provider": strategy_spec.model_provider,
+        "model_name": strategy_spec.model_name,
+        "model_params": strategy_spec.model_params,
+        "tool_schema_ref": strategy_spec.tool_schema_ref,
+        "allow_reflection": strategy_spec.allow_reflection,
+        "max_tool_calls": strategy_spec.max_tool_calls,
+        "prompts": prompt_bundle(strategy_spec),
+    }
+
+
+def freeze_runtime_snapshot() -> dict:
+    return {"executor": "local_subprocess", "note": "V1 单机 subprocess，非安全沙箱"}
+
+
 def execute_run(
     *,
     tools: ToolContext,
@@ -45,17 +62,8 @@ def execute_run(
     run = run or TestRunRecord(strategy_version_id=strategy_spec.id)
     # 冻结策略快照：完整 prompt bundle（system+contract+plan/generate/reflect 模板）+ 模型参数，
     # 不允许只存 ref——以后改 prompts.py，历史 run 仍可复现（V1实施清单 §3）
-    run.strategy_snapshot = {
-        "workflow_type": strategy_spec.workflow_type,
-        "model_provider": strategy_spec.model_provider,
-        "model_name": strategy_spec.model_name,
-        "model_params": strategy_spec.model_params,
-        "tool_schema_ref": strategy_spec.tool_schema_ref,
-        "allow_reflection": strategy_spec.allow_reflection,
-        "max_tool_calls": strategy_spec.max_tool_calls,
-        "prompts": prompt_bundle(strategy_spec),
-    }
-    run.runtime_snapshot = {"executor": "local_subprocess", "note": "V1 单机 subprocess，非安全沙箱"}
+    run.strategy_snapshot = freeze_strategy_snapshot(strategy_spec)
+    run.runtime_snapshot = freeze_runtime_snapshot()
     recorder.save_run(run)  # queued
 
     ctx = AgentContext(

@@ -1,42 +1,22 @@
-from pathlib import Path
-
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.db.base import Base
 from app.db.session import get_engine
 from app.main import create_app
-from app.models import load_all_models
+from app.services.test_runs import execute_run_sync
 
 
-def _reset_db():
-    engine = get_engine()
-    load_all_models()
-    Base.metadata.create_all(bind=engine)
-    with Session(engine) as session:
-        for table in [
-            "test_reports",
-            "run_artifacts",
-            "trace_steps",
-            "run_events",
-            "pytest_case_results",
-            "generated_test_cases",
-            "generated_test_files",
-            "run_attempts",
-            "run_plan_items",
-            "test_runs",
-            "test_plans",
-            "strategy_versions",
-            "project_snapshots",
-            "projects",
-        ]:
-            session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
-        session.commit()
+def test_sync_run_via_api(tmp_path, monkeypatch, clean_db):
+    calls = []
 
+    class DummyTask:
+        def delay(self, run_id, budget_override):
+            calls.append((run_id, budget_override))
 
-def test_sync_run_via_api(tmp_path, monkeypatch):
-    _reset_db()
+    import app.workers.tasks as task_module
+
+    monkeypatch.setattr(task_module, "execute_run_task", DummyTask())
+
     app = create_app()
     client = TestClient(app)
 
@@ -49,8 +29,7 @@ def test_sync_run_via_api(tmp_path, monkeypatch):
         json={"name": "demo-project", "local_path": str(project_root)},
     ).json()
     snapshot = client.post(f"/api/v1/projects/{project['id']}/snapshots", json={}).json()
-    strategies = client.get("/api/v1/strategy-versions").json()
-    direct = next(x for x in strategies if x["id"] == "sv-direct-v1")
+    direct = client.get("/api/v1/strategy-versions/sv-direct-v1").json()
     plan = client.post(
         "/api/v1/test-plans",
         json={
@@ -69,8 +48,13 @@ def test_sync_run_via_api(tmp_path, monkeypatch):
     )
     assert run_resp.status_code == 200, run_resp.text
     run = run_resp.json()
-    assert run["status"] == "completed"
+    assert run["status"] == "queued"
     assert run["strategy_version_id"] == direct["id"]
+    assert calls and calls[0][0] == run["id"]
+
+    with Session(get_engine()) as session:
+        completed = execute_run_sync(session, run_id=run["id"])
+        assert completed.status == "completed"
 
     events = client.get(f"/api/v1/test-runs/{run['id']}/events")
     assert events.status_code == 200

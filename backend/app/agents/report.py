@@ -4,15 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.agents.final_attempts import final_attempts_by_item
+from app.agents.final_attempts import final_attempts_from_records
 from app.agents.runtime import AgentContext
-from app.recorders.sqlalchemy_recorder import SQLAlchemyRunRecorder
-from app.repositories.test_runs import (
-    get_report,
-    list_pytest_results,
-    list_run_attempts,
-    list_run_plan_items,
-)
 from app.schemas.records import RunArtifactRecord, TestReportRecord
 
 
@@ -20,29 +13,11 @@ def build_report(ctx: AgentContext, *, suspected_code_bug: bool = False, artifac
     rec = ctx.recorder
     run = ctx.run
 
-    if isinstance(rec, SQLAlchemyRunRecorder):
-        items = list_run_plan_items(rec.session, run.id)
-        attempts = list_run_attempts(rec.session, run.id)
-        all_results = list_pytest_results(rec.session, run.id)
-        final_by_item = {}
-        by_item: dict[str, list] = {}
-        res_by_attempt: dict[str, list] = {}
-        for r in all_results:
-            res_by_attempt.setdefault(r.attempt_id, []).append(r)
-        for attempt in attempts:
-            by_item.setdefault(attempt.run_plan_item_id, []).append(attempt)
-        for item_id, alist in by_item.items():
-            with_res = [a for a in alist if a.id in res_by_attempt]
-            pool = with_res or alist
-            final_by_item[item_id] = max(pool, key=lambda a: a.attempt_no)
-        final_ids = {a.id for a in final_by_item.values()}
-    else:
-        items = [i for i in getattr(rec, "plan_items", []) if i.run_id == run.id]
-        item_ids = {i.id for i in items}
-        attempts = [a for a in getattr(rec, "attempts", {}).values() if a.run_plan_item_id in item_ids]
-        all_results = list(getattr(rec, "pytest_results", []))
-        final_by_item = final_attempts_by_item(rec, run.id)
-        final_ids = {a.id for a in final_by_item.values()}
+    items = rec.list_plan_items(run.id)
+    attempts = rec.list_attempts(run.id)
+    all_results = rec.list_pytest_results(run.id)
+    final_by_item = final_attempts_from_records(attempts, all_results)
+    final_ids = {a.id for a in final_by_item.values()}
 
     final_results = [r for r in all_results if r.attempt_id in final_ids]
     # collected 只算真实收集成功的用例；收集期错误（import/collection）单独计数，

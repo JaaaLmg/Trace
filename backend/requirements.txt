@@ -1,13 +1,11 @@
-﻿# TRACE backend V1 —— A 分工跑通端到端只需这几个
-# B 接 DB/队列时再加 sqlalchemy / alembic / psycopg / redis / celery
-pydantic
-fastapi
-httpx  # OpenAI Responses API adapter + FastAPI TestClient
-pytest
-pyyaml
-sqlalchemy
-alembic
-psycopg[binary]
-celery
-redis
-uvicorn
+pydantic>=2,<3
+fastapi>=0.110,<1
+httpx>=0.28,<1
+pytest>=8,<10
+pyyaml>=6,<7
+sqlalchemy>=2.0,<3
+alembic>=1.13,<2
+psycopg[binary]>=3.1,<4
+celery>=5.3,<6
+redis>=5,<9
+uvicorn>=0.29,<1

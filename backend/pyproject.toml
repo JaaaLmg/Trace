@@ -4,17 +4,17 @@ version = "0.1.0"
 description = "TRACE backend (V1) —— 面向 Python/FastAPI 的测试生成 Agent"
 requires-python = ">=3.10"
 dependencies = [
-    "pydantic",
-    "fastapi",
-    "httpx",
-    "pytest",
-    "pyyaml",
-    "sqlalchemy",
-    "alembic",
-    "psycopg[binary]",
-    "celery",
-    "redis",
-    "uvicorn",
+    "pydantic>=2,<3",
+    "fastapi>=0.110,<1",
+    "httpx>=0.28,<1",
+    "pytest>=8,<10",
+    "pyyaml>=6,<7",
+    "sqlalchemy>=2.0,<3",
+    "alembic>=1.13,<2",
+    "psycopg[binary]>=3.1,<4",
+    "celery>=5.3,<6",
+    "redis>=5,<9",
+    "uvicorn>=0.29,<1",
 ]
 
 [build-system]
@@ -27,4 +27,5 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--basetemp=.pytest_tmp"
 # A 的端到端测试会生成临时 pytest 文件并子进程执行，主测试套件只扫 tests/

@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 def main() -> None:
     host = os.environ.get("TRACE_API_HOST", "127.0.0.1")
     port = int(os.environ.get("TRACE_API_PORT", "8000"))
-    uvicorn.run("app.main:app", host=host, port=port, reload=False)
+    uvicorn.run("app.main:create_app", host=host, port=port, reload=False, factory=True)
 
 
 if __name__ == "__main__":

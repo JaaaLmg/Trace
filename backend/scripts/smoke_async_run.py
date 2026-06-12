@@ -47,9 +47,9 @@ def main() -> int:
         snapshot.raise_for_status()
         snapshot_data = snapshot.json()
 
-        strategies = client.get("/api/v1/strategy-versions")
-        strategies.raise_for_status()
-        direct = next(item for item in strategies.json() if item["id"] == "sv-direct-v1")
+        direct_resp = client.get("/api/v1/strategy-versions/sv-direct-v1")
+        direct_resp.raise_for_status()
+        direct = direct_resp.json()
 
         plan = client.post(
             "/api/v1/test-plans",
