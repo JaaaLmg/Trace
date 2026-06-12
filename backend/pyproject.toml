@@ -9,6 +9,10 @@ dependencies = [
     "httpx",
     "pytest",
     "pyyaml",
+    "sqlalchemy",
+    "alembic",
+    "psycopg[binary]",
+    "celery",
 ]
 
 [build-system]
