@@ -39,16 +39,21 @@ def _parse_dt(value: str | None):
 
 class SQLAlchemyRunRecorder(RunRecorder):
     def __init__(self, session: Session, *, auto_commit: bool = True) -> None:
+        # recorder 是 A/B 之间最关键的适配层：
+        # A 线只知道“写记录”，B 线负责把这些记录准确落到 SQLAlchemy/数据库。
         self.session = session
         self.auto_commit = auto_commit
 
     def _flush(self) -> None:
+        # 默认每次写完立即 commit，优先确保调试期数据可见。
+        # 后续若想把事务边界上提，可传 auto_commit=False。
         if self.auto_commit:
             self.session.commit()
         else:
             self.session.flush()
 
     def save_run(self, run: TestRunRecord) -> None:
+        # run 主记录是 upsert：A 线会在不同阶段反复更新 status/stage/summary。
         obj = self.session.get(TestRun, run.id)
         if obj is None:
             obj = TestRun(id=run.id)
@@ -72,6 +77,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def add_run_event(self, event: RunEvent) -> None:
+        # 事件流只追加不回写，保留完整状态机审计轨迹。
         self.session.add(
             RunEventModel(
                 id=new_id(),
@@ -86,6 +92,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def add_trace_step(self, step: TraceStep) -> None:
+        # trace step 对应前端时间线中的一个节点。
         self.session.add(
             TraceStepModel(
                 id=new_id(),
@@ -107,6 +114,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def add_plan_item(self, item: RunPlanItemRecord) -> None:
+        # 计划项在 planning 阶段追加创建。
         self.session.add(
             RunPlanItem(
                 id=item.id,
@@ -122,6 +130,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def save_plan_item(self, item: RunPlanItemRecord) -> None:
+        # 计划项状态会随着执行推进改变，因此这里需要支持更新。
         obj = self.session.get(RunPlanItem, item.id)
         if obj is None:
             self.add_plan_item(item)
@@ -136,6 +145,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def add_attempt(self, attempt: RunAttemptRecord) -> None:
+        # 每轮 initial/reflection 尝试先插入一条 attempt 记录。
         self.session.add(
             RunAttempt(
                 id=attempt.id,
@@ -151,6 +161,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def save_attempt(self, attempt: RunAttemptRecord) -> None:
+        # attempt 会在执行后更新状态、pytest_exit_code、error_code 等。
         obj = self.session.get(RunAttempt, attempt.id)
         if obj is None:
             self.add_attempt(attempt)
@@ -165,6 +176,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def add_generated_file(self, f: GeneratedTestFileRecord) -> None:
+        # 保存每轮生成出来的测试文件版本。
         self.session.add(
             GeneratedTestFile(
                 id=f.id,
@@ -179,6 +191,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def add_generated_cases(self, cases: list[GeneratedTestCaseRecord]) -> None:
+        # 从文件中解析出的逻辑用例单元，后续要和 pytest 结果做映射。
         for case in cases:
             self.session.add(
                 GeneratedTestCase(
@@ -200,6 +213,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def add_pytest_results(self, results: list[PytestCaseResultRecord]) -> None:
+        # 保存 pytest 的单用例运行结果。
         for result in results:
             self.session.add(
                 PytestCaseResult(
@@ -219,6 +233,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def add_artifact(self, artifact: RunArtifactRecord) -> None:
+        # 保存文件型产物的元数据，不直接承载大文件内容。
         self.session.add(
             RunArtifact(
                 id=artifact.id,
@@ -234,6 +249,7 @@ class SQLAlchemyRunRecorder(RunRecorder):
         self._flush()
 
     def save_report(self, report: TestReportRecord) -> None:
+        # 每个 run 最终只保留一份汇总报告，因此这里仍是 upsert 语义。
         obj = self.session.get(TestReport, report.id)
         if obj is None:
             obj = TestReport(id=report.id, run_id=report.run_id)

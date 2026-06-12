@@ -19,6 +19,8 @@ def create_test_plan(
     output_options: dict | None = None,
     default_strategy_version_id: str | None = None,
 ) -> TestPlan:
+    # 创建测试计划前，先校验 project 和默认 strategy 的存在性。
+    # 这样 run 创建阶段只需要在合法计划基础上补 snapshot 即可。
     if get_project(session, project_id) is None:
         raise ValueError("project not found")
     if default_strategy_version_id and get_strategy_version(session, default_strategy_version_id) is None:
@@ -37,6 +39,7 @@ def create_test_plan(
 
 
 def get_test_plan_or_404(session: Session, plan_id: str) -> TestPlan:
+    # 与项目查询保持一致，统一在 service 层抛 ValueError。
     plan = get_test_plan(session, plan_id)
     if plan is None:
         raise ValueError("test plan not found")

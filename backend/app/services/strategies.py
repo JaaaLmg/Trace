@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 
 def seed_strategy_versions(session: Session) -> None:
+    # 把 A 线内置的 3 个策略版本灌入数据库。
+    # 这是幂等 seed：已存在就跳过，方便每次启动应用时安全执行。
     for spec in seed_list():
         if get_strategy_version(session, spec.id):
             continue

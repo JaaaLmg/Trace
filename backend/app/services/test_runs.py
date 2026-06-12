@@ -23,6 +23,8 @@ from sqlalchemy.orm import Session
 
 
 def _default_mock_responder(messages):
+    # B 线当前仍以 MockLLM 跑通后端闭环。
+    # 这里的 responder 只是本地开发/测试支撑，后续可替换成真实 LLM 工厂。
     blob = "\n".join(m.content for m in messages)
     if "TASK: PLAN" in blob:
         return '{"items":[{"index":0,"target_type":"goal","target_ref":"all","goal":"覆盖目标","planned_assertions":["核心断言"]}]}'
@@ -32,10 +34,12 @@ def _default_mock_responder(messages):
 
 
 def _mock_llm():
+    # 统一封装默认 mock LLM，避免每个 worker/service 重复拼装。
     return MockLLM(_default_mock_responder)
 
 
 def _strategy_spec_from_model(model: StrategyVersion) -> StrategyVersionSpec:
+    # 把数据库中的策略模型还原成 A 线 execute_run 所需的 StrategyVersionSpec。
     return StrategyVersionSpec(
         id=model.id,
         name=model.name,
@@ -51,10 +55,12 @@ def _strategy_spec_from_model(model: StrategyVersion) -> StrategyVersionSpec:
 
 
 def _artifacts_dir(snapshot_root: Path, run_id: str) -> Path:
+    # 每个 run 单独产出一个 artifacts 目录，避免报告和后续产物相互覆盖。
     return snapshot_root / ".trace_artifacts" / run_id
 
 
 def _run_record_from_model(run: TestRun) -> TestRunRecord:
+    # ORM 模型和 A 线 recorder/agent 使用的 Pydantic record 之间的桥接。
     return TestRunRecord(
         id=run.id,
         test_plan_id=run.test_plan_id,
@@ -85,6 +91,8 @@ def create_run(
     budget_override: dict | None = None,
     output_options: dict | None = None,
 ) -> TestRun:
+    # 创建 run 只负责落一条“待执行”的主记录，不直接跑 Agent。
+    # 这样 API 可以先快速返回，再由 enqueue_run 决定同步或异步执行策略。
     plan = get_test_plan(session, plan_id)
     if plan is None:
         raise ValueError("test plan not found")
@@ -103,6 +111,7 @@ def create_run(
         test_plan_id=plan.id,
         project_snapshot_id=snapshot.id,
         strategy_version_id=strategy.id,
+        # 这里先记录当前后端运行模式；后续若有远程 runner，可在 runtime_snapshot 扩展。
         runtime_snapshot={"mode": "local_sync_v1"},
         strategy_snapshot={},
         status="queued",
@@ -122,6 +131,8 @@ def enqueue_run(
 ) -> TestRun:
     from app.workers.tasks import execute_run_task
 
+    # 把 run 投递到 Celery 队列。
+    # 注意这里只传 run_id 和预算覆盖，详细上下文一律由 worker 回库查询。
     run = get_test_run(session, run_id)
     if run is None:
         raise ValueError("run not found")
@@ -148,6 +159,8 @@ def execute_run_sync(
     run_id: str,
     budget_override: dict | None = None,
 ) -> TestRun:
+    # 这是 run 的真正执行主链路。
+    # worker 会调用这里：加载 DB 上下文 -> 构建 ToolContext/Recorder -> 调用 A 线 execute_run。
     run = get_test_run(session, run_id)
     if run is None:
         raise ValueError("run not found")
@@ -164,6 +177,7 @@ def execute_run_sync(
     if project is None:
         raise ValueError("project not found")
 
+    # 为生成测试准备受控目录，A 线 write_test_file 只会写到这里。
     root = Path(snapshot.root_path)
     test_write_dir = root / "tests" / "generated"
     test_write_dir.mkdir(parents=True, exist_ok=True)
@@ -171,6 +185,7 @@ def execute_run_sync(
     strategy_spec = _strategy_spec_from_model(strategy)
     budget = dict(plan.budget or {})
     if budget_override:
+        # 本次 run 允许对计划默认预算做局部覆盖，如更短超时或关闭 reflection。
         budget.update(budget_override)
     llm = _mock_llm()
 
@@ -196,6 +211,7 @@ def execute_run_sync(
 
 
 def retry_run(session: Session, *, run_id: str) -> TestRun:
+    # 重试策略：复制一条新的 run，而不是污染原 run 的 attempt 历史。
     original = get_test_run(session, run_id)
     if original is None:
         raise ValueError("run not found")
@@ -217,11 +233,14 @@ def retry_run(session: Session, *, run_id: str) -> TestRun:
 
 
 def retry_run_async(session: Session, *, run_id: str) -> TestRun:
+    # 先克隆 run，再直接入队，作为 retry 的完整后端动作。
     clone = retry_run(session, run_id=run_id)
     return enqueue_run(session, run_id=clone.id, budget_override=None)
 
 
 def cancel_run(session: Session, *, run_id: str) -> TestRun:
+    # V1 软取消：只改 DB 状态，不做进程级中断。
+    # 这样接口语义先成立，后续再增强“正在跑的任务如何停止”。
     run = get_test_run(session, run_id)
     if run is None:
         raise ValueError("run not found")
