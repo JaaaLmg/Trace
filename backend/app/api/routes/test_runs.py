@@ -110,12 +110,12 @@ def list_artifacts_route(run_id: str, db: Session = Depends(get_db)):
     return list_run_artifacts(db, run_id)
 
 
-@router.get("/api/v1/test-runs/{run_id}/report", response_model=TestReportOut)
+@router.get("/api/v1/test-runs/{run_id}/report", response_model=TestReportOut | None)
 def get_report_route(run_id: str, db: Session = Depends(get_db)):
     # 返回结构化测试报告摘要。前端一般先取这里，再按需打开 markdown/json 文件。
+    if get_test_run(db, run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
     report = get_report(db, run_id)
-    if report is None:
-        raise HTTPException(status_code=404, detail="report not found")
     return report
 
 

@@ -13,7 +13,10 @@ router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 @router.post("", response_model=ProjectOut)
 def create_project_route(body: ProjectCreateRequest, db: Session = Depends(get_db)):
     # 创建一个被测项目。V1 只支持本地路径项目，后续 run/snapshot 都从这里挂载。
-    return create_project(db, name=body.name, local_path=body.local_path, description=body.description)
+    try:
+        return create_project(db, name=body.name, local_path=body.local_path, description=body.description)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("", response_model=list[ProjectOut])
@@ -38,7 +41,8 @@ def create_snapshot_route(project_id: str, body: SnapshotCreateRequest, db: Sess
     try:
         return create_snapshot(db, project_id=project_id, root_path=body.root_path)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+        status_code = 404 if "project not found" in str(e) else 400
+        raise HTTPException(status_code=status_code, detail=str(e)) from e
 
 
 @router.get("/{project_id}/snapshots", response_model=list[ProjectSnapshotOut])
