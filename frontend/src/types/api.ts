@@ -1,0 +1,229 @@
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type JsonObject = Record<string, JsonValue>;
+
+export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export type RunStage =
+  | "preparing"
+  | "analyzing"
+  | "planning"
+  | "generating"
+  | "executing"
+  | "reflecting"
+  | "reexecuting"
+  | "summarizing";
+
+export type StepType =
+  | "plan"
+  | "tool_call"
+  | "observation"
+  | "generation"
+  | "reflection"
+  | "report"
+  | "system";
+
+export interface ProjectOut {
+  id: string;
+  name: string;
+  description: string | null;
+  source_type: string;
+  repo_url: string | null;
+  local_path: string;
+  default_branch: string | null;
+  language: string;
+  framework: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectSnapshotOut {
+  id: string;
+  project_id: string;
+  source_kind: string;
+  root_path: string;
+  content_hash: string | null;
+  created_at: string;
+}
+
+export interface TestPlanOut {
+  id: string;
+  project_id: string;
+  name: string;
+  target_scope: string[];
+  goal: string;
+  budget: JsonObject;
+  output_options: JsonObject;
+  default_strategy_version_id: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrategyVersionOut {
+  id: string;
+  name: string;
+  workflow_type: string;
+  model_provider: string;
+  model_name: string;
+  model_params: JsonObject;
+  allow_reflection: boolean;
+  max_tool_calls: number;
+  prompt_ref: string;
+  tool_schema_ref: string;
+}
+
+export interface TestRunOut {
+  id: string;
+  test_plan_id: string;
+  retry_of_run_id: string | null;
+  project_snapshot_id: string;
+  runtime_profile_id: string | null;
+  strategy_version_id: string;
+  runtime_snapshot: JsonObject;
+  strategy_snapshot: JsonObject;
+  status: RunStatus;
+  stage: RunStage | null;
+  started_at: string | null;
+  finished_at: string | null;
+  total_tokens: number;
+  total_cost: number | string | null;
+  tool_call_count: number;
+  pytest_summary: JsonObject;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface TraceStepOut {
+  id: string;
+  run_id: string;
+  attempt_id: string | null;
+  step_index: number;
+  step_type: StepType;
+  name: string;
+  input_summary: string | null;
+  output_summary: string | null;
+  tool_name: string | null;
+  payload: JsonObject | null;
+  tokens: number | null;
+  duration_ms: number | null;
+  status: "ok" | "error" | string;
+  error: string | null;
+  created_at: string;
+}
+
+export interface RunEventOut {
+  id: string;
+  run_id: string;
+  stage: RunStage | null;
+  event_type: string;
+  status_before: RunStatus | null;
+  status_after: RunStatus | null;
+  message: string | null;
+  created_at: string;
+}
+
+export interface RunAttemptOut {
+  id: string;
+  run_plan_item_id: string;
+  attempt_no: number;
+  kind: "initial" | "reflection" | string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  pytest_exit_code: number | null;
+  error_code: string | null;
+  reflection_reason: string | null;
+}
+
+export interface PytestCaseResultOut {
+  id: string;
+  attempt_id: string;
+  generated_test_case_id: string | null;
+  nodeid: string;
+  mapping_status: "matched" | "unmatched" | string;
+  status: "passed" | "failed" | "error" | "skipped" | string;
+  duration_ms: number;
+  failure_type: string | null;
+  failure_message: string | null;
+  traceback_hash: string | null;
+  stdout_excerpt: string | null;
+  stderr_excerpt: string | null;
+  is_collection_error: boolean;
+}
+
+export interface RunArtifactOut {
+  id: string;
+  run_id: string;
+  attempt_id: string | null;
+  runner_job_id: string | null;
+  artifact_type: string;
+  uri: string;
+  content_hash: string | null;
+  size_bytes: number | null;
+  metadata_json: JsonObject;
+  created_at: string;
+}
+
+export interface TestReportOut {
+  id: string;
+  run_id: string;
+  summary: string;
+  metrics: JsonObject;
+  risk_notes: string | null;
+  markdown_artifact_id: string | null;
+  json_artifact_id: string | null;
+  markdown_uri: string | null;
+  json_uri: string | null;
+  created_at: string;
+}
+
+export interface RunCreateRequest {
+  snapshot_id: string;
+  strategy_version_id?: string | null;
+  budget_override?: {
+    timeout_seconds?: number | null;
+    allow_reflection?: boolean | null;
+  };
+  output_options?: JsonObject;
+}
+
+export interface RunBundle {
+  run: TestRunOut;
+  traceSteps: TraceStepOut[];
+  events: RunEventOut[];
+  attempts: RunAttemptOut[];
+  pytestResults: PytestCaseResultOut[];
+  artifacts: RunArtifactOut[];
+  report: TestReportOut | null;
+  strategy: StrategyVersionOut | null;
+}
+
+export interface ComparisonRow {
+  strategy_id: string;
+  strategy_name: string;
+  repeats: number;
+  captured_per_repeat: number[];
+  captured_mean: number;
+  total_in_scope: number;
+  capture_rate_mean: number;
+  capture_rate_std: number;
+  false_positive_rate: number;
+  avg_tokens: number;
+  avg_tool_calls: number;
+  reflection_used: boolean;
+  cost_per_captured_bug: number | null;
+}
+
+export interface ComparisonResult {
+  rows: ComparisonRow[];
+  capture_matrix: Record<string, Record<string, boolean>>;
+}
