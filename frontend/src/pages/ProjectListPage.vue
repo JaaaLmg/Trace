@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
-import { ArrowRight, FolderGit2, Play, RefreshCw } from "@lucide/vue";
-import { createSnapshot, createTestPlan, listProjects, listSnapshots } from "../api/projects";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { ArrowRight, FolderGit2, Layers3, Play, Plus, RefreshCw, ServerCrash } from "@lucide/vue";
+import {
+  createProject,
+  createSnapshot,
+  createTestPlan,
+  listProjectTestPlans,
+  listProjectTestRuns,
+  listProjects,
+  listSnapshots
+} from "../api/projects";
 import { createRun } from "../api/runs";
 import { useI18n } from "../i18n";
-import { mockPlans, mockProjects } from "../mock/data";
-import type { ProjectOut } from "../types/api";
+import { mockPlans, mockProjects, mockSnapshots } from "../mock/data";
+import type { ProjectOut, ProjectSnapshotOut, TestPlanOut, TestRunOut } from "../types/api";
 import type { DataSource } from "../types/ui";
 
 const props = defineProps<{
@@ -16,63 +24,235 @@ const emit = defineEmits<{
   navigate: [hash: string];
 }>();
 
-const projects = ref<ProjectOut[]>([]);
-const loading = ref(false);
-const startingProjectId = ref<string | null>(null);
-const errorMessage = ref<string | null>(null);
 const { t } = useI18n();
 
-async function loadProjects() {
-  loading.value = true;
-  errorMessage.value = null;
-  try {
-    projects.value = props.dataSource === "mock" ? mockProjects : await listProjects();
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : t("projects.errorFallback");
-    projects.value = mockProjects;
-  } finally {
-    loading.value = false;
-  }
-}
+const projects = ref<ProjectOut[]>([]);
+const selectedProjectId = ref<string | null>(null);
+const selectedPlanId = ref<string | null>(null);
+const snapshots = ref<ProjectSnapshotOut[]>([]);
+const plans = ref<TestPlanOut[]>([]);
+const runs = ref<TestRunOut[]>([]);
+const loadingProjects = ref(false);
+const loadingDetails = ref(false);
+const creatingProject = ref(false);
+const creatingSnapshot = ref(false);
+const startingRun = ref(false);
+const errorMessage = ref<string | null>(null);
+
+const projectForm = reactive({
+  name: "",
+  localPath: "",
+  description: ""
+});
+
+const snapshotRoot = ref("");
+const runForm = reactive({
+  planName: "",
+  goal: "",
+  targetScope: ".",
+  timeoutSeconds: 120,
+  allowReflection: true,
+  strategyVersionId: "sv-react-v1",
+  snapshotId: ""
+});
+
+const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
+const selectedPlan = computed(() => plans.value.find((plan) => plan.id === selectedPlanId.value) ?? null);
+const latestRun = computed(() => runs.value[0] ?? null);
 
 function openMockRun() {
   emit("navigate", "#/runs/run-demo-react-001");
 }
 
-async function startProjectRun(project: ProjectOut) {
+function applyProjectDefaults(project: ProjectOut | null) {
+  snapshotRoot.value = project?.local_path ?? "";
+  runForm.planName = t("projects.planName");
+  runForm.goal = t("projects.planGoal");
+  runForm.targetScope = ".";
+  runForm.timeoutSeconds = 120;
+  runForm.allowReflection = true;
+  runForm.strategyVersionId = "sv-react-v1";
+}
+
+function planScopeText(plan: TestPlanOut): string {
+  return plan.target_scope.length > 0 ? plan.target_scope.join(", ") : t("common.none");
+}
+
+function planBudgetText(plan: TestPlanOut): string {
+  const timeout = plan.budget.timeout_seconds ?? t("common.unknown");
+  const reflection = plan.budget.allow_reflection ? t("common.yes") : t("common.no");
+  return `${t("projects.timeout")}: ${timeout} / ${t("projects.allowReflection")}: ${reflection}`;
+}
+
+function usePlan(plan: TestPlanOut) {
+  selectedPlanId.value = plan.id;
+  runForm.planName = plan.name;
+  runForm.goal = plan.goal;
+  runForm.targetScope = planScopeText(plan) === t("common.none") ? "." : planScopeText(plan);
+  runForm.timeoutSeconds = Number(plan.budget.timeout_seconds ?? 120);
+  runForm.allowReflection = Boolean(plan.budget.allow_reflection ?? false);
+  runForm.strategyVersionId = plan.default_strategy_version_id ?? "sv-react-v1";
+}
+
+async function loadProjects() {
+  loadingProjects.value = true;
+  errorMessage.value = null;
+  try {
+    projects.value = props.dataSource === "mock" ? mockProjects : await listProjects();
+    if (!selectedProjectId.value || !projects.value.some((project) => project.id === selectedProjectId.value)) {
+      selectedProjectId.value = projects.value[0]?.id ?? null;
+    }
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("projects.errorFallback");
+    projects.value = props.dataSource === "mock" ? mockProjects : [];
+    selectedProjectId.value = projects.value[0]?.id ?? null;
+  } finally {
+    loadingProjects.value = false;
+  }
+}
+
+async function loadProjectDetails() {
+  const project = selectedProject.value;
+  if (!project) {
+    snapshots.value = [];
+    plans.value = [];
+    runs.value = [];
+    selectedPlanId.value = null;
+    applyProjectDefaults(null);
+    return;
+  }
+
+  applyProjectDefaults(project);
+  loadingDetails.value = true;
+  errorMessage.value = null;
+  try {
+    if (props.dataSource === "mock") {
+      snapshots.value = mockSnapshots.filter((snapshot) => snapshot.project_id === project.id);
+      plans.value = mockPlans.filter((plan) => plan.project_id === project.id);
+      runs.value = [];
+      runForm.snapshotId = snapshots.value[0]?.id ?? "";
+      selectedPlanId.value = plans.value[0]?.id ?? null;
+      return;
+    }
+    const [nextSnapshots, nextPlans, nextRuns] = await Promise.all([
+      listSnapshots(project.id),
+      listProjectTestPlans(project.id),
+      listProjectTestRuns(project.id)
+    ]);
+    snapshots.value = nextSnapshots;
+    plans.value = nextPlans;
+    runs.value = nextRuns;
+    selectedPlanId.value = nextPlans[0]?.id ?? null;
+    runForm.snapshotId =
+      nextSnapshots.find((snapshot) => snapshot.root_path === project.local_path)?.id ?? nextSnapshots[0]?.id ?? "";
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("projects.detailsFailed");
+    snapshots.value = [];
+    plans.value = [];
+    runs.value = [];
+    selectedPlanId.value = null;
+  } finally {
+    loadingDetails.value = false;
+  }
+}
+
+async function submitProject() {
+  if (props.dataSource !== "api") {
+    return;
+  }
+  creatingProject.value = true;
+  errorMessage.value = null;
+  try {
+    const project = await createProject({
+      name: projectForm.name.trim(),
+      local_path: projectForm.localPath.trim(),
+      description: projectForm.description.trim() || null
+    });
+    projectForm.name = "";
+    projectForm.localPath = "";
+    projectForm.description = "";
+    await loadProjects();
+    selectedProjectId.value = project.id;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("projects.createFailed");
+  } finally {
+    creatingProject.value = false;
+  }
+}
+
+async function submitSnapshot() {
+  const project = selectedProject.value;
+  if (!project || props.dataSource !== "api") {
+    return;
+  }
+  creatingSnapshot.value = true;
+  errorMessage.value = null;
+  try {
+    const snapshot = await createSnapshot(project.id, { root_path: snapshotRoot.value.trim() || project.local_path });
+    await loadProjectDetails();
+    runForm.snapshotId = snapshot.id;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("projects.snapshotFailed");
+  } finally {
+    creatingSnapshot.value = false;
+  }
+}
+
+function targetScopeList(): string[] {
+  return runForm.targetScope
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function startRun() {
+  const project = selectedProject.value;
+  if (!project) {
+    return;
+  }
   if (props.dataSource !== "api") {
     openMockRun();
     return;
   }
-
-  startingProjectId.value = project.id;
+  startingRun.value = true;
   errorMessage.value = null;
   try {
-    const snapshots = await listSnapshots(project.id);
-    const snapshot =
-      snapshots.find((item) => item.root_path === project.local_path) ??
-      (await createSnapshot(project.id, { root_path: project.local_path }));
+    let snapshotId = runForm.snapshotId;
+    if (!snapshotId) {
+      const snapshot = await createSnapshot(project.id, { root_path: snapshotRoot.value.trim() || project.local_path });
+      snapshotId = snapshot.id;
+    }
     const plan = await createTestPlan({
       project_id: project.id,
-      name: t("projects.planName"),
-      target_scope: ["."],
-      goal: t("projects.planGoal"),
-      budget: { timeout_seconds: 120, allow_reflection: true },
+      name: runForm.planName.trim() || t("projects.planName"),
+      target_scope: targetScopeList(),
+      goal: runForm.goal.trim() || t("projects.planGoal"),
+      budget: {
+        timeout_seconds: Number(runForm.timeoutSeconds) || 120,
+        allow_reflection: runForm.allowReflection
+      },
       output_options: { save_full_trace: true },
-      default_strategy_version_id: "sv-react-v1"
+      default_strategy_version_id: runForm.strategyVersionId || "sv-react-v1"
     });
     const run = await createRun(plan.id, {
-      snapshot_id: snapshot.id,
+      snapshot_id: snapshotId,
       strategy_version_id: plan.default_strategy_version_id,
-      budget_override: { timeout_seconds: 120, allow_reflection: true },
+      budget_override: {
+        timeout_seconds: Number(runForm.timeoutSeconds) || 120,
+        allow_reflection: runForm.allowReflection
+      },
       output_options: { save_full_trace: true }
     });
     emit("navigate", `#/runs/${run.id}`);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : t("run.creationFailed");
   } finally {
-    startingProjectId.value = null;
+    startingRun.value = false;
   }
+}
+
+function selectProject(projectId: string) {
+  selectedProjectId.value = projectId;
 }
 
 onMounted(() => {
@@ -82,9 +262,14 @@ onMounted(() => {
 watch(
   () => props.dataSource,
   () => {
+    selectedProjectId.value = null;
     void loadProjects();
   }
 );
+
+watch(selectedProjectId, () => {
+  void loadProjectDetails();
+});
 </script>
 
 <template>
@@ -108,55 +293,267 @@ watch(
     </section>
 
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
-    <p v-if="props.dataSource === 'api'" class="mode-note">{{ t("projects.apiHint") }}</p>
-    <p v-if="loading" class="mode-note">{{ t("projects.loading") }}</p>
 
-    <section class="project-grid">
-      <article v-for="project in projects" :key="project.id" class="project-card">
-        <div class="project-icon">
-          <FolderGit2 :size="22" aria-hidden="true" />
-        </div>
-        <div class="project-main">
-          <p class="eyebrow">{{ project.framework }} / {{ project.language }}</p>
-          <h3>{{ project.name }}</h3>
-          <p>{{ project.description || t("projects.noDescription") }}</p>
-          <code>{{ project.local_path }}</code>
+    <section v-if="props.dataSource === 'api'" class="create-project subtle-panel">
+      <div>
+        <p class="eyebrow">{{ t("projects.createProject") }}</p>
+        <h2>{{ t("projects.registerProject") }}</h2>
+      </div>
+      <form class="project-form" @submit.prevent="submitProject">
+        <label>
+          <span>{{ t("projects.projectName") }}</span>
+          <input v-model="projectForm.name" required type="text" :placeholder="t('projects.projectNamePlaceholder')" />
+        </label>
+        <label>
+          <span>{{ t("projects.localPath") }}</span>
+          <input v-model="projectForm.localPath" required type="text" :placeholder="t('projects.localPathPlaceholder')" />
+        </label>
+        <label>
+          <span>{{ t("projects.description") }}</span>
+          <input v-model="projectForm.description" type="text" :placeholder="t('projects.descriptionPlaceholder')" />
+        </label>
+        <button class="primary-action" type="submit" :disabled="creatingProject">
+          <Plus :size="17" aria-hidden="true" />
+          {{ creatingProject ? t("projects.creating") : t("projects.createProject") }}
+        </button>
+      </form>
+    </section>
+
+    <section class="workspace-grid">
+      <aside class="project-list subtle-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">{{ t("projects.availableProjects") }}</p>
+            <h2>{{ projects.length }}</h2>
+          </div>
+          <RefreshCw v-if="loadingProjects" :size="18" aria-hidden="true" />
         </div>
         <button
-          class="primary-action run-action"
+          v-for="project in projects"
+          :key="project.id"
           type="button"
-          :title="t('projects.startRun')"
-          :disabled="startingProjectId === project.id"
-          @click="startProjectRun(project)"
+          class="project-row"
+          :class="{ selected: project.id === selectedProjectId }"
+          @click="selectProject(project.id)"
         >
-          <RefreshCw v-if="startingProjectId === project.id" :size="17" aria-hidden="true" />
-          <Play v-else-if="props.dataSource === 'api'" :size="17" aria-hidden="true" />
-          <ArrowRight v-else :size="17" aria-hidden="true" />
-          <span>{{ startingProjectId === project.id ? t("projects.running") : t("projects.startRun") }}</span>
+          <FolderGit2 :size="18" aria-hidden="true" />
+          <span>
+            <strong>{{ project.name }}</strong>
+            <small>{{ project.local_path }}</small>
+          </span>
         </button>
-      </article>
-    </section>
+        <div v-if="!loadingProjects && projects.length === 0" class="empty-state">
+          <ServerCrash :size="22" aria-hidden="true" />
+          <h3>{{ t("projects.emptyTitle") }}</h3>
+          <p>{{ t("projects.emptyBody") }}</p>
+        </div>
+      </aside>
 
-    <section v-if="!loading && projects.length === 0" class="empty-state subtle-panel">
-      <h2>{{ t("projects.emptyTitle") }}</h2>
-      <p>{{ t("projects.emptyBody") }}</p>
-    </section>
+      <section class="project-detail">
+        <template v-if="selectedProject">
+          <article class="project-overview subtle-panel">
+            <div>
+              <p class="eyebrow">{{ selectedProject.framework }} / {{ selectedProject.language }}</p>
+              <h2>{{ selectedProject.name }}</h2>
+              <p>{{ selectedProject.description || t("projects.noDescription") }}</p>
+              <code>{{ selectedProject.local_path }}</code>
+            </div>
+            <button class="primary-action" type="button" :disabled="startingRun" @click="startRun">
+              <Play :size="17" aria-hidden="true" />
+              {{ startingRun ? t("projects.running") : t("projects.startRun") }}
+            </button>
+          </article>
 
-    <section v-if="props.dataSource === 'mock'" class="plan-strip">
-      <p class="eyebrow">V1 TEST PLAN</p>
-      <h2>{{ mockPlans[0].name }}</h2>
-      <p>{{ mockPlans[0].goal }}</p>
-      <code>{{ t("projects.planScope") }}: {{ mockPlans[0].target_scope.join(", ") }}</code>
+          <section class="management-grid">
+            <article class="subtle-panel management-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">{{ t("projects.snapshots") }}</p>
+                  <h3>{{ snapshots.length }}</h3>
+                </div>
+                <Layers3 :size="18" aria-hidden="true" />
+              </div>
+              <form v-if="props.dataSource === 'api'" class="stack-form" @submit.prevent="submitSnapshot">
+                <label>
+                  <span>{{ t("projects.snapshotRoot") }}</span>
+                  <input v-model="snapshotRoot" required type="text" />
+                </label>
+                <button class="text-button" type="submit" :disabled="creatingSnapshot">
+                  <Plus :size="15" aria-hidden="true" />
+                  {{ creatingSnapshot ? t("projects.creating") : t("projects.createSnapshot") }}
+                </button>
+              </form>
+              <div class="compact-list">
+                <label v-for="snapshot in snapshots" :key="snapshot.id" class="choice-row">
+                  <input v-model="runForm.snapshotId" type="radio" :value="snapshot.id" />
+                  <span>
+                    <strong>{{ snapshot.id }}</strong>
+                    <small>{{ snapshot.root_path }}</small>
+                  </span>
+                </label>
+                <p v-if="snapshots.length === 0" class="muted-note">{{ t("projects.noSnapshots") }}</p>
+              </div>
+            </article>
+
+            <article class="subtle-panel management-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">{{ t("projects.newPlanRun") }}</p>
+                  <h3>{{ t("projects.runConfig") }}</h3>
+                </div>
+              </div>
+              <form class="stack-form" @submit.prevent="startRun">
+                <label>
+                  <span>{{ t("projects.planNameLabel") }}</span>
+                  <input v-model="runForm.planName" type="text" />
+                </label>
+                <label>
+                  <span>{{ t("projects.goal") }}</span>
+                  <textarea v-model="runForm.goal" rows="3"></textarea>
+                </label>
+                <label>
+                  <span>{{ t("projects.planScope") }}</span>
+                  <input v-model="runForm.targetScope" type="text" />
+                </label>
+                <div class="form-row">
+                  <label>
+                    <span>{{ t("projects.timeout") }}</span>
+                    <input v-model.number="runForm.timeoutSeconds" min="1" type="number" />
+                  </label>
+                  <label>
+                    <span>{{ t("projects.strategy") }}</span>
+                    <select v-model="runForm.strategyVersionId">
+                      <option value="sv-react-v1">ReAct+Reflection v1</option>
+                      <option value="sv-plan-v1">Plan-and-Execute v1</option>
+                      <option value="sv-direct-v1">Direct v1</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="checkbox-row">
+                  <input v-model="runForm.allowReflection" type="checkbox" />
+                  <span>{{ t("projects.allowReflection") }}</span>
+                </label>
+                <button class="primary-action" type="submit" :disabled="startingRun">
+                  <Play :size="17" aria-hidden="true" />
+                  {{ startingRun ? t("projects.running") : t("projects.startRun") }}
+                </button>
+              </form>
+            </article>
+          </section>
+
+          <section class="history-grid">
+            <article class="subtle-panel history-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">{{ t("projects.plans") }}</p>
+                  <h3>{{ plans.length }}</h3>
+                </div>
+              </div>
+              <div class="compact-list plan-list">
+                <button
+                  v-for="plan in plans"
+                  :key="plan.id"
+                  class="plan-row"
+                  :class="{ selected: plan.id === selectedPlanId }"
+                  type="button"
+                  @click="selectedPlanId = plan.id"
+                >
+                  <span>
+                    <strong>{{ plan.name }}</strong>
+                    <small>{{ plan.goal }}</small>
+                  </span>
+                  <span class="plan-meta">
+                    <small>{{ t("projects.planScope") }}: {{ planScopeText(plan) }}</small>
+                    <small>{{ planBudgetText(plan) }}</small>
+                  </span>
+                </button>
+                <p v-if="plans.length === 0" class="muted-note">{{ t("projects.noPlans") }}</p>
+              </div>
+              <div v-if="selectedPlan" class="plan-detail">
+                <div class="panel-head">
+                  <div>
+                    <p class="eyebrow">{{ t("projects.planDetail") }}</p>
+                    <h3>{{ selectedPlan.name }}</h3>
+                  </div>
+                  <button class="text-button" type="button" @click="usePlan(selectedPlan)">
+                    <Play :size="15" aria-hidden="true" />
+                    {{ t("projects.usePlan") }}
+                  </button>
+                </div>
+                <dl>
+                  <div>
+                    <dt>{{ t("projects.goal") }}</dt>
+                    <dd>{{ selectedPlan.goal }}</dd>
+                  </div>
+                  <div>
+                    <dt>{{ t("projects.planScope") }}</dt>
+                    <dd>{{ planScopeText(selectedPlan) }}</dd>
+                  </div>
+                  <div>
+                    <dt>{{ t("projects.strategy") }}</dt>
+                    <dd>{{ selectedPlan.default_strategy_version_id ?? t("common.none") }}</dd>
+                  </div>
+                  <div>
+                    <dt>{{ t("projects.budget") }}</dt>
+                    <dd>{{ planBudgetText(selectedPlan) }}</dd>
+                  </div>
+                  <div>
+                    <dt>{{ t("projects.created") }}</dt>
+                    <dd>{{ new Date(selectedPlan.created_at).toLocaleString() }}</dd>
+                  </div>
+                </dl>
+              </div>
+            </article>
+
+            <article class="subtle-panel history-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">{{ t("projects.runs") }}</p>
+                  <h3>{{ runs.length }}</h3>
+                </div>
+                <button v-if="latestRun" class="text-button" type="button" @click="emit('navigate', `#/runs/${latestRun.id}`)">
+                  <ArrowRight :size="15" aria-hidden="true" />
+                  {{ t("projects.openLatest") }}
+                </button>
+              </div>
+              <div class="compact-list">
+                <button v-for="run in runs" :key="run.id" class="run-row" type="button" @click="emit('navigate', `#/runs/${run.id}`)">
+                  <span>
+                    <strong>{{ run.status }}</strong>
+                    <small>{{ run.id }}</small>
+                  </span>
+                  <ArrowRight :size="15" aria-hidden="true" />
+                </button>
+                <p v-if="runs.length === 0" class="muted-note">{{ t("projects.noRuns") }}</p>
+              </div>
+            </article>
+          </section>
+        </template>
+
+        <section v-else class="empty-state subtle-panel">
+          <ServerCrash :size="24" aria-hidden="true" />
+          <h2>{{ t("projects.emptyTitle") }}</h2>
+          <p>{{ t("projects.emptyBody") }}</p>
+        </section>
+
+        <p v-if="loadingDetails" class="mode-note">{{ t("projects.loadingDetails") }}</p>
+      </section>
     </section>
   </main>
 </template>
 
 <style scoped>
+.project-head,
+.create-project,
+.project-overview,
+.panel-head {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
 .project-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 24px;
-  align-items: end;
   padding: 18px 0 24px;
   border-bottom: 1px solid var(--border);
 }
@@ -170,11 +567,11 @@ watch(
   font-family: var(--font-serif);
 }
 
-.head-actions {
+.head-actions,
+.form-row {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .error-banner {
@@ -186,103 +583,221 @@ watch(
   color: var(--failed);
 }
 
-.mode-note {
-  margin: 14px 0 0;
+.create-project {
+  margin-top: 18px;
+  padding: 18px;
+}
+
+.project-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(260px, 1.4fr) minmax(160px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  width: min(980px, 100%);
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.project-list,
+.project-overview,
+.management-panel,
+.history-panel,
+.empty-state {
+  padding: 18px;
+}
+
+.project-list {
+  align-self: start;
+}
+
+.project-row,
+.run-row,
+.plan-row {
+  width: 100%;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-top: 10px;
+  padding: 10px;
+  text-align: left;
+}
+
+.project-row.selected {
+  border-color: var(--ink);
+  box-shadow: inset 3px 0 0 var(--ink);
+}
+
+.plan-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.plan-row.selected {
+  border-color: var(--tool);
+  background: rgba(49, 95, 125, 0.08);
+  box-shadow: inset 3px 0 0 var(--tool);
+}
+
+.plan-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.project-row span,
+.run-row span,
+.choice-row span,
+.data-row {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+small {
+  overflow-wrap: anywhere;
   color: var(--muted);
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
-.project-grid {
+.project-detail {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 22px;
-}
-
-.project-card {
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
-  gap: 14px;
-  align-items: start;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: var(--shadow);
-}
-
-.project-icon {
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--panel-soft);
-  color: var(--tool);
-}
-
-.project-main {
+  gap: 18px;
   min-width: 0;
 }
 
-.project-main h3 {
-  margin: 6px 0 8px;
-}
-
-.project-main code {
+.project-overview code {
   display: inline-block;
   max-width: 100%;
   margin-top: 10px;
   overflow: auto;
 }
 
-.plan-strip {
-  margin-top: 22px;
-  padding: 20px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgba(246, 243, 238, 0.76);
+.management-grid,
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
 }
 
-.plan-strip h2 {
-  margin: 6px 0 8px;
-}
-
-.plan-strip code {
-  display: inline-block;
-  margin-top: 10px;
-}
-
+.stack-form,
+.compact-list,
 .empty-state {
   display: grid;
-  gap: 8px;
-  margin-top: 22px;
-  padding: 22px;
+  gap: 10px;
 }
 
-.run-action {
-  min-width: 126px;
-  white-space: nowrap;
+.stack-form {
+  margin-top: 14px;
 }
 
-@media (max-width: 860px) {
-  .project-head,
-  .project-grid {
+label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 8px 9px;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.checkbox-row,
+.choice-row {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+}
+
+.checkbox-row input,
+.choice-row input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.data-row,
+.choice-row {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.data-row code {
+  justify-self: start;
+}
+
+.plan-detail {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.plan-detail dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.plan-detail dl > div {
+  display: grid;
+  gap: 3px;
+}
+
+.plan-detail dt {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.plan-detail dd {
+  margin: 0;
+  color: var(--muted-strong);
+  overflow-wrap: anywhere;
+}
+
+.mode-note,
+.muted-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 1080px) {
+  .workspace-grid,
+  .management-grid,
+  .history-grid,
+  .project-form {
     grid-template-columns: 1fr;
   }
+}
 
-  .head-actions {
-    justify-content: flex-start;
-  }
-
-  .project-card {
-    grid-template-columns: 44px minmax(0, 1fr);
-  }
-
-  .run-action {
-    grid-column: 2;
-    justify-self: start;
+@media (max-width: 760px) {
+  .project-head,
+  .create-project,
+  .project-overview,
+  .panel-head {
+    display: grid;
   }
 }
 </style>

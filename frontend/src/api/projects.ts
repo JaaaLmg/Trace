@@ -5,7 +5,8 @@ import type {
   ProjectSnapshotOut,
   SnapshotCreateRequest,
   TestPlanCreateRequest,
-  TestPlanOut
+  TestPlanOut,
+  TestRunOut
 } from "../types/api";
 
 export function listProjects(): Promise<ProjectOut[]> {
@@ -25,6 +26,14 @@ export function getProject(projectId: string): Promise<ProjectOut> {
 
 export function listSnapshots(projectId: string): Promise<ProjectSnapshotOut[]> {
   return requestJson<ProjectSnapshotOut[]>(`/api/v1/projects/${projectId}/snapshots`);
+}
+
+export function listProjectTestPlans(projectId: string): Promise<TestPlanOut[]> {
+  return requestJson<TestPlanOut[]>(`/api/v1/projects/${projectId}/test-plans`);
+}
+
+export function listProjectTestRuns(projectId: string): Promise<TestRunOut[]> {
+  return requestJson<TestRunOut[]>(`/api/v1/projects/${projectId}/test-runs`);
 }
 
 export function createSnapshot(projectId: string, body: SnapshotCreateRequest): Promise<ProjectSnapshotOut> {

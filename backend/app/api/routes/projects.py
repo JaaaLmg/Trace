@@ -4,8 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.schemas.api_plan import TestPlanOut
 from app.schemas.api_project import ProjectCreateRequest, ProjectOut, ProjectSnapshotOut, SnapshotCreateRequest
+from app.schemas.api_run import TestRunOut
 from app.services.projects import create_project, create_snapshot, get_project_or_404, list_projects, list_snapshots
+from app.services.test_plans import list_project_test_plans
+from app.services.test_runs import list_project_test_runs
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
@@ -49,3 +53,19 @@ def create_snapshot_route(project_id: str, body: SnapshotCreateRequest, db: Sess
 def list_snapshots_route(project_id: str, db: Session = Depends(get_db)):
     # 列出项目已有快照，便于前端在创建 run 时选择代码版本/根目录。
     return list_snapshots(db, project_id)
+
+
+@router.get("/{project_id}/test-plans", response_model=list[TestPlanOut])
+def list_project_test_plans_route(project_id: str, db: Session = Depends(get_db)):
+    try:
+        return list_project_test_plans(db, project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/{project_id}/test-runs", response_model=list[TestRunOut])
+def list_project_test_runs_route(project_id: str, db: Session = Depends(get_db)):
+    try:
+        return list_project_test_runs(db, project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e

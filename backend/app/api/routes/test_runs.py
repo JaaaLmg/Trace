@@ -26,9 +26,17 @@ from app.schemas.api_run import (
     TestRunOut,
     TraceStepOut,
 )
-from app.services.test_runs import cancel_run, create_run, enqueue_run, retry_run_async
+from app.services.test_runs import cancel_run, create_run, enqueue_run, list_plan_test_runs, retry_run_async
 
 router = APIRouter(tags=["test-runs"])
+
+
+@router.get("/api/v1/test-plans/{plan_id}/runs", response_model=list[TestRunOut])
+def list_plan_runs_route(plan_id: str, db: Session = Depends(get_db)):
+    try:
+        return list_plan_test_runs(db, plan_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/api/v1/test-plans/{plan_id}/runs", response_model=TestRunOut)

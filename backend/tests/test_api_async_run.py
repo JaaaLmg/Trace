@@ -183,6 +183,60 @@ def test_run_rejects_snapshot_from_another_project(monkeypatch, tmp_path, clean_
         assert "snapshot does not belong" in run.text
 
 
+def test_project_management_lists_snapshots_plans_and_runs(monkeypatch, tmp_path, clean_db):
+    calls = []
+
+    class DummyTask:
+        def delay(self, run_id, budget_override):
+            calls.append((run_id, budget_override))
+
+    import app.workers.tasks as task_module
+
+    monkeypatch.setattr(task_module, "execute_run_task", DummyTask())
+
+    app = create_app()
+    with TestClient(app) as client:
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project = client.post(
+            "/api/v1/projects",
+            json={"name": "managed-project", "local_path": str(project_root)},
+        ).json()
+        snapshot = client.post(f"/api/v1/projects/{project['id']}/snapshots", json={}).json()
+        direct = client.get("/api/v1/strategy-versions/sv-direct-v1").json()
+        plan = client.post(
+            "/api/v1/test-plans",
+            json={
+                "project_id": project["id"],
+                "name": "managed-plan",
+                "target_scope": ["."],
+                "goal": "test managed project",
+                "budget": {"timeout_seconds": 60, "allow_reflection": False},
+                "default_strategy_version_id": direct["id"],
+            },
+        ).json()
+        run = client.post(
+            f"/api/v1/test-plans/{plan['id']}/runs",
+            json={"snapshot_id": snapshot["id"]},
+        ).json()
+
+        snapshots = client.get(f"/api/v1/projects/{project['id']}/snapshots")
+        assert snapshots.status_code == 200
+        assert [item["id"] for item in snapshots.json()] == [snapshot["id"]]
+
+        plans = client.get(f"/api/v1/projects/{project['id']}/test-plans")
+        assert plans.status_code == 200
+        assert [item["id"] for item in plans.json()] == [plan["id"]]
+
+        project_runs = client.get(f"/api/v1/projects/{project['id']}/test-runs")
+        assert project_runs.status_code == 200
+        assert [item["id"] for item in project_runs.json()] == [run["id"]]
+
+        plan_runs = client.get(f"/api/v1/test-plans/{plan['id']}/runs")
+        assert plan_runs.status_code == 200
+        assert [item["id"] for item in plan_runs.json()] == [run["id"]]
+
+
 def test_async_run_executes_with_celery_eager(monkeypatch, tmp_path, clean_db):
     monkeypatch.setattr(celery_app.conf, "task_always_eager", True)
     monkeypatch.setattr(celery_app.conf, "task_eager_propagates", True)

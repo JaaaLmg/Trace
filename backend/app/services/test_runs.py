@@ -16,7 +16,7 @@ from app.recorders.sqlalchemy_recorder import SQLAlchemyRunRecorder
 from app.repositories.projects import get_project
 from app.repositories.strategies import get_strategy_version
 from app.repositories.test_plans import get_test_plan
-from app.repositories.test_runs import get_test_run
+from app.repositories.test_runs import get_test_run, list_test_runs_for_plan, list_test_runs_for_project
 from app.schemas.records import TestRunRecord
 from app.schemas.strategy import StrategyVersionSpec
 from app.services.path_policy import ensure_generated_tests_dir, validate_snapshot_root
@@ -175,6 +175,18 @@ def enqueue_run(
     execute_run_task.delay(run.id, budget_override or {})
     session.refresh(run)
     return run
+
+
+def list_project_test_runs(session: Session, project_id: str) -> list[TestRun]:
+    if get_project(session, project_id) is None:
+        raise ValueError("project not found")
+    return list_test_runs_for_project(session, project_id)
+
+
+def list_plan_test_runs(session: Session, plan_id: str) -> list[TestRun]:
+    if get_test_plan(session, plan_id) is None:
+        raise ValueError("test plan not found")
+    return list_test_runs_for_plan(session, plan_id)
 
 
 def execute_run_sync(

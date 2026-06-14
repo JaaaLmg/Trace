@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.artifacts import PytestCaseResult, RunArtifact, TestReport
+from app.models.test_plan import TestPlan
 from app.models.test_run import RunAttempt, RunPlanItem, TestRun
 from app.models.trace import RunEvent, TraceStep
 
@@ -17,6 +18,21 @@ def add_test_run(session: Session, run: TestRun) -> TestRun:
 
 def get_test_run(session: Session, run_id: str) -> TestRun | None:
     return session.get(TestRun, run_id)
+
+
+def list_test_runs_for_plan(session: Session, plan_id: str) -> list[TestRun]:
+    stmt = select(TestRun).where(TestRun.test_plan_id == plan_id).order_by(TestRun.created_at.desc())
+    return list(session.scalars(stmt))
+
+
+def list_test_runs_for_project(session: Session, project_id: str) -> list[TestRun]:
+    stmt = (
+        select(TestRun)
+        .join(TestPlan, TestRun.test_plan_id == TestPlan.id)
+        .where(TestPlan.project_id == project_id)
+        .order_by(TestRun.created_at.desc())
+    )
+    return list(session.scalars(stmt))
 
 
 def list_trace_steps(session: Session, run_id: str) -> list[TraceStep]:

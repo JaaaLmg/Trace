@@ -4,7 +4,7 @@ from app.core.ids import new_id
 from app.models.test_plan import TestPlan
 from app.repositories.projects import get_project
 from app.repositories.strategies import get_strategy_version
-from app.repositories.test_plans import add_test_plan, get_test_plan
+from app.repositories.test_plans import add_test_plan, get_test_plan, list_test_plans_for_project
 from sqlalchemy.orm import Session
 
 
@@ -44,3 +44,9 @@ def get_test_plan_or_404(session: Session, plan_id: str) -> TestPlan:
     if plan is None:
         raise ValueError("test plan not found")
     return plan
+
+
+def list_project_test_plans(session: Session, project_id: str) -> list[TestPlan]:
+    if get_project(session, project_id) is None:
+        raise ValueError("project not found")
+    return list_test_plans_for_project(session, project_id)
