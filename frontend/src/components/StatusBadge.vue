@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { AlertTriangle, CheckCircle2, Circle, Clock3, Loader2, XCircle } from "@lucide/vue";
+import { useI18n } from "../i18n";
 
 const props = defineProps<{
   value: string | null | undefined;
   tone?: "status" | "step";
   pulse?: boolean;
 }>();
+
+const { t } = useI18n();
 
 function normalized(value: string | null | undefined): string {
   return (value ?? "unknown").toLowerCase();
@@ -33,26 +36,8 @@ function badgeClass(value: string | null | undefined): string {
 
 function readable(value: string | null | undefined): string {
   const status = normalized(value);
-  const labels: Record<string, string> = {
-    completed: "completed",
-    passed: "passed",
-    failed: "failed",
-    error: "error",
-    queued: "queued",
-    running: "running",
-    cancelled: "cancelled",
-    skipped: "skipped",
-    matched: "mapped",
-    unmatched: "unmatched",
-    tool_call: "tool_call",
-    observation: "observation",
-    generation: "generation",
-    reflection: "reflection",
-    system: "system",
-    report: "report",
-    ok: "ok"
-  };
-  return labels[status] ?? status;
+  const label = t(`status.${status}`);
+  return label === `status.${status}` ? status : label;
 }
 
 const iconSize = 14;

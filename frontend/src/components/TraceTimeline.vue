@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useI18n } from "../i18n";
 import type { TraceStepOut } from "../types/api";
 import StatusBadge from "./StatusBadge.vue";
 
@@ -12,6 +13,7 @@ const emit = defineEmits<{
   select: [step: TraceStepOut];
 }>();
 
+const { t } = useI18n();
 const sortedSteps = computed(() => [...props.steps].sort((a, b) => a.step_index - b.step_index));
 
 function stepTone(step: TraceStepOut): string {
@@ -26,12 +28,9 @@ function stepTone(step: TraceStepOut): string {
   <section class="timeline-pane" aria-label="Trace Timeline">
     <div class="timeline-head">
       <div>
-        <p class="eyebrow">过程轨迹</p>
-        <h2>Agent Trace Timeline</h2>
+        <p class="eyebrow">{{ t("trace.eyebrow") }}</p>
+        <h2>{{ t("trace.title") }}</h2>
       </div>
-      <p class="timeline-note">
-        按 <code>step_index</code> 展示真实顺序。pytest 失败保留证据，不等于系统 run failed。
-      </p>
     </div>
 
     <div class="timeline-list">
@@ -50,7 +49,7 @@ function stepTone(step: TraceStepOut): string {
             <strong>{{ step.name }}</strong>
           </span>
           <span class="step-summary">
-            {{ step.output_summary || step.input_summary || "No summary recorded." }}
+            {{ step.output_summary || step.input_summary || t("trace.emptySummary") }}
           </span>
         </span>
         <span class="step-meta">

@@ -31,6 +31,20 @@ async function readDetail(response: Response): Promise<unknown> {
   }
 }
 
+function detailMessage(detail: unknown): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (detail && typeof detail === "object" && "detail" in detail) {
+    const value = (detail as { detail?: unknown }).detail;
+    if (typeof value === "string") {
+      return value;
+    }
+    return JSON.stringify(value);
+  }
+  return "";
+}
+
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(endpoint(path), {
     headers: {
@@ -42,7 +56,8 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
 
   if (!response.ok) {
     const detail = await readDetail(response);
-    throw new ApiError(`Request failed: ${response.status}`, response.status, detail);
+    const suffix = detailMessage(detail);
+    throw new ApiError(`Request failed: ${response.status}${suffix ? ` - ${suffix}` : ""}`, response.status, detail);
   }
 
   if (response.status === 204) {

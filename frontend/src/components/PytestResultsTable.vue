@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Search } from "@lucide/vue";
+import { useI18n } from "../i18n";
 import type { PytestCaseResultOut } from "../types/api";
 import StatusBadge from "./StatusBadge.vue";
 
@@ -11,6 +12,7 @@ const props = defineProps<{
 const selectedStatus = ref("all");
 const query = ref("");
 const expandedId = ref<string | null>(null);
+const { t } = useI18n();
 
 const statuses = ["all", "passed", "failed", "error", "skipped", "unmatched"];
 
@@ -32,9 +34,9 @@ const filteredResults = computed(() => {
     <div class="pytest-toolbar">
       <div class="search-box">
         <Search :size="16" aria-hidden="true" />
-        <input v-model="query" type="search" placeholder="Search nodeid" />
+        <input v-model="query" type="search" :placeholder="t('pytest.search')" />
       </div>
-      <div class="segmented" aria-label="Status filter">
+      <div class="segmented" :aria-label="t('pytest.statusFilter')">
         <button
           v-for="status in statuses"
           :key="status"
@@ -51,12 +53,12 @@ const filteredResults = computed(() => {
       <table>
         <thead>
           <tr>
-            <th>nodeid</th>
-            <th>mapping</th>
-            <th>status</th>
-            <th>duration</th>
-            <th>failure_type</th>
-            <th>message</th>
+            <th>{{ t("pytest.nodeid") }}</th>
+            <th>{{ t("pytest.mapping") }}</th>
+            <th>{{ t("pytest.status") }}</th>
+            <th>{{ t("pytest.duration") }}</th>
+            <th>{{ t("pytest.failureType") }}</th>
+            <th>{{ t("pytest.message") }}</th>
           </tr>
         </thead>
         <tbody>
@@ -70,17 +72,17 @@ const filteredResults = computed(() => {
               <td><StatusBadge :value="result.mapping_status" /></td>
               <td><StatusBadge :value="result.status" /></td>
               <td class="mono">{{ result.duration_ms }}ms</td>
-              <td class="mono">{{ result.failure_type ?? "none" }}</td>
+              <td class="mono">{{ result.failure_type ?? t("common.none") }}</td>
               <td>{{ result.failure_message ?? "OK" }}</td>
             </tr>
             <tr v-if="expandedId === result.id" class="expanded-row">
               <td colspan="6">
                 <div class="failure-detail">
-                  <p><strong>traceback_hash:</strong> {{ result.traceback_hash ?? "none" }}</p>
+                  <p><strong>traceback_hash:</strong> {{ result.traceback_hash ?? t("common.none") }}</p>
                   <pre v-if="result.stdout_excerpt">{{ result.stdout_excerpt }}</pre>
                   <pre v-if="result.stderr_excerpt">{{ result.stderr_excerpt }}</pre>
                   <p v-if="!result.stdout_excerpt && !result.stderr_excerpt">
-                    没有 stdout/stderr excerpt。
+                    {{ t("pytest.noStreams") }}
                   </p>
                 </div>
               </td>

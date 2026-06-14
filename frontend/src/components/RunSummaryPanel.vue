@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { AlertTriangle, Database, GitBranch, Timer } from "@lucide/vue";
+import { useI18n } from "../i18n";
 import type { RunBundle } from "../types/api";
 import StageRail from "./StageRail.vue";
 import StatusBadge from "./StatusBadge.vue";
@@ -9,6 +10,7 @@ const props = defineProps<{
   bundle: RunBundle;
 }>();
 
+const { t } = useI18n();
 const run = computed(() => props.bundle.run);
 
 const pytest = computed(() => {
@@ -35,7 +37,7 @@ const strategyName = computed(() => {
 <template>
   <aside class="summary-rail" aria-label="Run Summary">
     <div class="summary-block">
-      <p class="summary-label">运行状态</p>
+      <p class="summary-label">{{ t("summary.status") }}</p>
       <div class="status-line">
         <StatusBadge :value="run.status" :pulse="run.status === 'running'" />
         <span v-if="run.stage" class="stage-pill">{{ run.stage }}</span>
@@ -47,7 +49,7 @@ const strategyName = computed(() => {
     </div>
 
     <div class="summary-block">
-      <p class="summary-label">策略</p>
+      <p class="summary-label">{{ t("summary.strategy") }}</p>
       <p class="summary-value">{{ strategyName }}</p>
       <p class="summary-muted">
         <GitBranch :size="13" aria-hidden="true" />
@@ -56,29 +58,29 @@ const strategyName = computed(() => {
     </div>
 
     <div class="summary-block">
-      <p class="summary-label">Pytest 摘要</p>
+      <p class="summary-label">{{ t("summary.pytest") }}</p>
       <div class="metric-grid">
         <div class="metric">
           <strong>{{ pytest.passed }}</strong>
-          <span>通过用例</span>
+          <span>{{ t("summary.passed") }}</span>
         </div>
         <div class="metric failed">
           <strong>{{ pytest.failed }}</strong>
-          <span>失败用例</span>
+          <span>{{ t("summary.failed") }}</span>
         </div>
         <div class="metric">
           <strong>{{ pytest.collected }}</strong>
-          <span>收集用例</span>
+          <span>{{ t("summary.collected") }}</span>
         </div>
         <div class="metric">
           <strong>{{ pytest.skipped }}</strong>
-          <span>跳过用例</span>
+          <span>{{ t("summary.skipped") }}</span>
         </div>
       </div>
     </div>
 
     <div class="summary-block">
-      <p class="summary-label">Agent 工作量</p>
+      <p class="summary-label">{{ t("summary.workload") }}</p>
       <div class="metric-grid">
         <div class="metric">
           <strong>{{ run.total_tokens }}</strong>
@@ -86,22 +88,22 @@ const strategyName = computed(() => {
         </div>
         <div class="metric">
           <strong>{{ run.tool_call_count }}</strong>
-          <span>工具调用</span>
+          <span>{{ t("summary.toolCalls") }}</span>
         </div>
       </div>
       <p class="summary-muted footnote">
         <Timer :size="13" aria-hidden="true" />
-        Mock token 不代表真实成本
+        {{ t("summary.costNote") }}
       </p>
     </div>
 
     <div class="summary-block">
-      <p class="summary-label">运行阶段</p>
+      <p class="summary-label">{{ t("summary.stages") }}</p>
       <StageRail :status="run.status" :stage="run.stage" :trace-steps="bundle.traceSteps" />
     </div>
 
     <div class="summary-block">
-      <p class="summary-label">复现锚点</p>
+      <p class="summary-label">{{ t("summary.anchor") }}</p>
       <p class="summary-muted">
         <Database :size="13" aria-hidden="true" />
         {{ run.project_snapshot_id }}

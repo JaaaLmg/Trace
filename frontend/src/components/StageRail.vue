@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { AlertCircle, Check, Circle } from "@lucide/vue";
+import { useI18n } from "../i18n";
 import type { RunStage, RunStatus, TraceStepOut } from "../types/api";
 
 const props = defineProps<{
@@ -20,16 +21,7 @@ const stages: RunStage[] = [
   "summarizing"
 ];
 
-const stageLabels: Record<RunStage, string> = {
-  preparing: "preparing",
-  analyzing: "analyzing",
-  planning: "planning",
-  generating: "generating",
-  executing: "executing",
-  reflecting: "reflecting",
-  reexecuting: "reexecuting",
-  summarizing: "summarizing"
-};
+const { t } = useI18n();
 
 const stageCounts = computed(() => {
   const counts = new Map<string, number>();
@@ -66,7 +58,7 @@ function itemState(stage: RunStage): "done" | "current" | "failed" | "idle" {
         <AlertCircle v-else-if="itemState(stageName) === 'failed'" :size="11" aria-hidden="true" />
         <Circle v-else :size="9" aria-hidden="true" />
       </span>
-      <span class="stage-label">{{ stageLabels[stageName] }}</span>
+      <span class="stage-label">{{ t(`stage.${stageName}`) }}</span>
       <span v-if="(stageCounts.get(stageName) ?? 0) > 1" class="stage-count">
         x{{ stageCounts.get(stageName) }}
       </span>

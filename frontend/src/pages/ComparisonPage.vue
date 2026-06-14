@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { CheckCircle2, XCircle } from "@lucide/vue";
+import { useI18n } from "../i18n";
 import { mockComparison } from "../mock/data";
 
 const bugIds = computed(() => Object.keys(mockComparison.capture_matrix));
 const strategyIds = computed(() => mockComparison.rows.map((row) => row.strategy_id));
+const { t } = useI18n();
 
 function percent(value: number): string {
   return `${Math.round(value * 100)}%`;
@@ -15,22 +17,20 @@ function percent(value: number): string {
   <main class="comparison-page app-page">
     <section class="comparison-head">
       <p class="eyebrow">TRACE / COMPARISON</p>
-      <h1>策略对比是评测证据，不是营销结论</h1>
-      <p>
-        这里读取 V1 harness 输出形状，展示捕获率、假阳性和逐 bug 捕获矩阵。Mock 数据只能证明 harness 可运行。
-      </p>
+      <h1>{{ t("comparison.title") }}</h1>
+      <p>{{ t("comparison.subtitle") }}</p>
     </section>
 
     <section class="table-shell">
       <table>
         <thead>
           <tr>
-            <th>strategy</th>
-            <th>capture</th>
-            <th>false positive</th>
-            <th>tokens</th>
-            <th>tool calls</th>
-            <th>reflection</th>
+            <th>{{ t("comparison.strategy") }}</th>
+            <th>{{ t("comparison.capture") }}</th>
+            <th>{{ t("comparison.falsePositive") }}</th>
+            <th>{{ t("comparison.tokens") }}</th>
+            <th>{{ t("comparison.toolCalls") }}</th>
+            <th>{{ t("comparison.reflection") }}</th>
           </tr>
         </thead>
         <tbody>
@@ -40,7 +40,7 @@ function percent(value: number): string {
             <td>{{ percent(row.false_positive_rate) }}</td>
             <td class="mono">{{ row.avg_tokens }}</td>
             <td class="mono">{{ row.avg_tool_calls }}</td>
-            <td>{{ row.reflection_used ? "yes" : "no" }}</td>
+            <td>{{ row.reflection_used ? t("common.yes") : t("common.no") }}</td>
           </tr>
         </tbody>
       </table>
@@ -49,13 +49,13 @@ function percent(value: number): string {
     <section class="matrix-section">
       <div>
         <p class="eyebrow">CAPTURE MATRIX</p>
-        <h2>逐 bug 证据矩阵</h2>
+        <h2>{{ t("comparison.matrix") }}</h2>
       </div>
       <div class="table-shell">
         <table>
           <thead>
             <tr>
-              <th>bug variant</th>
+              <th>{{ t("comparison.bugVariant") }}</th>
               <th v-for="strategyId in strategyIds" :key="strategyId">{{ strategyId }}</th>
             </tr>
           </thead>
@@ -65,11 +65,11 @@ function percent(value: number): string {
               <td v-for="strategyId in strategyIds" :key="strategyId">
                 <span v-if="mockComparison.capture_matrix[bugId][strategyId]" class="matrix-ok">
                   <CheckCircle2 :size="16" aria-hidden="true" />
-                  captured
+                  {{ t("comparison.captured") }}
                 </span>
                 <span v-else class="matrix-miss">
                   <XCircle :size="16" aria-hidden="true" />
-                  missed
+                  {{ t("comparison.missed") }}
                 </span>
               </td>
             </tr>

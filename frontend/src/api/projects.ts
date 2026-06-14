@@ -1,8 +1,22 @@
 import { requestJson } from "./client";
-import type { ProjectOut, ProjectSnapshotOut, TestPlanOut } from "../types/api";
+import type {
+  ProjectCreateRequest,
+  ProjectOut,
+  ProjectSnapshotOut,
+  SnapshotCreateRequest,
+  TestPlanCreateRequest,
+  TestPlanOut
+} from "../types/api";
 
 export function listProjects(): Promise<ProjectOut[]> {
   return requestJson<ProjectOut[]>("/api/v1/projects");
+}
+
+export function createProject(body: ProjectCreateRequest): Promise<ProjectOut> {
+  return requestJson<ProjectOut>("/api/v1/projects", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
 }
 
 export function getProject(projectId: string): Promise<ProjectOut> {
@@ -11,6 +25,20 @@ export function getProject(projectId: string): Promise<ProjectOut> {
 
 export function listSnapshots(projectId: string): Promise<ProjectSnapshotOut[]> {
   return requestJson<ProjectSnapshotOut[]>(`/api/v1/projects/${projectId}/snapshots`);
+}
+
+export function createSnapshot(projectId: string, body: SnapshotCreateRequest): Promise<ProjectSnapshotOut> {
+  return requestJson<ProjectSnapshotOut>(`/api/v1/projects/${projectId}/snapshots`, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function createTestPlan(body: TestPlanCreateRequest): Promise<TestPlanOut> {
+  return requestJson<TestPlanOut>("/api/v1/test-plans", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
 }
 
 export function getTestPlan(planId: string): Promise<TestPlanOut> {

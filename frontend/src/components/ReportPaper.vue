@@ -1,21 +1,24 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { ExternalLink } from "@lucide/vue";
+import { useI18n } from "../i18n";
 import type { TestReportOut } from "../types/api";
 
 const props = defineProps<{
   report: TestReportOut | null;
 }>();
 
-const metricLabels: Record<string, string> = {
-  final_passed: "通过用例",
-  final_failed: "失败用例",
-  final_skipped: "跳过用例",
-  attempts: "尝试轮次",
-  tool_call_count: "工具调用",
-  total_tokens: "Tokens",
-  duration_ms: "耗时 ms",
-  reflection_used: "已反思"
+const { t } = useI18n();
+
+const metricLabelKeys: Record<string, string> = {
+  final_passed: "summary.passed",
+  final_failed: "summary.failed",
+  final_skipped: "summary.skipped",
+  attempts: "report.attempts",
+  tool_call_count: "summary.toolCalls",
+  total_tokens: "comparison.tokens",
+  duration_ms: "pytest.duration",
+  reflection_used: "comparison.reflection"
 };
 
 const metrics = computed(() => {
@@ -24,7 +27,7 @@ const metrics = computed(() => {
   }
   return Object.entries(props.report.metrics).map(([key, value]) => ({
     key,
-    label: metricLabels[key] ?? key,
+    label: metricLabelKeys[key] ? t(metricLabelKeys[key]) : key,
     value
   }));
 });
@@ -34,17 +37,13 @@ const metrics = computed(() => {
   <section class="report-surface" aria-label="Report Paper">
     <article class="report-paper">
       <template v-if="report">
-        <h3>TRACE Run Report</h3>
+        <h3>{{ t("report.title") }}</h3>
         <p>{{ report.summary }}</p>
 
-        <blockquote>
-          pytest failure is not equal to run failure. The run can complete while preserving failed case evidence.
-        </blockquote>
+        <h3>{{ t("report.riskNotes") }}</h3>
+        <p>{{ report.risk_notes || t("report.noRisk") }}</p>
 
-        <h3>Risk Notes</h3>
-        <p>{{ report.risk_notes || "No risk notes recorded." }}</p>
-
-        <h3>Artifacts</h3>
+        <h3>{{ t("report.artifacts") }}</h3>
         <p v-if="report.markdown_uri">
           Markdown:
           <code>{{ report.markdown_uri }}</code>
@@ -54,21 +53,16 @@ const metrics = computed(() => {
           <code>{{ report.json_uri }}</code>
         </p>
 
-        <h3>Generated Test Snippet</h3>
-        <pre><code>def test_checkout_applies_coupon_and_tax(client):
-    response = client.post("/checkout", json={"coupon": "VIP20", "subtotal": 120})
-    assert response.status_code == 200
-    assert response.json()["total"] == 116.87</code></pre>
       </template>
       <template v-else>
-        <h3>报告尚未生成</h3>
-        <p>Run 可能还在 queued/running，或执行失败发生在 summarizing 之前。</p>
+        <h3>{{ t("report.notReady") }}</h3>
+        <p>{{ t("report.notReadyBody") }}</p>
       </template>
     </article>
 
     <aside class="metrics-panel" aria-label="Report metrics">
       <div class="metrics-section">
-        <p class="summary-label">报告指标</p>
+        <p class="summary-label">{{ t("report.metrics") }}</p>
         <div class="metric-pair">
           <div v-for="metric in metrics" :key="metric.key" class="metric-card">
             <strong class="tabular">{{ metric.value }}</strong>
@@ -77,14 +71,14 @@ const metrics = computed(() => {
         </div>
       </div>
       <div class="metrics-section">
-        <p class="summary-label">口径</p>
+        <p class="summary-label">{{ t("report.scope") }}</p>
         <p class="review-note">
-          当前 token 可能来自 MockLLM 估算；这里展示工作量，不展示真实模型成本结论。
+          {{ t("report.scopeBody") }}
         </p>
       </div>
       <a v-if="report?.markdown_uri" class="artifact-link" :href="report.markdown_uri" target="_blank" rel="noreferrer">
         <ExternalLink :size="15" aria-hidden="true" />
-        打开 Markdown 产物
+        {{ t("report.openMarkdown") }}
       </a>
     </aside>
   </section>

@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { Copy, FolderOpen, Minimize2 } from "@lucide/vue";
 import JsonNode from "./JsonNode.vue";
+import { useI18n } from "../i18n";
 import type { JsonValue } from "../types/api";
 
 const props = defineProps<{
@@ -13,6 +14,7 @@ const props = defineProps<{
 const viewerKey = ref(0);
 const copied = ref(false);
 const expandAll = ref(false);
+const { t } = useI18n();
 
 function collapseTree() {
   expandAll.value = false;
@@ -48,20 +50,19 @@ async function copyFullPayload() {
     <div class="json-tools">
       <button type="button" class="text-button" @click="expandTree">
         <FolderOpen :size="15" aria-hidden="true" />
-        Expand
+        {{ t("json.expand") }}
       </button>
       <button type="button" class="text-button" @click="collapseTree">
         <Minimize2 :size="15" aria-hidden="true" />
-        Collapse
+        {{ t("json.collapse") }}
       </button>
       <button type="button" class="text-button" @click="copyFullPayload">
         <Copy :size="15" aria-hidden="true" />
-        {{ copied ? "Copied full payload" : "Copy full payload" }}
+        {{ copied ? t("json.copiedPayload") : t("json.copyPayload") }}
       </button>
     </div>
     <p class="json-note">
-      Large payload guard: arrays render first {{ props.maxArrayItems ?? 50 }} items, depth limit is
-      {{ props.maxDepth ?? 10 }}.
+      {{ t("json.guard", { count: props.maxArrayItems ?? 50, depth: props.maxDepth ?? 10 }) }}
     </p>
     <div class="json-viewer" aria-label="Collapsible JSON viewer">
       <JsonNode

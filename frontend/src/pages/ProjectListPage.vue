@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { ArrowRight, FolderGit2, RefreshCw } from "@lucide/vue";
-import { listProjects } from "../api/projects";
+import { onMounted, ref, watch } from "vue";
+import { ArrowRight, FolderGit2, Play, RefreshCw } from "@lucide/vue";
+import { createSnapshot, createTestPlan, listProjects, listSnapshots } from "../api/projects";
+import { createRun } from "../api/runs";
+import { useI18n } from "../i18n";
 import { mockPlans, mockProjects } from "../mock/data";
 import type { ProjectOut } from "../types/api";
 import type { DataSource } from "../types/ui";
@@ -16,7 +18,9 @@ const emit = defineEmits<{
 
 const projects = ref<ProjectOut[]>([]);
 const loading = ref(false);
+const startingProjectId = ref<string | null>(null);
 const errorMessage = ref<string | null>(null);
+const { t } = useI18n();
 
 async function loadProjects() {
   loading.value = true;
@@ -24,20 +28,63 @@ async function loadProjects() {
   try {
     projects.value = props.dataSource === "mock" ? mockProjects : await listProjects();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Failed to load projects.";
+    errorMessage.value = error instanceof Error ? error.message : t("projects.errorFallback");
     projects.value = mockProjects;
   } finally {
     loading.value = false;
   }
 }
 
-function openDemoRun() {
+function openMockRun() {
   emit("navigate", "#/runs/run-demo-react-001");
+}
+
+async function startProjectRun(project: ProjectOut) {
+  if (props.dataSource !== "api") {
+    openMockRun();
+    return;
+  }
+
+  startingProjectId.value = project.id;
+  errorMessage.value = null;
+  try {
+    const snapshots = await listSnapshots(project.id);
+    const snapshot =
+      snapshots.find((item) => item.root_path === project.local_path) ??
+      (await createSnapshot(project.id, { root_path: project.local_path }));
+    const plan = await createTestPlan({
+      project_id: project.id,
+      name: t("projects.planName"),
+      target_scope: ["."],
+      goal: t("projects.planGoal"),
+      budget: { timeout_seconds: 120, allow_reflection: true },
+      output_options: { save_full_trace: true },
+      default_strategy_version_id: "sv-react-v1"
+    });
+    const run = await createRun(plan.id, {
+      snapshot_id: snapshot.id,
+      strategy_version_id: plan.default_strategy_version_id,
+      budget_override: { timeout_seconds: 120, allow_reflection: true },
+      output_options: { save_full_trace: true }
+    });
+    emit("navigate", `#/runs/${run.id}`);
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("run.creationFailed");
+  } finally {
+    startingProjectId.value = null;
+  }
 }
 
 onMounted(() => {
   void loadProjects();
 });
+
+watch(
+  () => props.dataSource,
+  () => {
+    void loadProjects();
+  }
+);
 </script>
 
 <template>
@@ -45,24 +92,24 @@ onMounted(() => {
     <section class="project-head">
       <div>
         <p class="eyebrow">TRACE / PROJECTS</p>
-        <h1>运行档案入口</h1>
-        <p>
-          C 线 V1 不做大而全后台。项目页只负责把用户带到一次 run，真正的主屏是 trace、report 和 pytest 证据。
-        </p>
+        <h1>{{ t("projects.title") }}</h1>
+        <p>{{ t("projects.subtitle") }}</p>
       </div>
       <div class="head-actions">
         <button class="text-button" type="button" @click="loadProjects">
           <RefreshCw :size="16" aria-hidden="true" />
-          Refresh
+          {{ t("projects.refresh") }}
         </button>
-        <button class="primary-action" type="button" @click="openDemoRun">
+        <button v-if="props.dataSource === 'mock'" class="primary-action" type="button" @click="openMockRun">
           <ArrowRight :size="17" aria-hidden="true" />
-          Open Demo Run
+          {{ t("projects.openMock") }}
         </button>
       </div>
     </section>
 
-    <p v-if="errorMessage" class="error-banner">{{ errorMessage }} 已回退到 mock 项目。</p>
+    <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
+    <p v-if="props.dataSource === 'api'" class="mode-note">{{ t("projects.apiHint") }}</p>
+    <p v-if="loading" class="mode-note">{{ t("projects.loading") }}</p>
 
     <section class="project-grid">
       <article v-for="project in projects" :key="project.id" class="project-card">
@@ -72,21 +119,34 @@ onMounted(() => {
         <div class="project-main">
           <p class="eyebrow">{{ project.framework }} / {{ project.language }}</p>
           <h3>{{ project.name }}</h3>
-          <p>{{ project.description || "No description." }}</p>
+          <p>{{ project.description || t("projects.noDescription") }}</p>
           <code>{{ project.local_path }}</code>
         </div>
-        <button class="icon-button" type="button" title="进入最近 run" @click="openDemoRun">
-          <ArrowRight :size="18" aria-hidden="true" />
-          <span class="sr-only">进入最近 run</span>
+        <button
+          class="primary-action run-action"
+          type="button"
+          :title="t('projects.startRun')"
+          :disabled="startingProjectId === project.id"
+          @click="startProjectRun(project)"
+        >
+          <RefreshCw v-if="startingProjectId === project.id" :size="17" aria-hidden="true" />
+          <Play v-else-if="props.dataSource === 'api'" :size="17" aria-hidden="true" />
+          <ArrowRight v-else :size="17" aria-hidden="true" />
+          <span>{{ startingProjectId === project.id ? t("projects.running") : t("projects.startRun") }}</span>
         </button>
       </article>
     </section>
 
-    <section class="plan-strip">
+    <section v-if="!loading && projects.length === 0" class="empty-state subtle-panel">
+      <h2>{{ t("projects.emptyTitle") }}</h2>
+      <p>{{ t("projects.emptyBody") }}</p>
+    </section>
+
+    <section v-if="props.dataSource === 'mock'" class="plan-strip">
       <p class="eyebrow">V1 TEST PLAN</p>
       <h2>{{ mockPlans[0].name }}</h2>
       <p>{{ mockPlans[0].goal }}</p>
-      <code>{{ mockPlans[0].target_scope.join(", ") }}</code>
+      <code>{{ t("projects.planScope") }}: {{ mockPlans[0].target_scope.join(", ") }}</code>
     </section>
   </main>
 </template>
@@ -124,6 +184,12 @@ onMounted(() => {
   border-radius: 7px;
   background: rgba(159, 58, 47, 0.08);
   color: var(--failed);
+}
+
+.mode-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .project-grid {
@@ -188,6 +254,18 @@ onMounted(() => {
   margin-top: 10px;
 }
 
+.empty-state {
+  display: grid;
+  gap: 8px;
+  margin-top: 22px;
+  padding: 22px;
+}
+
+.run-action {
+  min-width: 126px;
+  white-space: nowrap;
+}
+
 @media (max-width: 860px) {
   .project-head,
   .project-grid {
@@ -196,6 +274,15 @@ onMounted(() => {
 
   .head-actions {
     justify-content: flex-start;
+  }
+
+  .project-card {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .run-action {
+    grid-column: 2;
+    justify-self: start;
   }
 }
 </style>
