@@ -7,10 +7,10 @@ import RunConsolePage from "./pages/RunConsolePage.vue";
 import { useI18n, type Locale } from "./i18n";
 import type { DataSource } from "./types/ui";
 
-const initialSource = (import.meta.env.VITE_TRACE_DATA_SOURCE === "api" ? "api" : "mock") as DataSource;
+const initialSource = (import.meta.env.VITE_TRACE_DATA_SOURCE === "demo" ? "demo" : "api") as DataSource;
 const dataSource = ref<DataSource>(initialSource);
 const sampleRunId = "run-demo-react-001";
-const defaultHash = computed(() => (dataSource.value === "api" ? "#/projects" : "#/runs/run-demo-react-001"));
+const defaultHash = computed(() => (dataSource.value === "demo" ? "#/runs/run-demo-react-001" : "#/projects"));
 const currentHash = ref(window.location.hash || defaultHash.value);
 const { locale, setLocale, t } = useI18n();
 
@@ -18,16 +18,16 @@ const route = computed(() => {
   const hash = currentHash.value.replace(/^#/, "") || defaultHash.value.replace(/^#/, "");
   const parts = hash.split("/").filter(Boolean);
   return {
-    name: parts[0] ?? (dataSource.value === "api" ? "projects" : "runs"),
-    id: parts[1] ?? (dataSource.value === "api" ? "" : sampleRunId)
+    name: parts[0] ?? (dataSource.value === "demo" ? "runs" : "projects"),
+    id: parts[1] ?? (dataSource.value === "demo" ? sampleRunId : "")
   };
 });
 
 const runId = computed(() => {
   if (route.value.name === "runs") {
-    return route.value.id || (dataSource.value === "api" ? "" : sampleRunId);
+    return route.value.id || (dataSource.value === "demo" ? sampleRunId : "");
   }
-  return dataSource.value === "api" ? "" : sampleRunId;
+  return dataSource.value === "demo" ? sampleRunId : "";
 });
 
 const runConsoleHref = computed(() => {
@@ -67,7 +67,7 @@ onBeforeUnmount(() => {
 
 <template>
   <header class="app-nav">
-    <a class="nav-brand" :href="dataSource === 'api' ? '#/projects' : `#/runs/${sampleRunId}`">
+    <a class="nav-brand" :href="dataSource === 'demo' ? `#/runs/${sampleRunId}` : '#/projects'">
       <img src="/trace-logo-icon.svg" alt="" />
       <span>TRACE</span>
     </a>
@@ -88,11 +88,11 @@ onBeforeUnmount(() => {
     <div class="nav-controls">
       <div class="source-switch" :aria-label="t('app.dataSource')">
         <Server :size="15" aria-hidden="true" />
-        <button type="button" :class="{ active: dataSource === 'mock' }" @click="setSource('mock')">
-          {{ t("app.mock") }}
-        </button>
         <button type="button" :class="{ active: dataSource === 'api' }" @click="setSource('api')">
           {{ t("app.api") }}
+        </button>
+        <button type="button" :class="{ active: dataSource === 'demo' }" @click="setSource('demo')">
+          {{ t("app.demo") }}
         </button>
       </div>
       <div class="source-switch" :aria-label="t('app.language')">

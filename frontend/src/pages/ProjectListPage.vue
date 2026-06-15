@@ -13,7 +13,7 @@ import {
 import { createRun } from "../api/runs";
 import PathPickerField from "../components/PathPickerField.vue";
 import { useI18n } from "../i18n";
-import { mockPlans, mockProjects, mockSnapshots } from "../mock/data";
+import { demoPlans, demoProjects, demoSnapshots } from "../demo/staticRunFixture";
 import type { ProjectOut, ProjectSnapshotOut, TestPlanOut, TestRunOut } from "../types/api";
 import type { DataSource } from "../types/ui";
 
@@ -61,7 +61,7 @@ const selectedProject = computed(() => projects.value.find((project) => project.
 const selectedPlan = computed(() => plans.value.find((plan) => plan.id === selectedPlanId.value) ?? null);
 const latestRun = computed(() => runs.value[0] ?? null);
 
-function openMockRun() {
+function openDemoRun() {
   emit("navigate", "#/runs/run-demo-react-001");
 }
 
@@ -99,13 +99,13 @@ async function loadProjects() {
   loadingProjects.value = true;
   errorMessage.value = null;
   try {
-    projects.value = props.dataSource === "mock" ? mockProjects : await listProjects();
+    projects.value = props.dataSource === "demo" ? demoProjects : await listProjects();
     if (!selectedProjectId.value || !projects.value.some((project) => project.id === selectedProjectId.value)) {
       selectedProjectId.value = projects.value[0]?.id ?? null;
     }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : t("projects.errorFallback");
-    projects.value = props.dataSource === "mock" ? mockProjects : [];
+    projects.value = [];
     selectedProjectId.value = projects.value[0]?.id ?? null;
   } finally {
     loadingProjects.value = false;
@@ -127,9 +127,9 @@ async function loadProjectDetails() {
   loadingDetails.value = true;
   errorMessage.value = null;
   try {
-    if (props.dataSource === "mock") {
-      snapshots.value = mockSnapshots.filter((snapshot) => snapshot.project_id === project.id);
-      plans.value = mockPlans.filter((plan) => plan.project_id === project.id);
+    if (props.dataSource === "demo") {
+      snapshots.value = demoSnapshots.filter((snapshot) => snapshot.project_id === project.id);
+      plans.value = demoPlans.filter((plan) => plan.project_id === project.id);
       runs.value = [];
       runForm.snapshotId = snapshots.value[0]?.id ?? "";
       selectedPlanId.value = plans.value[0]?.id ?? null;
@@ -212,7 +212,7 @@ async function startRun() {
     return;
   }
   if (props.dataSource !== "api") {
-    openMockRun();
+    openDemoRun();
     return;
   }
   startingRun.value = true;
@@ -286,9 +286,9 @@ watch(selectedProjectId, () => {
           <RefreshCw :size="16" aria-hidden="true" />
           {{ t("projects.refresh") }}
         </button>
-        <button v-if="props.dataSource === 'mock'" class="primary-action" type="button" @click="openMockRun">
+        <button v-if="props.dataSource === 'demo'" class="primary-action" type="button" @click="openDemoRun">
           <ArrowRight :size="17" aria-hidden="true" />
-          {{ t("projects.openMock") }}
+          {{ t("projects.openDemo") }}
         </button>
       </div>
     </section>

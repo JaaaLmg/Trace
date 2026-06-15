@@ -62,8 +62,10 @@ def execute_run(
     run = run or TestRunRecord(strategy_version_id=strategy_spec.id)
     # 冻结策略快照：完整 prompt bundle（system+contract+plan/generate/reflect 模板）+ 模型参数，
     # 不允许只存 ref——以后改 prompts.py，历史 run 仍可复现（V1实施清单 §3）
-    run.strategy_snapshot = freeze_strategy_snapshot(strategy_spec)
-    run.runtime_snapshot = freeze_runtime_snapshot()
+    if not run.strategy_snapshot:
+        run.strategy_snapshot = freeze_strategy_snapshot(strategy_spec)
+    if not run.runtime_snapshot:
+        run.runtime_snapshot = freeze_runtime_snapshot()
     recorder.save_run(run)  # queued
 
     ctx = AgentContext(

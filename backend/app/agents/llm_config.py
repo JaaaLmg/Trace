@@ -9,6 +9,24 @@ from typing import Any
 from app.agents.llm_http import DEFAULT_MAX_OUTPUT_TOKENS
 from app.agents.llm_factory import normalize_provider, resolve_model
 
+_ENV_CONFIG_KEYS = (
+    "TRACE_LLM_PROVIDER",
+    "TRACE_LLM_MODEL",
+    "TRACE_LLM_API_KEY",
+    "TRACE_LLM_BASE_URL",
+    "TRACE_LLM_TEMPERATURE",
+    "TRACE_LLM_MAX_OUTPUT_TOKENS",
+    "TRACE_LLM_REASONING_EFFORT",
+    "OPENAI_MODEL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_MAX_OUTPUT_TOKENS",
+    "OPENAI_REASONING_EFFORT",
+    "OPENAI_CHAT_COMPAT_MODEL",
+    "OPENAI_CHAT_COMPAT_API_KEY",
+    "OPENAI_CHAT_COMPAT_BASE_URL",
+)
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
@@ -38,8 +56,14 @@ class LLMRuntimeConfig:
 
 def load_llm_config() -> LLMRuntimeConfig | None:
     path = _config_path()
-    if not path.exists():
-        return None
+    if path.exists():
+        return _load_llm_config_file(path)
+    if os.environ.get("TRACE_LLM_CONFIG_FILE"):
+        raise ValueError(f"LLM 配置文件不存在: {path}")
+    return _load_llm_config_env()
+
+
+def _load_llm_config_file(path: Path) -> LLMRuntimeConfig:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"LLM 配置文件必须是 JSON object: {path}")
@@ -59,6 +83,71 @@ def load_llm_config() -> LLMRuntimeConfig | None:
         max_output_tokens=_as_int(raw.get("max_output_tokens"), DEFAULT_MAX_OUTPUT_TOKENS),
         reasoning_effort=_as_str(raw.get("reasoning_effort")),
     )
+
+
+def _load_llm_config_env() -> LLMRuntimeConfig | None:
+    if not any(_as_str(os.environ.get(key)) for key in _ENV_CONFIG_KEYS):
+        return None
+
+    provider_raw = _env_provider_raw().lower().replace("-", "_")
+    provider = "mock" if provider_raw == "mock" else normalize_provider(provider_raw)
+    model = _env_model(provider)
+    if not model:
+        raise ValueError("LLM 环境变量缺少 model；请设置 TRACE_LLM_MODEL 或 provider 对应的模型变量")
+
+    return LLMRuntimeConfig(
+        provider=provider,
+        model=model,
+        api_key=_env_api_key(provider),
+        base_url=_env_base_url(provider),
+        temperature=_as_float(os.environ.get("TRACE_LLM_TEMPERATURE")),
+        max_output_tokens=_as_int(
+            os.environ.get("TRACE_LLM_MAX_OUTPUT_TOKENS") or os.environ.get("OPENAI_MAX_OUTPUT_TOKENS"),
+            DEFAULT_MAX_OUTPUT_TOKENS,
+        ),
+        reasoning_effort=_as_str(
+            os.environ.get("TRACE_LLM_REASONING_EFFORT") or os.environ.get("OPENAI_REASONING_EFFORT")
+        ),
+    )
+
+
+def _env_provider_raw() -> str:
+    explicit = _as_str(os.environ.get("TRACE_LLM_PROVIDER"))
+    if explicit:
+        return explicit
+    if (
+        _as_str(os.environ.get("OPENAI_CHAT_COMPAT_MODEL"))
+        or _as_str(os.environ.get("OPENAI_CHAT_COMPAT_API_KEY"))
+        or _as_str(os.environ.get("OPENAI_CHAT_COMPAT_BASE_URL"))
+    ):
+        return "openai_chat_compat"
+    return "openai"
+
+
+def _env_model(provider: str) -> str | None:
+    if provider == "mock":
+        return _as_str(os.environ.get("TRACE_LLM_MODEL")) or "mock-1"
+    return resolve_model(provider, None)
+
+
+def _env_api_key(provider: str) -> str | None:
+    if provider == "openai_chat_compat":
+        return _as_str(
+            os.environ.get("TRACE_LLM_API_KEY")
+            or os.environ.get("OPENAI_CHAT_COMPAT_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+        )
+    return _as_str(os.environ.get("TRACE_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+
+
+def _env_base_url(provider: str) -> str | None:
+    if provider == "openai_chat_compat":
+        return _as_str(
+            os.environ.get("TRACE_LLM_BASE_URL")
+            or os.environ.get("OPENAI_CHAT_COMPAT_BASE_URL")
+            or os.environ.get("OPENAI_BASE_URL")
+        )
+    return _as_str(os.environ.get("TRACE_LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL"))
 
 
 def _as_str(value: Any) -> str | None:

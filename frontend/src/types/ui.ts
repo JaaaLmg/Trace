@@ -4,4 +4,4 @@ export interface TopicTab {
   count?: number;
 }
 
-export type DataSource = "mock" | "api";
+export type DataSource = "demo" | "api";
