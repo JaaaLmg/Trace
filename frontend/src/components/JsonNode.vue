@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Copy } from "@lucide/vue";
+import { useI18n } from "../i18n";
 import type { JsonValue } from "../types/api";
 
 defineOptions({ name: "JsonNode" });
@@ -25,6 +26,7 @@ const props = withDefaults(
 
 const copied = ref(false);
 const collapsed = ref(props.depth >= 1 && !props.expandAll);
+const { t } = useI18n();
 
 const isBranch = computed(() => props.value !== null && typeof props.value === "object");
 const isArray = computed(() => Array.isArray(props.value));
@@ -96,7 +98,7 @@ async function copyValue() {
         v-if="isBranch"
         class="json-toggle"
         type="button"
-        :aria-label="collapsed ? '展开 JSON 节点' : '折叠 JSON 节点'"
+        :aria-label="collapsed ? t('json.expandNode') : t('json.collapseNode')"
         @click="collapsed = !collapsed"
       >
         {{ collapsed ? "+" : "-" }}
@@ -113,13 +115,13 @@ async function copyValue() {
 
       <button class="copy-node" type="button" @click="copyValue">
         <Copy :size="12" aria-hidden="true" />
-        <span>{{ copied ? "Copied" : "Copy" }}</span>
+        <span>{{ copied ? t("json.copied") : t("json.copy") }}</span>
       </button>
     </div>
 
     <div v-if="isBranch" class="json-children">
       <div v-if="props.depth >= props.maxDepth" class="json-more">
-        depth limit reached
+        {{ t("json.depthLimit") }}
       </div>
       <template v-else>
         <JsonNode
@@ -133,7 +135,7 @@ async function copyValue() {
           :expand-all="props.expandAll"
         />
         <div v-if="hiddenArrayItems > 0" class="json-more">
-          [... {{ hiddenArrayItems }} more items]
+          {{ t("json.moreItems", { count: hiddenArrayItems }) }}
         </div>
       </template>
     </div>

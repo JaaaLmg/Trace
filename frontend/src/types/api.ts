@@ -196,6 +196,29 @@ export interface RunCreateRequest {
   output_options?: JsonObject;
 }
 
+export interface ProjectCreateRequest {
+  name: string;
+  local_path: string;
+  description?: string | null;
+}
+
+export interface SnapshotCreateRequest {
+  root_path?: string | null;
+}
+
+export interface TestPlanCreateRequest {
+  project_id: string;
+  name: string;
+  target_scope: string[];
+  goal: string;
+  budget?: {
+    timeout_seconds?: number | null;
+    allow_reflection?: boolean | null;
+  };
+  output_options?: JsonObject;
+  default_strategy_version_id?: string | null;
+}
+
 export interface RunBundle {
   run: TestRunOut;
   traceSteps: TraceStepOut[];

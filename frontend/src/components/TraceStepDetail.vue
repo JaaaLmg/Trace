@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { X } from "@lucide/vue";
+import { useI18n } from "../i18n";
 import type { TraceStepOut } from "../types/api";
 import JsonViewer from "./JsonViewer.vue";
 import StatusBadge from "./StatusBadge.vue";
@@ -14,6 +15,7 @@ const emit = defineEmits<{
   close: [];
 }>();
 
+const { t } = useI18n();
 const payload = computed(() => props.step?.payload ?? null);
 </script>
 
@@ -22,24 +24,24 @@ const payload = computed(() => props.step?.payload ?? null);
     <div v-if="step" class="drawer-content">
       <div class="drawer-header">
         <div class="drawer-title">
-          <p class="eyebrow">STEP DETAIL DRAWER</p>
+          <p class="eyebrow">{{ t("detail.title") }}</p>
           <h3>{{ step.name }}</h3>
-          <p class="mono">attempt_id: {{ step.attempt_id ?? "none" }}</p>
+          <p class="mono">{{ t("detail.attempt") }}: {{ step.attempt_id ?? t("common.none") }}</p>
         </div>
         <StatusBadge :value="step.status" />
-        <button class="drawer-close" type="button" aria-label="关闭详情抽屉" @click="emit('close')">
+        <button class="drawer-close" type="button" :aria-label="t('detail.close')" @click="emit('close')">
           <X :size="17" aria-hidden="true" />
         </button>
       </div>
 
       <div class="detail-grid">
         <div>
-          <p class="detail-label">输入摘要</p>
-          <p>{{ step.input_summary || "No input summary." }}</p>
+          <p class="detail-label">{{ t("detail.input") }}</p>
+          <p>{{ step.input_summary || t("detail.noInput") }}</p>
         </div>
         <div>
-          <p class="detail-label">输出摘要</p>
-          <p>{{ step.output_summary || "No output summary." }}</p>
+          <p class="detail-label">{{ t("detail.output") }}</p>
+          <p>{{ step.output_summary || t("detail.noOutput") }}</p>
         </div>
       </div>
 
@@ -48,9 +50,9 @@ const payload = computed(() => props.step?.payload ?? null);
       <pre v-if="step.error" class="traceback">{{ step.error }}</pre>
     </div>
     <div v-else class="empty-detail">
-      <p class="eyebrow">STEP DETAIL DRAWER</p>
-      <h3>选择一个 trace step</h3>
-      <p>Payload、错误和关联 attempt 会显示在这里。</p>
+      <p class="eyebrow">{{ t("detail.title") }}</p>
+      <h3>{{ t("detail.select") }}</h3>
+      <p>{{ t("detail.selectBody") }}</p>
     </div>
   </aside>
 </template>

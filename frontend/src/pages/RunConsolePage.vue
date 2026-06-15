@@ -10,6 +10,7 @@ import StatusBadge from "../components/StatusBadge.vue";
 import TopicTabs from "../components/TopicTabs.vue";
 import TraceStepDetail from "../components/TraceStepDetail.vue";
 import TraceTimeline from "../components/TraceTimeline.vue";
+import { useI18n } from "../i18n";
 import { mockRunBundle } from "../mock/data";
 import type { RunBundle, TraceStepOut } from "../types/api";
 import type { DataSource, TopicTab } from "../types/ui";
@@ -32,14 +33,15 @@ const drawerOpen = ref(true);
 const loading = ref(false);
 const isStale = ref(false);
 const errorMessage = ref<string | null>(null);
+const { t } = useI18n();
 let poller: number | null = null;
 
 const tabs = computed<TopicTab[]>(() => [
-  { key: "overview", label: "Overview" },
-  { key: "trace", label: "Trace", count: bundle.value?.traceSteps.length ?? 0 },
-  { key: "report", label: "Report" },
-  { key: "pytest", label: "Pytest", count: bundle.value?.pytestResults.length ?? 0 },
-  { key: "artifacts", label: "Artifacts", count: bundle.value?.artifacts.length ?? 0 }
+  { key: "overview", label: t("run.overview") },
+  { key: "trace", label: t("run.trace"), count: bundle.value?.traceSteps.length ?? 0 },
+  { key: "report", label: t("run.report") },
+  { key: "pytest", label: t("run.pytest"), count: bundle.value?.pytestResults.length ?? 0 },
+  { key: "artifacts", label: t("run.artifacts"), count: bundle.value?.artifacts.length ?? 0 }
 ]);
 
 const selectedStep = computed(() => {
@@ -73,7 +75,7 @@ async function loadBundle() {
     bundle.value = nextBundle;
     selectUsefulStep(nextBundle);
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Failed to load run data.";
+    errorMessage.value = error instanceof Error ? error.message : t("run.loadFailed");
   } finally {
     loading.value = false;
   }
@@ -143,7 +145,7 @@ async function retryCurrentRun() {
     await new Promise((resolve) => window.setTimeout(resolve, 900));
     appendMockRetryStep();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Retry failed.";
+    errorMessage.value = error instanceof Error ? error.message : t("run.retryFailed");
   } finally {
     isStale.value = false;
   }
@@ -158,7 +160,7 @@ async function cancelCurrentRun() {
       const cancelled = await cancelRun(bundle.value.run.id);
       bundle.value.run = cancelled;
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : "Cancel failed.";
+      errorMessage.value = error instanceof Error ? error.message : t("run.cancelFailed");
     }
     return;
   }
@@ -183,7 +185,7 @@ async function startRunFromCurrentPlan() {
     });
     emit("navigate", `#/runs/${newRun.id}`);
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Run creation failed.";
+    errorMessage.value = error instanceof Error ? error.message : t("run.creationFailed");
   }
 }
 
@@ -211,7 +213,7 @@ onBeforeUnmount(stopPolling);
         <div class="brand-line">
           <img class="brand-mark" src="/trace-logo-icon.svg" alt="TRACE" />
           <div class="brand-meta">
-            <strong>TRACE Run Console</strong>
+            <strong>{{ t("run.title") }}</strong>
             <span>{{ run?.id ?? props.runId }}</span>
           </div>
         </div>
@@ -220,27 +222,27 @@ onBeforeUnmount(stopPolling);
           <span class="source-pill">
             <Wifi v-if="props.dataSource === 'api'" :size="14" aria-hidden="true" />
             <WifiOff v-else :size="14" aria-hidden="true" />
-            {{ props.dataSource === "api" ? "API" : "Mock" }}
+            {{ props.dataSource === "api" ? t("app.api") : t("app.mock") }}
           </span>
           <StatusBadge :value="run?.status ?? (loading ? 'running' : 'unknown')" :pulse="run?.status === 'running'" />
         </div>
 
         <div class="top-actions">
-          <button class="icon-button" type="button" title="刷新" @click="refresh">
+          <button class="icon-button" type="button" :title="t('run.refresh')" @click="refresh">
             <RefreshCw :size="17" aria-hidden="true" />
-            <span class="sr-only">刷新</span>
+            <span class="sr-only">{{ t("run.refresh") }}</span>
           </button>
           <button class="primary-action" type="button" @click="startRunFromCurrentPlan">
             <Play :size="17" aria-hidden="true" />
-            Run
+            {{ t("run.start") }}
           </button>
-          <button class="icon-button" type="button" title="重试" @click="retryCurrentRun">
+          <button class="icon-button" type="button" :title="t('run.retry')" @click="retryCurrentRun">
             <RotateCcw :size="17" aria-hidden="true" />
-            <span class="sr-only">重试</span>
+            <span class="sr-only">{{ t("run.retry") }}</span>
           </button>
-          <button class="icon-button" type="button" title="取消" :disabled="run?.status !== 'running'" @click="cancelCurrentRun">
+          <button class="icon-button" type="button" :title="t('run.cancel')" :disabled="run?.status !== 'running'" @click="cancelCurrentRun">
             <Square :size="17" aria-hidden="true" />
-            <span class="sr-only">取消</span>
+            <span class="sr-only">{{ t("run.cancel") }}</span>
           </button>
         </div>
       </div>
@@ -258,19 +260,16 @@ onBeforeUnmount(stopPolling);
           <div v-if="activeTab === 'overview'" class="overview-pane">
             <div class="overview-grid">
               <article>
-                <p class="eyebrow">状态口径</p>
-                <h3>Run 完成不代表 pytest 全绿</h3>
+                <p class="eyebrow">{{ t("run.statusScope") }}</p>
+                <h3>{{ t("run.statusBody") }}</h3>
                 <p>
-                  当前 run status 是 <code>{{ bundle.run.status }}</code>。pytest 失败被保存在用例级结果里，
-                  这是可审计证据，不应该被误判成系统失败。
+                  <code>{{ bundle.run.status }}</code>
                 </p>
               </article>
               <article>
-                <p class="eyebrow">策略快照</p>
+                <p class="eyebrow">{{ t("run.strategySnapshot") }}</p>
                 <h3>{{ bundle.strategy?.name ?? bundle.run.strategy_version_id }}</h3>
-                <p>
-                  Prompt 正文和模型参数应冻结在 run 级 strategy_snapshot 中，历史 run 不依赖可变配置。
-                </p>
+                <p>{{ t("run.strategyBody") }}</p>
               </article>
             </div>
 
@@ -278,19 +277,19 @@ onBeforeUnmount(stopPolling);
               <table>
                 <thead>
                   <tr>
-                    <th>event</th>
-                    <th>stage</th>
-                    <th>before</th>
-                    <th>after</th>
-                    <th>message</th>
+                    <th>{{ t("run.event") }}</th>
+                    <th>{{ t("run.stage") }}</th>
+                    <th>{{ t("run.before") }}</th>
+                    <th>{{ t("run.after") }}</th>
+                    <th>{{ t("run.message") }}</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="event in bundle.events" :key="event.id">
                     <td class="mono">{{ event.event_type }}</td>
-                    <td>{{ event.stage ?? "none" }}</td>
-                    <td>{{ event.status_before ?? "none" }}</td>
-                    <td>{{ event.status_after ?? "none" }}</td>
+                    <td>{{ event.stage ?? t("common.none") }}</td>
+                    <td>{{ event.status_before ?? t("common.none") }}</td>
+                    <td>{{ event.status_after ?? t("common.none") }}</td>
                     <td>{{ event.message ?? "" }}</td>
                   </tr>
                 </tbody>
@@ -312,14 +311,14 @@ onBeforeUnmount(stopPolling);
           <ArtifactsList v-else :artifacts="bundle.artifacts" />
         </section>
 
-        <button v-if="drawerOpen" class="drawer-overlay" type="button" aria-label="关闭详情抽屉" @click="drawerOpen = false"></button>
+        <button v-if="drawerOpen" class="drawer-overlay" type="button" :aria-label="t('detail.close')" @click="drawerOpen = false"></button>
         <TraceStepDetail :step="selectedStep" :open="drawerOpen" @close="drawerOpen = false" />
       </template>
 
       <div v-else class="loading-state">
         <p class="eyebrow">TRACE</p>
-        <h2>{{ loading ? "正在读取运行档案" : "没有运行数据" }}</h2>
-        <p>{{ errorMessage ?? "确认 run id 或切换到 Mock 数据源。" }}</p>
+        <h2>{{ loading ? t("run.loading") : t("run.noData") }}</h2>
+        <p>{{ errorMessage ?? t("run.noDataHint") }}</p>
       </div>
     </section>
   </main>

@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -41,10 +42,23 @@ def reset_trace_db() -> None:
         engine.dispose()
         load_all_models()
         Base.metadata.create_all(bind=engine)
-        with Session(engine) as session:
-            for table in TRACE_TABLES:
-                session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
-            session.commit()
+        # Windows + TestClient + PostgreSQL 下，上一条测试刚释放连接时
+        # 偶尔会和下一条测试的 TRUNCATE 撞上锁等待。这里做一个轻量重试，
+        # 优先把“测试隔离中的短暂锁竞争”吃掉，避免误报为业务死锁。
+        last_exc: OperationalError | None = None
+        for _ in range(3):
+            try:
+                with Session(engine) as session:
+                    session.execute(text("SET lock_timeout TO '2s'"))
+                    for table in TRACE_TABLES:
+                        session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+                    session.commit()
+                return
+            except OperationalError as exc:
+                last_exc = exc
+                time.sleep(0.2)
+        assert last_exc is not None
+        raise last_exc
     except RuntimeError as exc:
         pytest.skip(f"TRACE_DB_URL 未配置，跳过 PostgreSQL 集成测试: {exc}")
     except OperationalError as exc:

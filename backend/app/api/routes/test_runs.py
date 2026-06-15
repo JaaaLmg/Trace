@@ -26,9 +26,17 @@ from app.schemas.api_run import (
     TestRunOut,
     TraceStepOut,
 )
-from app.services.test_runs import cancel_run, create_run, enqueue_run, retry_run_async
+from app.services.test_runs import cancel_run, create_run, enqueue_run, list_plan_test_runs, retry_run_async
 
 router = APIRouter(tags=["test-runs"])
+
+
+@router.get("/api/v1/test-plans/{plan_id}/runs", response_model=list[TestRunOut])
+def list_plan_runs_route(plan_id: str, db: Session = Depends(get_db)):
+    try:
+        return list_plan_test_runs(db, plan_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/api/v1/test-plans/{plan_id}/runs", response_model=TestRunOut)
@@ -110,12 +118,12 @@ def list_artifacts_route(run_id: str, db: Session = Depends(get_db)):
     return list_run_artifacts(db, run_id)
 
 
-@router.get("/api/v1/test-runs/{run_id}/report", response_model=TestReportOut)
+@router.get("/api/v1/test-runs/{run_id}/report", response_model=TestReportOut | None)
 def get_report_route(run_id: str, db: Session = Depends(get_db)):
     # 返回结构化测试报告摘要。前端一般先取这里，再按需打开 markdown/json 文件。
+    if get_test_run(db, run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
     report = get_report(db, run_id)
-    if report is None:
-        raise HTTPException(status_code=404, detail="report not found")
     return report
 
 

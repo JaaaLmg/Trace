@@ -16,9 +16,10 @@ from app.recorders.sqlalchemy_recorder import SQLAlchemyRunRecorder
 from app.repositories.projects import get_project
 from app.repositories.strategies import get_strategy_version
 from app.repositories.test_plans import get_test_plan
-from app.repositories.test_runs import get_test_run
+from app.repositories.test_runs import get_test_run, list_test_runs_for_plan, list_test_runs_for_project
 from app.schemas.records import TestRunRecord
 from app.schemas.strategy import StrategyVersionSpec
+from app.services.path_policy import ensure_generated_tests_dir, validate_snapshot_root
 from app.tools import default_registry
 from app.tools.base import ToolContext
 from sqlalchemy.orm import Session
@@ -116,6 +117,12 @@ def create_run(
     snapshot = session.get(ProjectSnapshot, snapshot_id)
     if snapshot is None:
         raise ValueError("snapshot not found")
+    if snapshot.project_id != plan.project_id:
+        raise ValueError("snapshot does not belong to test plan project")
+    project = get_project(session, snapshot.project_id)
+    if project is None:
+        raise ValueError("project not found")
+    validate_snapshot_root(snapshot.root_path, project_root=project.local_path)
     strategy_id = strategy_version_id or plan.default_strategy_version_id
     if not strategy_id:
         raise ValueError("strategy_version_id is required when test plan has no default strategy")
@@ -170,6 +177,18 @@ def enqueue_run(
     return run
 
 
+def list_project_test_runs(session: Session, project_id: str) -> list[TestRun]:
+    if get_project(session, project_id) is None:
+        raise ValueError("project not found")
+    return list_test_runs_for_project(session, project_id)
+
+
+def list_plan_test_runs(session: Session, plan_id: str) -> list[TestRun]:
+    if get_test_plan(session, plan_id) is None:
+        raise ValueError("test plan not found")
+    return list_test_runs_for_plan(session, plan_id)
+
+
 def execute_run_sync(
     session: Session,
     *,
@@ -198,9 +217,8 @@ def execute_run_sync(
             raise ValueError("project not found")
 
         # 为生成测试准备受控目录，A 线 write_test_file 只会写到这里。
-        root = Path(snapshot.root_path)
-        test_write_dir = root / "tests" / "generated"
-        test_write_dir.mkdir(parents=True, exist_ok=True)
+        root = validate_snapshot_root(snapshot.root_path, project_root=project.local_path)
+        test_write_dir = ensure_generated_tests_dir(root)
         recorder = SQLAlchemyRunRecorder(session)
         strategy_spec = _strategy_spec_from_model(strategy)
         budget = dict(plan.budget or {})
