@@ -1,0 +1,514 @@
+{
+  "schema_version": "v2.phase0",
+  "generated_at": "2026-06-15T00:00:00.000Z",
+  "data_source": {
+    "kind": "mock",
+    "label": "TRACE V2 phase 0 contract fixture",
+    "provider_label": "mock",
+    "model_label": "scripted-v2",
+    "generated_by": "eval/fixtures/mock_experiment_v2.json"
+  },
+  "experiment": {
+    "id": "exp-phase0-mock-001",
+    "name": "phase0-mock-contract",
+    "dataset_id": "dataset-demo-v2",
+    "strategy_version_ids": [
+      "sv-direct-v2",
+      "sv-react-v2"
+    ],
+    "repeat_count": 1,
+    "llm_override": {
+      "provider": "mock",
+      "model": "scripted-v2",
+      "temperature_policy": {
+        "mode": "fixed",
+        "value": 0.0,
+        "seed": null
+      },
+      "model_params": {
+        "scripted_author": "phase0"
+      }
+    },
+    "status": "completed",
+    "created_at": "2026-06-15T00:00:00.000Z",
+    "started_at": "2026-06-15T00:00:01.000Z",
+    "finished_at": "2026-06-15T00:00:12.000Z",
+    "error_code": null,
+    "error_message": null
+  },
+  "source_context_policy": {
+    "project_root_boundary": "project_snapshot_root",
+    "read_allowlist_globs": [
+      "shop/**/*.py",
+      "tests/**/*.py"
+    ],
+    "deny_globs": [
+      ".git/**",
+      ".trace_artifacts/**",
+      "../**"
+    ],
+    "generated_tests_dir": "tests/generated",
+    "max_file_bytes": 16000,
+    "max_total_bytes": 48000,
+    "max_snippets": 12,
+    "trace_payload_required": true,
+    "missing_context_marker": "context_incomplete",
+    "agent_source_write_permission": "generated_tests_only"
+  },
+  "rows": [
+    {
+      "strategy_id": "sv-direct-v2",
+      "strategy_name": "Direct v2",
+      "repeats": 1,
+      "captured_per_repeat": [
+        0
+      ],
+      "captured_mean": 0.0,
+      "total_in_scope": 1,
+      "capture_rate_mean": 0.0,
+      "capture_rate_std": 0.0,
+      "false_positive_rate": 1.0,
+      "avg_tokens": 610.0,
+      "avg_tool_calls": 3.0,
+      "reflection_used": false,
+      "cost_per_captured_bug": null,
+      "cost_per_captured_bug_status": "no_bug_captured",
+      "data_source": "mock",
+      "llm_display": {
+        "provider": "mock",
+        "model": "scripted-v2",
+        "derived_from_clean_run_ids": [
+          "ecr-direct-r0"
+        ],
+        "source": "derived_from_clean_run_strategy_snapshots"
+      }
+    },
+    {
+      "strategy_id": "sv-react-v2",
+      "strategy_name": "ReAct+Reflection v2",
+      "repeats": 1,
+      "captured_per_repeat": [
+        1
+      ],
+      "captured_mean": 1.0,
+      "total_in_scope": 1,
+      "capture_rate_mean": 1.0,
+      "capture_rate_std": 0.0,
+      "false_positive_rate": 0.0,
+      "avg_tokens": 1320.0,
+      "avg_tool_calls": 5.0,
+      "reflection_used": true,
+      "cost_per_captured_bug": 1320.0,
+      "cost_per_captured_bug_status": "ok",
+      "data_source": "mock",
+      "llm_display": {
+        "provider": "mock",
+        "model": "scripted-v2",
+        "derived_from_clean_run_ids": [
+          "ecr-react-r0"
+        ],
+        "source": "derived_from_clean_run_strategy_snapshots"
+      }
+    }
+  ],
+  "capture_matrix": {
+    "bug-boundary-loyalty": {
+      "sv-direct-v2": false,
+      "sv-react-v2": true
+    }
+  },
+  "clean_runs": [
+    {
+      "id": "ecr-direct-r0",
+      "experiment_id": "exp-phase0-mock-001",
+      "eval_task_id": "task-shop-pricing",
+      "strategy_version_id": "sv-direct-v2",
+      "repeat_index": 0,
+      "clean_run_id": "run-clean-direct-r0",
+      "generated_test_set_artifact_id": "artifact-testset-direct-r0",
+      "false_positive": true,
+      "clean_metrics": {
+        "final_cases_total": 1,
+        "final_passed": 0,
+        "final_failed": 1,
+        "final_skipped": 0,
+        "tool_call_count": 3,
+        "total_tokens": 610
+      },
+      "runtime_snapshot": {
+        "runtime_profile_id": "runtime-demo-python311",
+        "executor": "local_subprocess",
+        "python_version": "3.11",
+        "test_command": "pytest tests/generated",
+        "network_policy": "disabled",
+        "timeout_seconds": 60,
+        "resource_limits": {
+          "cpu": "declared_only_v2_1",
+          "memory": "declared_only_v2_1"
+        },
+        "env_keys": [
+          "PYTHONPATH"
+        ],
+        "secret_included": false
+      },
+      "strategy_snapshot": {
+        "strategy_version_id": "sv-direct-v2",
+        "prompt_version_id": "prompt-v2-001",
+        "prompt_content_hash": "sha256:prompt-direct-v2",
+        "tool_schema_version_id": "tool-schema-v2-001",
+        "tool_schema_content_hash": "sha256:tool-schema-v2",
+        "workflow_type": "direct",
+        "allow_reflection": false,
+        "resolved_llm": {
+          "provider": "mock",
+          "model": "scripted-v2",
+          "temperature": 0.0,
+          "model_params": {
+            "scripted_author": "phase0"
+          },
+          "resolution_order": [
+            "strategy_version_defaults",
+            "experiment_llm_override",
+            "repeat_derivation"
+          ],
+          "repeat_index": 0,
+          "secret_included": false
+        }
+      },
+      "report_quality": {
+        "test_inventory": [
+          {
+            "test_name": "test_loyalty_boundary",
+            "source_path": "tests/generated/test_pricing.py",
+            "start_line": 10,
+            "end_line": 16,
+            "nodeid": "tests/generated/test_pricing.py::test_loyalty_boundary"
+          }
+        ],
+        "target_mappings": [
+          {
+            "target_type": "function",
+            "target_ref": "shop.pricing.apply_loyalty_discount",
+            "source_path": "shop/pricing.py",
+            "symbol": "apply_loyalty_discount",
+            "mapping_status": "mapped",
+            "trace_step_id": "trace-direct-context"
+          }
+        ],
+        "assertion_summaries": [
+          {
+            "test_name": "test_loyalty_boundary",
+            "nodeid": "tests/generated/test_pricing.py::test_loyalty_boundary",
+            "assertion_summary": "loyalty discount threshold behavior",
+            "target_ref": "shop.pricing.apply_loyalty_discount"
+          }
+        ],
+        "failure_classifications": [
+          {
+            "nodeid": "tests/generated/test_pricing.py::test_loyalty_boundary",
+            "classification": "assertion",
+            "message": "false positive on clean snapshot"
+          }
+        ],
+        "reflection_evidence": {
+          "used": false,
+          "contract_checked": false,
+          "contract_passed": null,
+          "violation_reasons": [],
+          "accepted_attempt_id": null,
+          "rejected_attempt_ids": []
+        },
+        "context_completeness": {
+          "status": "complete",
+          "context_incomplete": false,
+          "snippets": [
+            {
+              "path": "shop/pricing.py",
+              "target_ref": "shop.pricing.apply_loyalty_discount",
+              "start_line": 20,
+              "end_line": 42,
+              "content_hash": "sha256:snippet-loyalty-clean",
+              "bytes": 980,
+              "trace_step_id": "trace-direct-context"
+            }
+          ],
+          "missing_targets": [],
+          "risk_notes": []
+        }
+      }
+    },
+    {
+      "id": "ecr-react-r0",
+      "experiment_id": "exp-phase0-mock-001",
+      "eval_task_id": "task-shop-pricing",
+      "strategy_version_id": "sv-react-v2",
+      "repeat_index": 0,
+      "clean_run_id": "run-clean-react-r0",
+      "generated_test_set_artifact_id": "artifact-testset-react-r0",
+      "false_positive": false,
+      "clean_metrics": {
+        "final_cases_total": 1,
+        "final_passed": 1,
+        "final_failed": 0,
+        "final_skipped": 0,
+        "tool_call_count": 5,
+        "total_tokens": 1320
+      },
+      "runtime_snapshot": {
+        "runtime_profile_id": "runtime-demo-python311",
+        "executor": "local_subprocess",
+        "python_version": "3.11",
+        "test_command": "pytest tests/generated",
+        "network_policy": "disabled",
+        "timeout_seconds": 60,
+        "resource_limits": {
+          "cpu": "declared_only_v2_1",
+          "memory": "declared_only_v2_1"
+        },
+        "env_keys": [
+          "PYTHONPATH"
+        ],
+        "secret_included": false
+      },
+      "strategy_snapshot": {
+        "strategy_version_id": "sv-react-v2",
+        "prompt_version_id": "prompt-v2-001",
+        "prompt_content_hash": "sha256:prompt-react-v2",
+        "tool_schema_version_id": "tool-schema-v2-001",
+        "tool_schema_content_hash": "sha256:tool-schema-v2",
+        "workflow_type": "react_reflection",
+        "allow_reflection": true,
+        "resolved_llm": {
+          "provider": "mock",
+          "model": "scripted-v2",
+          "temperature": 0.0,
+          "model_params": {
+            "scripted_author": "phase0"
+          },
+          "resolution_order": [
+            "strategy_version_defaults",
+            "experiment_llm_override",
+            "repeat_derivation"
+          ],
+          "repeat_index": 0,
+          "secret_included": false
+        }
+      },
+      "report_quality": {
+        "test_inventory": [
+          {
+            "test_name": "test_loyalty_boundary",
+            "source_path": "tests/generated/test_pricing.py",
+            "start_line": 10,
+            "end_line": 16,
+            "nodeid": "tests/generated/test_pricing.py::test_loyalty_boundary"
+          }
+        ],
+        "target_mappings": [
+          {
+            "target_type": "function",
+            "target_ref": "shop.pricing.apply_loyalty_discount",
+            "source_path": "shop/pricing.py",
+            "symbol": "apply_loyalty_discount",
+            "mapping_status": "mapped",
+            "trace_step_id": "trace-react-context"
+          }
+        ],
+        "assertion_summaries": [
+          {
+            "test_name": "test_loyalty_boundary",
+            "nodeid": "tests/generated/test_pricing.py::test_loyalty_boundary",
+            "assertion_summary": "loyalty discount threshold behavior",
+            "target_ref": "shop.pricing.apply_loyalty_discount"
+          }
+        ],
+        "failure_classifications": [],
+        "reflection_evidence": {
+          "used": true,
+          "contract_checked": true,
+          "contract_passed": true,
+          "violation_reasons": [],
+          "accepted_attempt_id": "attempt-react-reflection",
+          "rejected_attempt_ids": []
+        },
+        "context_completeness": {
+          "status": "complete",
+          "context_incomplete": false,
+          "snippets": [
+            {
+              "path": "shop/pricing.py",
+              "target_ref": "shop.pricing.apply_loyalty_discount",
+              "start_line": 20,
+              "end_line": 42,
+              "content_hash": "sha256:snippet-loyalty-clean",
+              "bytes": 980,
+              "trace_step_id": "trace-react-context"
+            }
+          ],
+          "missing_targets": [],
+          "risk_notes": []
+        }
+      }
+    }
+  ],
+  "replay_runs": [
+    {
+      "id": "replay-direct-boundary",
+      "experiment_clean_run_id": "ecr-direct-r0",
+      "generated_test_set_artifact_id": "artifact-testset-direct-r0",
+      "target_snapshot_id": "snap-variant-boundary-loyalty",
+      "bug_variant_id": "bug-boundary-loyalty",
+      "status": "completed",
+      "pytest_summary": {
+        "collected": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "collection_errors": 0,
+        "duration_ms": 420
+      },
+      "replay_mode": "frozen_test_set",
+      "llm_calls": 0,
+      "started_at": "2026-06-15T00:00:06.000Z",
+      "finished_at": "2026-06-15T00:00:07.000Z",
+      "error_code": null,
+      "error_message": null
+    },
+    {
+      "id": "replay-react-boundary",
+      "experiment_clean_run_id": "ecr-react-r0",
+      "generated_test_set_artifact_id": "artifact-testset-react-r0",
+      "target_snapshot_id": "snap-variant-boundary-loyalty",
+      "bug_variant_id": "bug-boundary-loyalty",
+      "status": "completed",
+      "pytest_summary": {
+        "collected": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "collection_errors": 0,
+        "duration_ms": 390
+      },
+      "replay_mode": "frozen_test_set",
+      "llm_calls": 0,
+      "started_at": "2026-06-15T00:00:10.000Z",
+      "finished_at": "2026-06-15T00:00:11.000Z",
+      "error_code": null,
+      "error_message": null
+    }
+  ],
+  "experiment_replay_runs": [
+    {
+      "id": "err-direct-boundary",
+      "experiment_clean_run_id": "ecr-direct-r0",
+      "bug_variant_id": "bug-boundary-loyalty",
+      "replay_id": "replay-direct-boundary",
+      "captured_bug": false,
+      "replay_metrics": {
+        "capture_rule": "clean_passed_variant_assertion_failure_same_nodeid",
+        "clean_passed_nodeids": [],
+        "variant_assertion_failure_nodeids": [
+          "tests/generated/test_pricing.py::test_loyalty_boundary"
+        ],
+        "capturing_nodeids": []
+      }
+    },
+    {
+      "id": "err-react-boundary",
+      "experiment_clean_run_id": "ecr-react-r0",
+      "bug_variant_id": "bug-boundary-loyalty",
+      "replay_id": "replay-react-boundary",
+      "captured_bug": true,
+      "replay_metrics": {
+        "capture_rule": "clean_passed_variant_assertion_failure_same_nodeid",
+        "clean_passed_nodeids": [
+          "tests/generated/test_pricing.py::test_loyalty_boundary"
+        ],
+        "variant_assertion_failure_nodeids": [
+          "tests/generated/test_pricing.py::test_loyalty_boundary"
+        ],
+        "capturing_nodeids": [
+          "tests/generated/test_pricing.py::test_loyalty_boundary"
+        ]
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "artifact-testset-direct-r0",
+      "artifact_type": "generated_test_set",
+      "uri": "artifacts/exp-phase0-mock-001/direct-r0/generated_test_set.json",
+      "content_hash": "sha256:testset-direct-r0",
+      "size_bytes": 2048,
+      "metadata": {
+        "kind": "generated_test_set",
+        "created_by": "agent",
+        "experiment_id": "exp-phase0-mock-001",
+        "clean_run_id": "run-clean-direct-r0",
+        "replay_id": null,
+        "content_role": "final_clean_test_set",
+        "relative_paths": [
+          "tests/generated/test_pricing.py"
+        ],
+        "hash_algorithm": "sha256"
+      }
+    },
+    {
+      "id": "artifact-testset-react-r0",
+      "artifact_type": "generated_test_set",
+      "uri": "artifacts/exp-phase0-mock-001/react-r0/generated_test_set.json",
+      "content_hash": "sha256:testset-react-r0",
+      "size_bytes": 2052,
+      "metadata": {
+        "kind": "generated_test_set",
+        "created_by": "agent",
+        "experiment_id": "exp-phase0-mock-001",
+        "clean_run_id": "run-clean-react-r0",
+        "replay_id": null,
+        "content_role": "final_clean_test_set",
+        "relative_paths": [
+          "tests/generated/test_pricing.py"
+        ],
+        "hash_algorithm": "sha256"
+      }
+    },
+    {
+      "id": "artifact-bug-boundary-loyalty-patch",
+      "artifact_type": "bug_patch",
+      "uri": "artifacts/dataset-demo-v2/bug-boundary-loyalty.patch",
+      "content_hash": "sha256:bug-boundary-loyalty-patch",
+      "size_bytes": 512,
+      "metadata": {
+        "kind": "bug_patch",
+        "created_by": "seed_script",
+        "experiment_id": null,
+        "clean_run_id": null,
+        "replay_id": null,
+        "content_role": "canonical_patch",
+        "relative_paths": [
+          "shop/pricing.py"
+        ],
+        "hash_algorithm": "sha256"
+      }
+    },
+    {
+      "id": "artifact-exp-phase0-metrics",
+      "artifact_type": "experiment_metrics",
+      "uri": "artifacts/exp-phase0-mock-001/metrics.json",
+      "content_hash": "sha256:exp-phase0-metrics",
+      "size_bytes": 8192,
+      "metadata": {
+        "kind": "experiment_metrics",
+        "created_by": "experiment_service",
+        "experiment_id": "exp-phase0-mock-001",
+        "clean_run_id": null,
+        "replay_id": null,
+        "content_role": "metrics_snapshot",
+        "relative_paths": [
+          "metrics.json"
+        ],
+        "hash_algorithm": "sha256"
+      }
+    }
+  ]
+}
