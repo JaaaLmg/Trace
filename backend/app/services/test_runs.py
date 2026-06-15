@@ -28,6 +28,7 @@ from app.services.path_policy import ensure_generated_tests_dir, validate_snapsh
 from app.services.runtime_profiles import ensure_default_runtime_profile
 from app.tools import default_registry
 from app.tools.base import ToolContext
+from app.tools.executor import executor_from_runtime_snapshot
 from sqlalchemy.orm import Session
 
 
@@ -176,11 +177,15 @@ def _llm_for_strategy(strategy_spec: StrategyVersionSpec):
     api_key = _api_key_for_provider(provider)
     if not api_key:
         raise ValueError(f"LLM provider {provider} 缺少 API key；请在配置文件或环境变量中提供，且不会写入 snapshot")
+    # temperature 的真相在 strategy_spec.temperature（= snapshot.resolved_llm.temperature），
+    # 不在 model_params 里。这里必须用冻结值，否则真实调用会丢温度、退回 provider 默认，
+    # 踩到「快照写一套、实跑另一套」的红线。params 只作为历史兜底。
+    temperature = strategy_spec.temperature if strategy_spec.temperature is not None else params.get("temperature")
     return create_llm(
         provider,
         strategy_spec.model_name,
         api_key=api_key,
-        temperature=params.get("temperature"),
+        temperature=temperature,
         max_output_tokens=int(params.get("max_output_tokens", 8192)),
         base_url=params.get("base_url"),
         reasoning_effort=params.get("reasoning_effort"),
@@ -472,7 +477,11 @@ def execute_run_sync(
 
         try:
             execute_run(
-                tools=ToolContext(root=root, test_write_dir=test_write_dir),
+                tools=ToolContext(
+                    root=root,
+                    test_write_dir=test_write_dir,
+                    executor=executor_from_runtime_snapshot(run.runtime_snapshot),
+                ),
                 registry=default_registry(),
                 llm=llm,
                 recorder=recorder,

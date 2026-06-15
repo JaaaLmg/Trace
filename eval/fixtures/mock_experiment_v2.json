@@ -155,8 +155,16 @@
         "strategy_version_id": "sv-direct-v2",
         "prompt_version_id": "prompt-v2-001",
         "prompt_content_hash": "sha256:prompt-direct-v2",
+        "prompt_content": {
+          "system": "scripted direct prompt v2",
+          "generate": "scripted direct generate template v2"
+        },
         "tool_schema_version_id": "tool-schema-v2-001",
         "tool_schema_content_hash": "sha256:tool-schema-v2",
+        "tool_schema_json": {
+          "version": "v2",
+          "tools": ["analyze_project", "write_test_file", "run_pytest"]
+        },
         "workflow_type": "direct",
         "allow_reflection": false,
         "resolved_llm": {
@@ -274,8 +282,17 @@
         "strategy_version_id": "sv-react-v2",
         "prompt_version_id": "prompt-v2-001",
         "prompt_content_hash": "sha256:prompt-react-v2",
+        "prompt_content": {
+          "system": "scripted react prompt v2",
+          "generate": "scripted react generate template v2",
+          "reflect": "scripted react reflect template v2"
+        },
         "tool_schema_version_id": "tool-schema-v2-001",
         "tool_schema_content_hash": "sha256:tool-schema-v2",
+        "tool_schema_json": {
+          "version": "v2",
+          "tools": ["analyze_project", "write_test_file", "run_pytest"]
+        },
         "workflow_type": "react_reflection",
         "allow_reflection": true,
         "resolved_llm": {

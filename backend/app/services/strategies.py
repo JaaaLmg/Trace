@@ -78,7 +78,21 @@ def seed_strategy_versions(session: Session) -> None:
                 )
             )
 
-        if get_strategy_version(session, spec.id):
+        existing = get_strategy_version(session, spec.id)
+        if existing is not None:
+            # 老库里 V1 三条 strategy_version 早已存在，但 stage1 新增的版本外键是空的。
+            # 不能直接 continue 跳过，否则升级后这些行 strategy_id/prompt_version_id/
+            # tool_schema_version_id/version 永远是 NULL，新 run 进 _strategy_snapshot()
+            # 找不到 prompt/tool version 就直接失败。这里对已有行做缺失字段回填。
+            if existing.strategy_id is None:
+                existing.strategy_id = strategy_parent_id
+            if not existing.version:
+                existing.version = "v1"
+            if existing.prompt_version_id is None:
+                existing.prompt_version_id = prompt_version_id
+            if existing.tool_schema_version_id is None:
+                existing.tool_schema_version_id = tool_schema_id
+            session.add(existing)
             continue
         session.add(
             StrategyVersion(

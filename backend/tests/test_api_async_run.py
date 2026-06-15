@@ -1,5 +1,4 @@
 from fastapi.testclient import TestClient
-from pathlib import Path
 
 from app.main import create_app
 from app.workers.celery_app import celery_app
@@ -67,21 +66,30 @@ def test_async_run_is_enqueued(monkeypatch, tmp_path, clean_db):
         assert bad.status_code == 422
 
 
-def test_list_projects_hides_pytest_tmp_projects(tmp_path, clean_db):
-    trace_root = Path(__file__).resolve().parents[2]
+def test_list_projects_hides_pytest_tmp_projects(monkeypatch, tmp_path, clean_db):
+    # 不能往仓库根的共享 .pytest_tmp 里写：那是个不受 pytest 管理、不会被清理的硬编码路径，
+    # Windows 上残留目录被占用后会变成永久 access-denied，让本测试无故挂掉。
+    # 改为把 TRACE_ROOT 指到 pytest 管理的 tmp_path，隐藏目录也建在 tmp_path 下，跑完自动清理。
+    from app.services import path_policy
+
+    monkeypatch.setattr(path_policy, "TRACE_ROOT", tmp_path.resolve())
+
+    real_root = tmp_path / "real_proj"
+    real_root.mkdir()
+    (real_root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    hidden_root = tmp_path / ".pytest_tmp" / "proj"
+    hidden_root.mkdir(parents=True)
+    (hidden_root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
     app = create_app()
     with TestClient(app) as client:
-        real_root = trace_root / "backend" / "tests" / "fixtures" / "async_demo_project"
-        tmp_root = trace_root / ".pytest_tmp" / "test_sync_run_via_api0" / "proj"
-        tmp_root.mkdir(parents=True)
-
         real_project = client.post(
             "/api/v1/projects",
             json={"name": "real-project", "local_path": str(real_root)},
         ).json()
         hidden_project = client.post(
             "/api/v1/projects",
-            json={"name": "pytest-temp-project", "local_path": str(tmp_root)},
+            json={"name": "pytest-temp-project", "local_path": str(hidden_root)},
         ).json()
 
         projects = client.get("/api/v1/projects")

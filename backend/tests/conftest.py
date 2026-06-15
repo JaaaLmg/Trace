@@ -42,17 +42,35 @@ TRACE_TABLES = [
 ]
 
 
+def _schema_is_current(engine) -> bool:
+    # 只比表名不够：旧库可能表在、列缺（例如 stage1 新增的 strategy_versions.strategy_id）。
+    # 这里逐表比对 ORM 期望列是否都已存在，任一缺列即判定 schema 漂移。
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in existing_tables:
+            return False
+        existing_cols = {col["name"] for col in inspector.get_columns(table_name)}
+        expected_cols = {col.name for col in table.columns}
+        if not expected_cols.issubset(existing_cols):
+            return False
+    return True
+
+
 def _ensure_trace_tables() -> None:
     load_all_models()
     engine = get_engine()
-    expected_tables = set(Base.metadata.tables.keys())
-    existing_tables = set(inspect(engine).get_table_names())
-    if expected_tables.issubset(existing_tables):
+    if _schema_is_current(engine):
         return
+    # 缺表或列漂移：以 ORM metadata 为准整体重建，别让残留旧列骗过表名检查。
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    remaining = expected_tables - set(inspect(engine).get_table_names())
-    if remaining:
-        raise AssertionError(f"TRACE test tables are missing after create_all: {sorted(remaining)}")
+    if not _schema_is_current(engine):
+        expected_tables = set(Base.metadata.tables.keys())
+        remaining = expected_tables - set(inspect(engine).get_table_names())
+        raise AssertionError(
+            f"TRACE test schema still drifted after rebuild; missing tables: {sorted(remaining)}"
+        )
 
 
 def reset_trace_db() -> None:

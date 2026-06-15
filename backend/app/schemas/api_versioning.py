@@ -5,6 +5,30 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class StrategyCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    workflow_type: str
+    strategy_id: str | None = None
+
+
+class PromptVersionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    version: str
+    content: dict
+    source_ref: str | None = None
+
+
+class ToolSchemaVersionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    schema_payload: dict
+
+
 class StrategyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -25,7 +25,7 @@ from app.schemas.tools import AnalyzeProjectOutput, RunPytestOutput
 def do_analyze(ctx: AgentContext, scope: list[str]) -> AnalyzeProjectOutput:
     ctx.set_stage("analyzing")
     analysis = ctx.call_tool("analyze_project", {"target_scope": scope})  # type: ignore[return-value]
-    source_bundle = build_source_context_bundle(ctx.tools, scope)
+    source_bundle = build_source_context_bundle(ctx.tools, scope, analysis)
     ctx.source_context_text = source_bundle.source_context_text
     ctx.context_completeness = source_bundle.context_completeness
     ctx.trace(

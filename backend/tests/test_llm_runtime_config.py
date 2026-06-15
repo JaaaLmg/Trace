@@ -62,6 +62,40 @@ def test_explicit_missing_llm_config_file_fails(monkeypatch, tmp_path):
         llm_config.load_llm_config()
 
 
+def test_llm_for_strategy_passes_frozen_temperature_to_client(monkeypatch):
+    # 回归保护 P1#2：真实 client 必须收到冻结进 snapshot 的 temperature，
+    # 而不是 model_params.get("temperature")（那里根本没有这个 key，会退回 None）。
+    import app.services.test_runs as test_run_service
+    from app.schemas.strategy import StrategyVersionSpec
+
+    # 模拟从 snapshot 恢复后的 spec：temperature 在 spec 上，model_params 里没有 temperature。
+    spec = StrategyVersionSpec(
+        id="sv-x",
+        name="x",
+        workflow_type="direct",
+        model_provider="openai",
+        model_name="model-a",
+        model_params={"base_url": "https://api.a.test/v1", "max_output_tokens": 256},
+        temperature=0.2,
+    )
+
+    captured = {}
+
+    def fake_create_llm(provider, model, **kwargs):
+        captured["provider"] = provider
+        captured["model"] = model
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(test_run_service, "create_llm", fake_create_llm)
+    monkeypatch.setattr(test_run_service, "_api_key_for_provider", lambda provider: "key-x")
+
+    test_run_service._llm_for_strategy(spec)
+
+    # create_llm 收到的 temperature 必须等于冻结值（snapshot.resolved_llm.temperature 的来源）。
+    assert captured["temperature"] == spec.temperature == 0.2
+
+
 def test_execute_run_uses_frozen_strategy_snapshot(monkeypatch, tmp_path, clean_db):
     config_a = tmp_path / "llm-a.json"
     config_b = tmp_path / "llm-b.json"
