@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { X } from "@lucide/vue";
 import { useI18n } from "../i18n";
-import type { TraceStepOut } from "../types/api";
+import type { JsonValue, TraceStepOut } from "../types/api";
 import JsonViewer from "./JsonViewer.vue";
 import StatusBadge from "./StatusBadge.vue";
 
@@ -17,6 +17,80 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const payload = computed(() => props.step?.payload ?? null);
+
+function asRecord(value: JsonValue | null | undefined): Record<string, JsonValue> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, JsonValue>;
+}
+
+function pathText(root: JsonValue | null | undefined, keys: string[]): string {
+  let current: JsonValue | undefined = root ?? undefined;
+  for (const key of keys) {
+    if (Array.isArray(current)) {
+      const index = Number(key);
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+        return "";
+      }
+      current = current[index];
+      continue;
+    }
+    const record = asRecord(current);
+    if (!record || !(key in record)) {
+      return "";
+    }
+    current = record[key];
+  }
+  return stringify(current);
+}
+
+function stringify(value: JsonValue | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+function normalizeEscapedNewlines(value: string): string {
+  return value.replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+}
+
+function compactText(value: string, limit = 9000): string {
+  const normalized = normalizeEscapedNewlines(value).trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit)}\n...[truncated ${normalized.length - limit} chars]`;
+}
+
+function firstText(...values: string[]): string {
+  return values.find((value) => value.trim().length > 0) ?? "";
+}
+
+const inputText = computed(() => {
+  return compactText(
+    firstText(
+      pathText(payload.value, ["input"]),
+      pathText(payload.value, ["attempt_logs", "0", "messages"]),
+      props.step?.input_summary ?? ""
+    )
+  );
+});
+
+const outputText = computed(() => {
+  return compactText(
+    firstText(
+      pathText(payload.value, ["value"]),
+      pathText(payload.value, ["output"]),
+      pathText(payload.value, ["attempt_logs", "0", "raw_text"]),
+      props.step?.output_summary ?? ""
+    )
+  );
+});
 </script>
 
 <template>
@@ -35,14 +109,14 @@ const payload = computed(() => props.step?.payload ?? null);
       </div>
 
       <div class="detail-grid">
-        <div>
+        <section class="summary-card">
           <p class="detail-label">{{ t("detail.input") }}</p>
-          <p>{{ step.input_summary || t("detail.noInput") }}</p>
-        </div>
-        <div>
+          <pre class="summary-text">{{ inputText || t("detail.noInput") }}</pre>
+        </section>
+        <section class="summary-card">
           <p class="detail-label">{{ t("detail.output") }}</p>
-          <p>{{ step.output_summary || t("detail.noOutput") }}</p>
-        </div>
+          <pre class="summary-text">{{ outputText || t("detail.noOutput") }}</pre>
+        </section>
       </div>
 
       <JsonViewer :value="payload" />
@@ -62,6 +136,8 @@ const payload = computed(() => props.step?.payload ?? null);
   position: relative;
   z-index: 3;
   min-width: 0;
+  max-height: calc(100vh - 64px);
+  overflow: auto;
   padding: 18px;
   border-left: 1px solid var(--border);
   background: rgba(255, 252, 247, 0.96);
@@ -121,7 +197,7 @@ const payload = computed(() => props.step?.payload ?? null);
   margin-bottom: 12px;
 }
 
-.detail-grid > div {
+.summary-card {
   min-width: 0;
   padding: 10px;
   border: 1px solid var(--border);
@@ -135,6 +211,22 @@ const payload = computed(() => props.step?.payload ?? null);
   font-family: var(--font-mono);
   font-size: 11px;
   text-transform: uppercase;
+}
+
+.summary-text {
+  max-height: 300px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .traceback {

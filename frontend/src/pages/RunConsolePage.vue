@@ -29,9 +29,10 @@ const emit = defineEmits<{
 const activeTab = ref<RunTab>("trace");
 const bundle = ref<RunBundle | null>(null);
 const selectedStepId = ref<string | null>(null);
-const drawerOpen = ref(true);
+const drawerOpen = ref(false);
 const loading = ref(false);
 const isStale = ref(false);
+const isPollingRefresh = ref(false);
 const errorMessage = ref<string | null>(null);
 const { t } = useI18n();
 let poller: number | null = null;
@@ -48,36 +49,47 @@ const selectedStep = computed(() => {
   if (!bundle.value) {
     return null;
   }
-  return bundle.value.traceSteps.find((step) => step.id === selectedStepId.value) ?? bundle.value.traceSteps[0] ?? null;
+  if (!selectedStepId.value) {
+    return null;
+  }
+  return bundle.value.traceSteps.find((step) => step.id === selectedStepId.value) ?? null;
 });
 
 const run = computed(() => bundle.value?.run ?? null);
 const canPoll = computed(() => props.dataSource === "api" && ["queued", "running"].includes(run.value?.status ?? ""));
+const isRunActive = computed(() => ["queued", "running"].includes(run.value?.status ?? ""));
 
 function cloneMockBundle(): RunBundle {
   return structuredClone(mockRunBundle);
 }
 
-function selectUsefulStep(nextBundle: RunBundle) {
+function keepSelectedStepIfPresent(nextBundle: RunBundle) {
   const current = selectedStepId.value;
-  if (current && nextBundle.traceSteps.some((step) => step.id === current)) {
+  if (!current) {
     return;
   }
-  selectedStepId.value =
-    nextBundle.traceSteps.find((step) => step.status === "error")?.id ?? nextBundle.traceSteps[0]?.id ?? null;
+  if (!nextBundle.traceSteps.some((step) => step.id === current)) {
+    selectedStepId.value = null;
+    drawerOpen.value = false;
+  }
 }
 
-async function loadBundle() {
+async function loadBundle(options: { background?: boolean } = {}) {
+  const background = options.background === true && bundle.value !== null;
+  if (background) {
+    isPollingRefresh.value = true;
+  }
   loading.value = true;
   errorMessage.value = null;
   try {
     const nextBundle = props.dataSource === "mock" ? cloneMockBundle() : await getRunBundle(props.runId);
     bundle.value = nextBundle;
-    selectUsefulStep(nextBundle);
+    keepSelectedStepIfPresent(nextBundle);
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : t("run.loadFailed");
   } finally {
     loading.value = false;
+    isPollingRefresh.value = false;
   }
 }
 
@@ -92,7 +104,7 @@ function configurePolling() {
   stopPolling();
   if (canPoll.value) {
     poller = window.setInterval(() => {
-      void loadBundle();
+      void loadBundle({ background: true });
     }, 1500);
   }
 }
@@ -196,6 +208,8 @@ function selectTab(key: string) {
 watch(
   () => [props.runId, props.dataSource],
   () => {
+    selectedStepId.value = null;
+    drawerOpen.value = false;
     void loadBundle();
   },
   { immediate: true }
@@ -208,7 +222,10 @@ onBeforeUnmount(stopPolling);
 
 <template>
   <main class="run-page app-page">
-    <section class="console-shell" :class="{ 'drawer-closed': !drawerOpen, 'is-stale': isStale }">
+    <section
+      class="console-shell"
+      :class="{ 'drawer-closed': !drawerOpen, 'is-stale': isStale, 'is-polling': isPollingRefresh || (loading && bundle) }"
+    >
       <div class="console-top">
         <div class="brand-line">
           <img class="brand-mark" src="/trace-logo-icon.svg" alt="TRACE" />
@@ -256,6 +273,10 @@ onBeforeUnmount(stopPolling);
           <TopicTabs :tabs="tabs" :active="activeTab" @select="selectTab" />
 
           <div v-if="errorMessage" class="error-banner">{{ errorMessage }}</div>
+          <div v-if="isRunActive" class="live-status" aria-live="polite">
+            <span class="live-spinner" aria-hidden="true"></span>
+            <span>{{ t("run.waitingForStep") }}</span>
+          </div>
 
           <div v-if="activeTab === 'overview'" class="overview-pane">
             <div class="overview-grid">
@@ -301,6 +322,7 @@ onBeforeUnmount(stopPolling);
             v-else-if="activeTab === 'trace'"
             :steps="bundle.traceSteps"
             :selected-step-id="selectedStepId"
+            :live="isRunActive"
             @select="
               selectedStepId = $event.id;
               drawerOpen = true;
@@ -311,7 +333,6 @@ onBeforeUnmount(stopPolling);
           <ArtifactsList v-else :artifacts="bundle.artifacts" />
         </section>
 
-        <button v-if="drawerOpen" class="drawer-overlay" type="button" :aria-label="t('detail.close')" @click="drawerOpen = false"></button>
         <TraceStepDetail :step="selectedStep" :open="drawerOpen" @close="drawerOpen = false" />
       </template>
 
@@ -378,8 +399,13 @@ onBeforeUnmount(stopPolling);
   opacity: 1;
 }
 
-.console-shell.is-stale .stale-progress::before {
+.console-shell.is-stale .stale-progress::before,
+.console-shell.is-polling .stale-progress::before {
   animation: progress-sweep 1.2s ease-in-out infinite;
+}
+
+.console-shell.is-polling .stale-progress {
+  opacity: 1;
 }
 
 @keyframes progress-sweep {
@@ -470,23 +496,6 @@ onBeforeUnmount(stopPolling);
   z-index: 4;
 }
 
-.drawer-overlay {
-  position: absolute;
-  z-index: 2;
-  top: 64px;
-  right: 0;
-  bottom: 0;
-  left: 260px;
-  border: 0;
-  border-radius: 0;
-  background: rgba(37, 36, 34, 0.08);
-}
-
-.drawer-closed .drawer-overlay {
-  opacity: 0;
-  pointer-events: none;
-}
-
 .error-banner {
   margin: 14px 0;
   padding: 10px 12px;
@@ -494,6 +503,34 @@ onBeforeUnmount(stopPolling);
   border-radius: 7px;
   background: rgba(159, 58, 47, 0.08);
   color: var(--failed);
+}
+
+.live-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.live-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(49, 95, 125, 0.22);
+  border-top-color: var(--tool);
+  border-radius: 50%;
+  animation: spin 760ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .overview-pane {
@@ -539,9 +576,6 @@ onBeforeUnmount(stopPolling);
     grid-column: 1 / -1;
   }
 
-  .drawer-overlay {
-    left: 0;
-  }
 }
 
 @media (max-width: 900px) {
