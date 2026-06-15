@@ -7,6 +7,7 @@ import StatusBadge from "./StatusBadge.vue";
 const props = defineProps<{
   steps: TraceStepOut[];
   selectedStepId: string | null;
+  live?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -57,6 +58,17 @@ function stepTone(step: TraceStepOut): string {
           <span>{{ step.tokens ?? 0 }} tok</span>
         </span>
       </button>
+      <div v-if="props.live" class="waiting-step" aria-live="polite">
+        <span class="waiting-index">{{ String(sortedSteps.length + 1).padStart(2, "0") }}</span>
+        <span class="waiting-main">
+          <span class="waiting-dots" aria-hidden="true">
+            <i></i>
+            <i></i>
+            <i></i>
+          </span>
+          <span>{{ t("trace.waiting") }}</span>
+        </span>
+      </div>
     </div>
   </section>
 </template>
@@ -167,6 +179,66 @@ function stepTone(step: TraceStepOut): string {
   white-space: nowrap;
 }
 
+.waiting-step {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--muted-strong);
+}
+
+.waiting-index {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.waiting-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.waiting-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.waiting-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tool);
+  animation: waiting-bounce 900ms ease-in-out infinite;
+}
+
+.waiting-dots i:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.waiting-dots i:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+@keyframes waiting-bounce {
+  0%,
+  80%,
+  100% {
+    opacity: 0.38;
+    transform: translateY(0);
+  }
+
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
 @media (max-width: 760px) {
   .timeline-head {
     grid-template-columns: 1fr;
@@ -179,6 +251,10 @@ function stepTone(step: TraceStepOut): string {
   .step-meta {
     grid-column: 2;
     justify-content: flex-start;
+  }
+
+  .waiting-step {
+    grid-template-columns: 42px minmax(0, 1fr);
   }
 }
 </style>
