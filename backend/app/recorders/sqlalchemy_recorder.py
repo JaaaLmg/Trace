@@ -295,3 +295,24 @@ class SQLAlchemyRunRecorder(RunRecorder):
             .order_by(PytestCaseResult.nodeid.asc())
         )
         return list(self.session.scalars(stmt))
+
+    def list_generated_files(self, run_id: str) -> list[GeneratedTestFile]:
+        stmt = (
+            select(GeneratedTestFile)
+            .join_from(GeneratedTestFile, RunAttempt)
+            .join_from(RunAttempt, RunPlanItem)
+            .where(RunPlanItem.run_id == run_id)
+            .order_by(GeneratedTestFile.created_at.asc())
+        )
+        return list(self.session.scalars(stmt))
+
+    def list_generated_cases(self, run_id: str) -> list[GeneratedTestCase]:
+        stmt = (
+            select(GeneratedTestCase)
+            .join_from(GeneratedTestCase, GeneratedTestFile)
+            .join_from(GeneratedTestFile, RunAttempt)
+            .join_from(RunAttempt, RunPlanItem)
+            .where(RunPlanItem.run_id == run_id)
+            .order_by(GeneratedTestCase.test_name.asc())
+        )
+        return list(self.session.scalars(stmt))

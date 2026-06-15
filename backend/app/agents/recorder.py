@@ -34,6 +34,8 @@ class RunRecorder(Protocol):
     def list_plan_items(self, run_id: str) -> list[RunPlanItemRecord]: ...
     def list_attempts(self, run_id: str) -> list[RunAttemptRecord]: ...
     def list_pytest_results(self, run_id: str) -> list[PytestCaseResultRecord]: ...
+    def list_generated_files(self, run_id: str) -> list[GeneratedTestFileRecord]: ...
+    def list_generated_cases(self, run_id: str) -> list[GeneratedTestCaseRecord]: ...
 
 
 class InMemoryRecorder:
@@ -102,6 +104,14 @@ class InMemoryRecorder:
     def list_pytest_results(self, run_id: str) -> list[PytestCaseResultRecord]:
         attempt_ids = {a.id for a in self.list_attempts(run_id)}
         return [r for r in self.pytest_results if r.attempt_id in attempt_ids]
+
+    def list_generated_files(self, run_id: str) -> list[GeneratedTestFileRecord]:
+        attempt_ids = {a.id for a in self.list_attempts(run_id)}
+        return [f for f in self.files if f.attempt_id in attempt_ids]
+
+    def list_generated_cases(self, run_id: str) -> list[GeneratedTestCaseRecord]:
+        file_ids = {f.id for f in self.list_generated_files(run_id)}
+        return [c for c in self.cases if c.file_id in file_ids]
 
     def steps_of(self, run_id: str) -> list[TraceStep]:
         return [s for s in self.trace_steps if s.run_id == run_id]

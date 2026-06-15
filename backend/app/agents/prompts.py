@@ -105,11 +105,14 @@ def build_generate_messages(
     scope: list[str],
     goal: str,
     item: PlanItemDraft | None,
+    source_context: str = "",
 ) -> list[Message]:
     focus = f"\n本次聚焦任务：{item.goal}（target={item.target_type}:{item.target_ref}）" if item else ""
+    source_block = f"\n目标源码片段：\n{source_context}\n" if source_context else "\n目标源码片段：\ncontext_incomplete\n"
     user = (
         f"TASK: GENERATE\n总目标：{goal}\n范围：{scope or '整个项目'}{focus}\n\n"
         f"项目分析：\n{summarize_analysis(analysis)}\n\n"
+        f"{source_block}\n"
         f"{GEN_PREFIX}{_GEN_SCHEMA_HINT}"
     )
     return [Message("system", build_system_prompt(strategy)), Message("user", user)]
@@ -127,7 +130,7 @@ def build_reflect_messages(
     )
     collect = "\n".join(f"  - {c.nodeid} [{c.failure_type}] {c.message}" for c in pytest_result.collection_errors[:20])
     # 反斜杠不能进 f-string 的 {} 表达式（Py<3.12），相关源码块先拼好
-    source_block = f"相关源码：\n{relevant_source}\n" if relevant_source else ""
+    source_block = f"相关源码：\n{relevant_source}\n" if relevant_source else "相关源码：\ncontext_incomplete\n"
     user = (
         f"TASK: REFLECT\n首轮生成的测试没通过，请按契约修复一次。\n\n"
         f"{REFLECTION_CONTRACT_V1}\n\n"

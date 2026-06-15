@@ -9,6 +9,7 @@ from app.agents import prompts
 from app.agents.case_mapping import base_nodeid, nodeid_for_case, parse_generated_cases, test_name_of
 from app.agents.contract_guard import check_reflection_contract
 from app.agents.runtime import AgentContext, PlanInput
+from app.services.source_context import build_source_context_bundle
 from app.core.errors import ErrorCode
 from app.schemas.agent import GenerationOutput, PlanItemDraft, ReflectionOutput
 from app.schemas.records import (
@@ -23,7 +24,18 @@ from app.schemas.tools import AnalyzeProjectOutput, RunPytestOutput
 
 def do_analyze(ctx: AgentContext, scope: list[str]) -> AnalyzeProjectOutput:
     ctx.set_stage("analyzing")
-    return ctx.call_tool("analyze_project", {"target_scope": scope})  # type: ignore[return-value]
+    analysis = ctx.call_tool("analyze_project", {"target_scope": scope})  # type: ignore[return-value]
+    source_bundle = build_source_context_bundle(ctx.tools, scope)
+    ctx.source_context_text = source_bundle.source_context_text
+    ctx.context_completeness = source_bundle.context_completeness
+    ctx.trace(
+        "observation",
+        "读取目标源码片段",
+        output_summary=source_bundle.context_completeness.status,
+        payload=source_bundle.context_completeness.model_dump(),
+        status="ok",
+    )
+    return analysis
 
 
 def make_attempt(ctx: AgentContext, plan_item_id: str, attempt_no: int, kind: str) -> RunAttemptRecord:
@@ -35,7 +47,14 @@ def make_attempt(ctx: AgentContext, plan_item_id: str, attempt_no: int, kind: st
 
 def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previous_file_id=None):
     draft = _as_draft(item) if item is not None else None
-    msgs = prompts.build_generate_messages(ctx.strategy, analysis, scope, goal, draft)
+    msgs = prompts.build_generate_messages(
+        ctx.strategy,
+        analysis,
+        scope,
+        goal,
+        draft,
+        source_context=ctx.source_context_text,
+    )
     gen: GenerationOutput = ctx.think(msgs, GenerationOutput, step_type="generation", name="生成测试")
     # 不信任 LLM 给的路径，强制写到策略指定的受控 target_path（白名单在 write_test_file 内）
     wout = ctx.call_tool(
@@ -89,7 +108,13 @@ def execute_item(ctx, analysis, plan_input: PlanInput, item, target_path, allow_
 def _reflect_once(ctx, analysis, plan_input, item, prev_file, prev_cases, out, target_path):
     ctx.set_stage("reflecting")
     a2 = make_attempt(ctx, item.id, 2, "reflection")
-    msgs = prompts.build_reflect_messages(ctx.strategy, analysis, prev_file.content_text or "", out)
+    msgs = prompts.build_reflect_messages(
+        ctx.strategy,
+        analysis,
+        prev_file.content_text or "",
+        out,
+        relevant_source=ctx.source_context_text,
+    )
     refl: ReflectionOutput = ctx.think(msgs, ReflectionOutput, step_type="reflection", name="反思修复")
     a2.reflection_reason = refl.fix_reason
 

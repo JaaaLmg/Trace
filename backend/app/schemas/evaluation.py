@@ -126,8 +126,10 @@ class StrategySnapshotContract(ContractModel):
     strategy_version_id: str
     prompt_version_id: str
     prompt_content_hash: str
+    prompt_content: dict[str, Any]
     tool_schema_version_id: str
     tool_schema_content_hash: str
+    tool_schema_json: dict[str, Any]
     workflow_type: WorkflowType
     allow_reflection: bool
     resolved_llm: ResolvedLlmSpec
@@ -135,11 +137,14 @@ class StrategySnapshotContract(ContractModel):
 
 class RuntimeSnapshotContract(ContractModel):
     runtime_profile_id: str | None = None
+    runtime_profile_name: str | None = None
     executor: Literal["local_subprocess", "docker"] = "local_subprocess"
     python_version: str | None = None
+    install_command: str | None = None
     test_command: str
     network_policy: NetworkPolicy
     timeout_seconds: int = Field(ge=1)
+    env_template: dict[str, Any] = Field(default_factory=dict)
     resource_limits: dict[str, Any] = Field(default_factory=dict)
     env_keys: list[str] = Field(default_factory=list)
     secret_included: Literal[False] = False

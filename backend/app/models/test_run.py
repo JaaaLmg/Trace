@@ -31,7 +31,9 @@ class TestRun(Base):
         String(36), ForeignKey("project_snapshots.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     # 运行环境 profile，V1 暂不单独建表，所以可以为空。
-    runtime_profile_id: Mapped[str | None] = mapped_column(String(36))
+    runtime_profile_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("runtime_profiles.id", ondelete="RESTRICT"), index=True
+    )
     # 运行实际采用的策略版本，V1 要求非空。
     strategy_version_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("strategy_versions.id", ondelete="RESTRICT"), nullable=False, index=True

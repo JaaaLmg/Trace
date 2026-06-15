@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -33,17 +33,32 @@ TRACE_TABLES = [
     "test_runs",
     "test_plans",
     "strategy_versions",
+    "tool_schema_versions",
+    "prompt_versions",
+    "strategies",
+    "runtime_profiles",
     "project_snapshots",
     "projects",
 ]
 
 
+def _ensure_trace_tables() -> None:
+    load_all_models()
+    engine = get_engine()
+    expected_tables = set(Base.metadata.tables.keys())
+    existing_tables = set(inspect(engine).get_table_names())
+    if expected_tables.issubset(existing_tables):
+        return
+    Base.metadata.create_all(bind=engine)
+    remaining = expected_tables - set(inspect(engine).get_table_names())
+    if remaining:
+        raise AssertionError(f"TRACE test tables are missing after create_all: {sorted(remaining)}")
+
+
 def reset_trace_db() -> None:
     try:
         engine = get_engine()
-        engine.dispose()
-        load_all_models()
-        Base.metadata.create_all(bind=engine)
+        _ensure_trace_tables()
         # Windows + TestClient + PostgreSQL 下，上一条测试刚释放连接时
         # 偶尔会和下一条测试的 TRUNCATE 撞上锁等待。这里做一个轻量重试，
         # 优先把“测试隔离中的短暂锁竞争”吃掉，避免误报为业务死锁。

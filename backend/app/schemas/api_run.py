@@ -16,6 +16,11 @@ class RunBudgetOverride(BaseModel):
 class RunCreateRequest(BaseModel):
     snapshot_id: str
     strategy_version_id: str | None = None
+    runtime_profile_id: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_temperature: float | None = Field(default=None, ge=0)
+    llm_max_output_tokens: int | None = Field(default=None, ge=1)
     budget_override: RunBudgetOverride = Field(default_factory=RunBudgetOverride)
     output_options: dict = Field(default_factory=dict)
 

@@ -50,6 +50,11 @@ def create_run_route(plan_id: str, body: RunCreateRequest, db: Session = Depends
             plan_id=plan_id,
             snapshot_id=body.snapshot_id,
             strategy_version_id=body.strategy_version_id,
+            runtime_profile_id=body.runtime_profile_id,
+            llm_provider=body.llm_provider,
+            llm_model=body.llm_model,
+            llm_temperature=body.llm_temperature,
+            llm_max_output_tokens=body.llm_max_output_tokens,
             budget_override=budget_override,
             output_options=body.output_options,
         )

@@ -20,7 +20,7 @@ def test_sync_run_via_api(tmp_path, monkeypatch, clean_db):
     app = create_app()
     with TestClient(app) as client:
         project_root = tmp_path / "proj"
-        project_root.mkdir()
+        project_root.mkdir(parents=True)
         (project_root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
         project = client.post(
