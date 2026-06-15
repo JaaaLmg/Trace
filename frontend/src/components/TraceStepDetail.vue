@@ -68,8 +68,8 @@ const payload = computed(() => props.step?.payload ?? null);
   box-shadow: var(--drawer-shadow);
   transform: translateX(0);
   transition:
-    transform 180ms ease,
-    opacity 140ms ease;
+    transform var(--motion-base) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
 }
 
 .detail-drawer:not(.open) {

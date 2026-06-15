@@ -93,20 +93,30 @@ function stepTone(step: TraceStepOut): string {
   grid-template-columns: 54px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
-  padding: 12px 0;
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
+  padding: 12px 10px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--border);
+  border-radius: 7px;
   background: transparent;
   text-align: left;
   animation: step-in 180ms ease-out both;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 .trace-step.selected {
-  padding-inline: 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  border-color: var(--border-strong);
   background: rgba(251, 250, 247, 0.82);
+}
+
+.trace-step:hover:not(.selected) {
+  border-color: var(--border);
+  background: rgba(251, 250, 247, 0.72);
+  box-shadow: 0 10px 22px rgba(36, 33, 29, 0.07);
+  transform: translateY(-1px);
 }
 
 .trace-step.error {

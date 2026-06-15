@@ -336,7 +336,7 @@ onBeforeUnmount(stopPolling);
   border-radius: var(--radius);
   background: var(--panel);
   box-shadow: var(--shadow);
-  transition: grid-template-columns 180ms ease;
+  transition: grid-template-columns var(--motion-base) var(--ease-standard);
 }
 
 .console-shell.drawer-closed {
@@ -348,7 +348,7 @@ onBeforeUnmount(stopPolling);
 .console-shell.is-stale :deep(.detail-drawer) {
   opacity: 0.5;
   pointer-events: none;
-  transition: opacity 160ms ease;
+  transition: opacity var(--motion-base) var(--ease-standard);
 }
 
 .stale-progress {
@@ -362,7 +362,7 @@ onBeforeUnmount(stopPolling);
   opacity: 0;
   background: rgba(215, 164, 76, 0.18);
   pointer-events: none;
-  transition: opacity 120ms ease;
+  transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
 .stale-progress::before {

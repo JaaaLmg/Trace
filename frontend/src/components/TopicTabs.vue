@@ -48,6 +48,18 @@ const emit = defineEmits<{
   background: rgba(251, 250, 247, 0.72);
   color: var(--muted-strong);
   white-space: nowrap;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+.topic-tab:hover:not(.active) {
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink);
+  transform: translateY(-1px);
 }
 
 .topic-tab.active {

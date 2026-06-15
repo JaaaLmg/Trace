@@ -203,7 +203,7 @@ async function copyValue() {
   color: var(--muted-strong);
   font-size: 11px;
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity var(--motion-fast) var(--ease-standard);
 }
 
 .json-node:hover > .json-row .copy-node,

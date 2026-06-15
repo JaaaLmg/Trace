@@ -11,6 +11,7 @@ import {
   listSnapshots
 } from "../api/projects";
 import { createRun } from "../api/runs";
+import PathPickerField from "../components/PathPickerField.vue";
 import { useI18n } from "../i18n";
 import { mockPlans, mockProjects, mockSnapshots } from "../mock/data";
 import type { ProjectOut, ProjectSnapshotOut, TestPlanOut, TestRunOut } from "../types/api";
@@ -304,10 +305,13 @@ watch(selectedProjectId, () => {
           <span>{{ t("projects.projectName") }}</span>
           <input v-model="projectForm.name" required type="text" :placeholder="t('projects.projectNamePlaceholder')" />
         </label>
-        <label>
-          <span>{{ t("projects.localPath") }}</span>
-          <input v-model="projectForm.localPath" required type="text" :placeholder="t('projects.localPathPlaceholder')" />
-        </label>
+        <PathPickerField
+          v-model="projectForm.localPath"
+          :label="t('projects.localPath')"
+          :placeholder="t('projects.localPathPlaceholder')"
+          :picker-title="t('pathPicker.projectTitle')"
+          required
+        />
         <label>
           <span>{{ t("projects.description") }}</span>
           <input v-model="projectForm.description" type="text" :placeholder="t('projects.descriptionPlaceholder')" />
@@ -374,10 +378,13 @@ watch(selectedProjectId, () => {
                 <Layers3 :size="18" aria-hidden="true" />
               </div>
               <form v-if="props.dataSource === 'api'" class="stack-form" @submit.prevent="submitSnapshot">
-                <label>
-                  <span>{{ t("projects.snapshotRoot") }}</span>
-                  <input v-model="snapshotRoot" required type="text" />
-                </label>
+                <PathPickerField
+                  v-model="snapshotRoot"
+                  :label="t('projects.snapshotRoot')"
+                  :initial-path="selectedProject.local_path"
+                  :picker-title="t('pathPicker.snapshotTitle')"
+                  required
+                />
                 <button class="text-button" type="submit" :disabled="creatingSnapshot">
                   <Plus :size="15" aria-hidden="true" />
                   {{ creatingSnapshot ? t("projects.creating") : t("projects.createSnapshot") }}
@@ -626,6 +633,20 @@ watch(selectedProjectId, () => {
   margin-top: 10px;
   padding: 10px;
   text-align: left;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+.project-row:hover:not(.selected),
+.run-row:hover,
+.plan-row:hover:not(.selected) {
+  border-color: var(--border-strong);
+  background: rgba(251, 250, 247, 0.9);
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-1px);
 }
 
 .project-row.selected {
