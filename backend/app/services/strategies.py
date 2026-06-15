@@ -1,29 +1,103 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
+from app.agents.prompts import prompt_bundle
 from app.agents.seeds import seed_list
 from app.models.strategy import StrategyVersion
+from app.models.versioning import PromptVersion, Strategy, ToolSchemaVersion
 from app.repositories.strategies import get_strategy_version
+from app.repositories.versioning import get_prompt_version, get_strategy, get_tool_schema_version
+from app.tools import default_registry
 from sqlalchemy.orm import Session
 
 
+def _prompt_version_id_for(spec) -> str:
+    return f"pv-{spec.prompt_ref}"
+
+
+def _tool_schema_version_id_for(spec) -> str:
+    return f"tsv-{spec.tool_schema_ref}"
+
+
+def _strategy_parent_id_for(spec) -> str:
+    return spec.workflow_type
+
+
+def _tool_schema_payload() -> dict:
+    registry = default_registry()
+    tools: list[dict] = []
+    for name in sorted(registry.names()):
+        spec = registry.get(name)
+        tools.append(
+            {
+                "name": name,
+                "input_schema": spec.input_model.model_json_schema(),
+                "output_schema": spec.output_model.model_json_schema(),
+            }
+        )
+    return {"version": "v1", "tools": tools}
+
+
+def _hash_json(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 def seed_strategy_versions(session: Session) -> None:
-    # 把 A 线内置的 3 个策略版本灌入数据库。
-    # 这是幂等 seed：已存在就跳过，方便每次启动应用时安全执行。
+    tool_schema_payload = _tool_schema_payload()
+    tool_schema_id = None
     for spec in seed_list():
+        strategy_parent_id = _strategy_parent_id_for(spec)
+        if get_strategy(session, strategy_parent_id) is None:
+            session.add(Strategy(id=strategy_parent_id, name=spec.name, workflow_type=spec.workflow_type))
+
+        prompt_payload = prompt_bundle(spec)
+        prompt_version_id = _prompt_version_id_for(spec)
+        if get_prompt_version(session, prompt_version_id) is None:
+            session.add(
+                PromptVersion(
+                    id=prompt_version_id,
+                    name=f"{spec.name} Prompt",
+                    version="v1",
+                    content=prompt_payload,
+                    content_hash=_hash_json(prompt_payload),
+                    source_ref=spec.prompt_ref,
+                )
+            )
+
+        tool_schema_id = _tool_schema_version_id_for(spec)
+        if get_tool_schema_version(session, tool_schema_id) is None:
+            session.add(
+                ToolSchemaVersion(
+                    id=tool_schema_id,
+                    version="v1",
+                    schema_json=tool_schema_payload,
+                    content_hash=_hash_json(tool_schema_payload),
+                )
+            )
+
         if get_strategy_version(session, spec.id):
             continue
         session.add(
             StrategyVersion(
                 id=spec.id,
+                strategy_id=strategy_parent_id,
                 name=spec.name,
+                version="v1",
                 workflow_type=spec.workflow_type,
                 model_provider=spec.model_provider,
                 model_name=spec.model_name,
                 model_params=spec.model_params,
+                temperature=spec.temperature,
                 allow_reflection=spec.allow_reflection,
                 max_tool_calls=spec.max_tool_calls,
+                prompt_version_id=prompt_version_id,
+                tool_schema_version_id=tool_schema_id,
                 prompt_ref=spec.prompt_ref,
                 tool_schema_ref=spec.tool_schema_ref,
+                is_locked=False,
             )
         )
     session.commit()

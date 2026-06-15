@@ -52,6 +52,36 @@ def test_chat_compat_request_shape_and_auth():
     assert resp.tokens == 11
 
 
+def test_chat_compat_prefers_responses_for_gpt5_models():
+    seen = {}
+
+    def handler(request):
+        seen.setdefault("calls", []).append((str(request.url), json.loads(request.content.decode("utf-8"))))
+        return httpx.Response(200, json={"output_text": "{}", "usage": {"total_tokens": 13}})
+
+    llm = OpenAIChatCompatLLM(
+        "gpt-5.4",
+        api_key="sk-test",
+        base_url="https://compat.test/v1",
+        temperature=0.3,
+        max_output_tokens=321,
+        client=_client(handler),
+    )
+    resp = llm.complete([Message("system", "SYS"), Message("user", "U")])
+
+    assert seen["calls"][0][0] == "https://compat.test/v1/responses"
+    assert seen["calls"][0][1] == {
+        "model": "gpt-5.4",
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "U"}]}],
+        "max_output_tokens": 321,
+        "store": False,
+        "instructions": "SYS",
+        "temperature": 0.3,
+    }
+    assert resp.text == "{}"
+    assert resp.tokens == 13
+
+
 def test_chat_compat_accepts_full_chat_completions_url():
     seen = {}
 
@@ -136,6 +166,31 @@ def test_chat_compat_http_error_is_readable_and_redacted():
     assert "bad key" in text
     assert "sk-test" not in text
     assert "[redacted]" in text
+
+
+def test_chat_compat_falls_back_from_chat_400_to_responses():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            assert str(request.url) == "https://compat.test/v1/chat/completions"
+            return httpx.Response(400, text='{"error":{"code":"upstream_rejected_request","message":"bad shape"}}')
+        assert str(request.url) == "https://compat.test/v1/responses"
+        return httpx.Response(200, json={"output_text": "{}", "usage": {"total_tokens": 9}})
+
+    llm = OpenAIChatCompatLLM(
+        "deepseek-chat",
+        api_key="sk-test",
+        base_url="https://compat.test/v1",
+        client=_client(handler),
+        max_retries=0,
+    )
+    resp = llm.complete([Message("user", "U")])
+
+    assert calls["n"] == 2
+    assert resp.text == "{}"
+    assert resp.tokens == 9
 
 
 def test_chat_compat_retries_on_5xx_then_succeeds():

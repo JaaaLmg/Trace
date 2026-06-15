@@ -6,6 +6,15 @@ from pathlib import Path
 
 from app.agents.final_attempts import final_attempts_from_records
 from app.agents.runtime import AgentContext
+from app.schemas.evaluation import (
+    AssertionEvidence,
+    ContextCompletenessEvidence,
+    FailureClassificationEvidence,
+    ReflectionEvidence,
+    ReportQualityEvidence,
+    TargetMappingEvidence,
+    TestInventoryEvidence,
+)
 from app.schemas.records import RunArtifactRecord, TestReportRecord
 
 
@@ -49,6 +58,8 @@ def build_report(ctx: AgentContext, *, suspected_code_bug: bool = False, artifac
         "final_failed": failed,
         "final_skipped": skipped,
     }
+    report_quality = _build_report_quality(ctx, final_results, attempts)
+    metrics["report_quality"] = report_quality.model_dump()
     run.pytest_summary = {
         "collected": collected,
         "passed": passed,
@@ -82,7 +93,16 @@ def build_report(ctx: AgentContext, *, suspected_code_bug: bool = False, artifac
         json_path = adir / "report.json"
         md_path.write_text(_render_markdown(ctx, metrics, items, final_by_item, risk_notes), encoding="utf-8")
         json_path.write_text(
-            json.dumps({"summary": summary, "metrics": metrics, "risk_notes": risk_notes}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "summary": summary,
+                    "metrics": metrics,
+                    "risk_notes": risk_notes,
+                    "report_quality": report_quality.model_dump(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         report.markdown_uri = str(md_path)
@@ -91,6 +111,82 @@ def build_report(ctx: AgentContext, *, suspected_code_bug: bool = False, artifac
         rec.add_artifact(RunArtifactRecord(run_id=run.id, artifact_type="report_json", uri=str(json_path)))
 
     return report
+
+
+def _build_report_quality(ctx: AgentContext, final_results, attempts) -> ReportQualityEvidence:
+    test_inventory = []
+    target_mappings = []
+    assertion_summaries = []
+    failure_classifications = []
+
+    generated_files = {item.id: item for item in ctx.recorder.list_generated_files(ctx.run.id)}
+    generated_cases = ctx.recorder.list_generated_cases(ctx.run.id)
+
+    for case in generated_cases:
+        source_path = generated_files.get(case.file_id).path if case.file_id in generated_files else "tests/generated/test_generated.py"
+        test_inventory.append(
+            TestInventoryEvidence(
+                test_name=case.test_name,
+                source_path=source_path,
+                start_line=case.start_line,
+                end_line=case.end_line,
+                nodeid=case.nodeid,
+            )
+        )
+        target_ref = case.target_function or case.target_route or "unknown"
+        target_mappings.append(
+            TargetMappingEvidence(
+                target_type="function" if case.target_function else ("route" if case.target_route else "unknown"),
+                target_ref=target_ref,
+                source_path=(ctx.context_completeness.snippets[0].path if ctx.context_completeness and ctx.context_completeness.snippets else None),
+                symbol=case.target_function,
+                mapping_status="mapped" if target_ref != "unknown" else "unmapped",
+            )
+        )
+        if case.assertion_summary:
+            assertion_summaries.append(
+                AssertionEvidence(
+                    test_name=case.test_name,
+                    nodeid=case.nodeid,
+                    assertion_summary=case.assertion_summary,
+                    target_ref=target_ref if target_ref != "unknown" else None,
+                )
+            )
+
+    for result in final_results:
+        if result.failure_type:
+            failure_classifications.append(
+                FailureClassificationEvidence(
+                    nodeid=result.nodeid,
+                    classification=result.failure_type,
+                    message=result.failure_message,
+                )
+            )
+
+    reflection_attempts = [attempt for attempt in attempts if attempt.kind == "reflection"]
+    reflection_evidence = ReflectionEvidence(
+        used=bool(reflection_attempts),
+        contract_checked=bool(reflection_attempts),
+        contract_passed=None if not reflection_attempts else not any(a.error_code == "REFLECTION_CONTRACT_VIOLATION" for a in reflection_attempts),
+        violation_reasons=[a.error_code for a in reflection_attempts if a.error_code],
+        accepted_attempt_id=next((a.id for a in reflection_attempts if a.status == "passed"), None),
+        rejected_attempt_ids=[a.id for a in reflection_attempts if a.status != "passed"],
+    )
+    context = ctx.context_completeness or ContextCompletenessEvidence(
+        status="incomplete",
+        context_incomplete=True,
+        snippets=[],
+        missing_targets=[],
+        risk_notes=["source context was not collected"],
+    )
+    return ReportQualityEvidence(
+        test_inventory=test_inventory,
+        target_mappings=target_mappings,
+        assertion_summaries=assertion_summaries,
+        failure_classifications=failure_classifications,
+        reflection_evidence=reflection_evidence,
+        context_completeness=context,
+    )
 
 
 def _render_markdown(ctx, metrics, items, final_by_item, risk_notes) -> str:

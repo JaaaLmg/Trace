@@ -6,7 +6,7 @@ from pathlib import Path
 from app.agents.llm import MockLLM
 from app.agents.llm_config import load_llm_config
 from app.agents.llm_factory import create_llm
-from app.agents.orchestrator import execute_run, freeze_runtime_snapshot, freeze_strategy_snapshot
+from app.agents.orchestrator import execute_run
 from app.agents.runtime import PlanInput
 from app.core.errors import ErrorCode
 from app.core.ids import new_id
@@ -14,14 +14,18 @@ from app.models.trace import RunEvent
 from app.models.project import ProjectSnapshot
 from app.models.strategy import StrategyVersion
 from app.models.test_run import TestRun
+from app.repositories.runtime_profiles import get_runtime_profile
 from app.recorders.sqlalchemy_recorder import SQLAlchemyRunRecorder
 from app.repositories.projects import get_project
 from app.repositories.strategies import get_strategy_version
 from app.repositories.test_plans import get_test_plan
 from app.repositories.test_runs import get_test_run, list_test_runs_for_plan, list_test_runs_for_project
+from app.repositories.versioning import get_prompt_version, get_tool_schema_version
 from app.schemas.records import TestRunRecord
+from app.schemas.evaluation import RuntimeSnapshotContract, StrategySnapshotContract
 from app.schemas.strategy import StrategyVersionSpec
 from app.services.path_policy import ensure_generated_tests_dir, validate_snapshot_root
+from app.services.runtime_profiles import ensure_default_runtime_profile
 from app.tools import default_registry
 from app.tools.base import ToolContext
 from sqlalchemy.orm import Session
@@ -47,15 +51,21 @@ def _strategy_spec_from_model(model: StrategyVersion) -> StrategyVersionSpec:
     # 把数据库中的策略模型还原成 A 线 execute_run 所需的 StrategyVersionSpec。
     return StrategyVersionSpec(
         id=model.id,
+        strategy_id=model.strategy_id,
         name=model.name,
+        version=model.version,
         workflow_type=model.workflow_type,
         model_provider=model.model_provider,
         model_name=model.model_name,
         model_params=model.model_params,
+        temperature=model.temperature,
         allow_reflection=model.allow_reflection,
         max_tool_calls=model.max_tool_calls,
+        prompt_version_id=model.prompt_version_id,
+        tool_schema_version_id=model.tool_schema_version_id,
         prompt_ref=model.prompt_ref,
         tool_schema_ref=model.tool_schema_ref,
+        is_locked=model.is_locked,
     )
 
 
@@ -66,18 +76,59 @@ def _effective_strategy_spec(model: StrategyVersion) -> StrategyVersionSpec:
     config = load_llm_config()
     if config is None:
         raise ValueError("缺少 LLM 配置；请创建 backend/llm.config.json 或设置 TRACE_LLM_* 环境变量")
+    resolved_params = {
+        **dict(spec.model_params or {}),
+        "base_url": config.base_url,
+        "reasoning_effort": config.reasoning_effort,
+    }
+    if config.max_output_tokens is not None:
+        resolved_params["max_output_tokens"] = config.max_output_tokens
     return spec.model_copy(
         update={
             "model_provider": config.provider,
             "model_name": config.model,
-            "model_params": {
-                **dict(spec.model_params or {}),
-                "base_url": config.base_url,
-                "temperature": config.temperature,
-                "max_output_tokens": config.max_output_tokens,
-                "reasoning_effort": config.reasoning_effort,
-            },
+            "model_params": resolved_params,
+            "temperature": config.temperature,
         }
+    )
+
+
+def _strategy_spec_with_optional_runtime_defaults(model: StrategyVersion) -> StrategyVersionSpec:
+    spec = _strategy_spec_from_model(model)
+    try:
+        return _effective_strategy_spec(model)
+    except ValueError:
+        return spec
+
+
+def _apply_llm_override(
+    strategy_spec: StrategyVersionSpec,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+) -> StrategyVersionSpec:
+    params = dict(strategy_spec.model_params or {})
+    if max_output_tokens is not None:
+        params["max_output_tokens"] = max_output_tokens
+    return strategy_spec.model_copy(
+        update={
+            "model_provider": provider or strategy_spec.model_provider,
+            "model_name": model or strategy_spec.model_name,
+            "temperature": temperature if temperature is not None else strategy_spec.temperature,
+            "model_params": params,
+        }
+    )
+
+
+def _selected_llm_spec(strategy_spec: StrategyVersionSpec, *, provider: str | None, model: str | None, temperature: float | None, max_output_tokens: int | None) -> StrategyVersionSpec:
+    return _apply_llm_override(
+        strategy_spec,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -86,18 +137,27 @@ def _strategy_spec_from_run_snapshot(model: StrategyVersion, snapshot: dict | No
     snap = dict(snapshot or {})
     if not snap:
         return _effective_strategy_spec(model)
-    prompts = snap.get("prompts") if isinstance(snap.get("prompts"), dict) else {}
+    resolved_llm = dict(snap.get("resolved_llm") or {})
+    rebuilt_model_params = dict(resolved_llm.get("model_params") or {})
+    if resolved_llm.get("max_output_tokens") is not None:
+        rebuilt_model_params["max_output_tokens"] = resolved_llm["max_output_tokens"]
     return StrategyVersionSpec(
         id=base.id,
+        strategy_id=base.strategy_id,
         name=base.name,
+        version=base.version,
         workflow_type=snap.get("workflow_type", base.workflow_type),
-        model_provider=snap.get("model_provider", base.model_provider),
-        model_name=snap.get("model_name", base.model_name),
-        model_params=dict(snap.get("model_params") or {}),
+        model_provider=resolved_llm.get("provider", base.model_provider),
+        model_name=resolved_llm.get("model", base.model_name),
+        model_params=rebuilt_model_params,
+        temperature=resolved_llm.get("temperature", base.temperature),
         allow_reflection=bool(snap.get("allow_reflection", base.allow_reflection)),
         max_tool_calls=int(snap.get("max_tool_calls", base.max_tool_calls)),
-        prompt_ref=prompts.get("prompt_ref") or base.prompt_ref,
-        tool_schema_ref=snap.get("tool_schema_ref", base.tool_schema_ref),
+        prompt_version_id=snap.get("prompt_version_id", base.prompt_version_id),
+        tool_schema_version_id=snap.get("tool_schema_version_id", base.tool_schema_version_id),
+        prompt_ref=base.prompt_ref,
+        tool_schema_ref=base.tool_schema_ref,
+        is_locked=base.is_locked,
     )
 
 
@@ -113,10 +173,13 @@ def _llm_for_strategy(strategy_spec: StrategyVersionSpec):
     if provider == "mock":
         return _mock_llm()
     params = dict(strategy_spec.model_params or {})
+    api_key = _api_key_for_provider(provider)
+    if not api_key:
+        raise ValueError(f"LLM provider {provider} 缺少 API key；请在配置文件或环境变量中提供，且不会写入 snapshot")
     return create_llm(
         provider,
         strategy_spec.model_name,
-        api_key=_api_key_for_provider(provider),
+        api_key=api_key,
         temperature=params.get("temperature"),
         max_output_tokens=int(params.get("max_output_tokens", 8192)),
         base_url=params.get("base_url"),
@@ -157,14 +220,87 @@ def _run_record_from_model(run: TestRun) -> TestRunRecord:
 
 
 def _runtime_snapshot(
+    runtime_profile,
     *,
     budget_override: dict | None = None,
     output_options: dict | None = None,
 ) -> dict:
-    snap = freeze_runtime_snapshot()
+    timeout_seconds = int((budget_override or {}).get("timeout_seconds", 120))
+    runtime_base = get_runtime_profile_snapshot(runtime_profile) if runtime_profile is not None else {}
+    snap = RuntimeSnapshotContract(
+        runtime_profile_id=runtime_base.get("runtime_profile_id"),
+        runtime_profile_name=runtime_base.get("runtime_profile_name"),
+        executor="local_subprocess",
+        python_version=runtime_base.get("python_version"),
+        install_command=runtime_base.get("install_command"),
+        test_command=runtime_base.get("test_command", "python -m pytest tests -q --rootdir . -p no:cacheprovider"),
+        network_policy=runtime_base.get("network_policy", "default"),
+        timeout_seconds=timeout_seconds,
+        env_template=dict(runtime_base.get("env_template") or {}),
+        resource_limits=dict(runtime_base.get("resource_limits") or {}),
+        env_keys=sorted((runtime_base.get("env_template") or {}).keys()),
+    ).model_dump()
     snap["budget_override"] = dict(budget_override or {})
     snap["output_options"] = dict(output_options or {})
     return snap
+
+
+def _strategy_snapshot(session: Session, strategy_spec: StrategyVersionSpec) -> dict:
+    prompt_version = get_prompt_version(session, strategy_spec.prompt_version_id) if strategy_spec.prompt_version_id else None
+    tool_schema_version = (
+        get_tool_schema_version(session, strategy_spec.tool_schema_version_id) if strategy_spec.tool_schema_version_id else None
+    )
+    if prompt_version is None:
+        raise ValueError("prompt version not found for strategy")
+    if tool_schema_version is None:
+        raise ValueError("tool schema version not found for strategy")
+    payload = StrategySnapshotContract(
+        strategy_version_id=strategy_spec.id,
+        prompt_version_id=prompt_version.id,
+        prompt_content_hash=prompt_version.content_hash,
+        prompt_content=dict(prompt_version.content),
+        tool_schema_version_id=tool_schema_version.id,
+        tool_schema_content_hash=tool_schema_version.content_hash,
+        tool_schema_json=dict(tool_schema_version.schema_json),
+        workflow_type=strategy_spec.workflow_type,
+        allow_reflection=strategy_spec.allow_reflection,
+        resolved_llm={
+            "provider": strategy_spec.model_provider,
+            "model": strategy_spec.model_name,
+            "temperature": strategy_spec.temperature,
+            "max_output_tokens": (strategy_spec.model_params or {}).get("max_output_tokens"),
+            "model_params": dict(
+                {
+                    key: value
+                    for key, value in dict(strategy_spec.model_params or {}).items()
+                    if key not in {"max_output_tokens", "temperature"}
+                }
+            ),
+            "resolution_order": [
+                "strategy_version_defaults",
+                "experiment_llm_override",
+                "repeat_derivation",
+            ],
+            "repeat_index": 0,
+            "secret_included": False,
+        },
+    ).model_dump()
+    # 兼容 V1 已有接口和测试：保留常用扁平字段与 prompts 视图。
+    payload.update(
+        {
+            "workflow_type": strategy_spec.workflow_type,
+            "allow_reflection": strategy_spec.allow_reflection,
+            "max_tool_calls": strategy_spec.max_tool_calls,
+            "prompt_ref": strategy_spec.prompt_ref,
+            "tool_schema_ref": strategy_spec.tool_schema_ref,
+            "model_provider": strategy_spec.model_provider,
+            "model_name": strategy_spec.model_name,
+            "model_params": dict(strategy_spec.model_params or {}),
+            "temperature": strategy_spec.temperature,
+            "prompts": dict(prompt_version.content),
+        }
+    )
+    return payload
 
 
 def create_run(
@@ -173,6 +309,11 @@ def create_run(
     plan_id: str,
     snapshot_id: str,
     strategy_version_id: str | None = None,
+    runtime_profile_id: str | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    llm_temperature: float | None = None,
+    llm_max_output_tokens: int | None = None,
     budget_override: dict | None = None,
     output_options: dict | None = None,
 ) -> TestRun:
@@ -196,15 +337,31 @@ def create_run(
     strategy = get_strategy_version(session, strategy_id)
     if strategy is None:
         raise ValueError("strategy not found")
-    strategy_spec = _effective_strategy_spec(strategy)
+    strategy_spec = _selected_llm_spec(
+        _strategy_spec_with_optional_runtime_defaults(strategy),
+        provider=llm_provider,
+        model=llm_model,
+        temperature=llm_temperature,
+        max_output_tokens=llm_max_output_tokens,
+    )
+    runtime_profile = (
+        get_runtime_profile(session, runtime_profile_id)
+        if runtime_profile_id
+        else ensure_default_runtime_profile(session, project_id=project.id)
+    )
+    if runtime_profile is None:
+        raise ValueError("runtime profile not found")
+    if runtime_profile.project_id != project.id:
+        raise ValueError("runtime profile does not belong to project")
 
     run = TestRun(
         id=new_id(),
         test_plan_id=plan.id,
         project_snapshot_id=snapshot.id,
+        runtime_profile_id=runtime_profile.id,
         strategy_version_id=strategy.id,
-        runtime_snapshot=_runtime_snapshot(budget_override=budget_override, output_options=output_options),
-        strategy_snapshot=freeze_strategy_snapshot(strategy_spec),
+        runtime_snapshot=_runtime_snapshot(runtime_profile, budget_override=budget_override, output_options=output_options),
+        strategy_snapshot=_strategy_snapshot(session, strategy_spec),
         status="queued",
         pytest_summary={},
     )
@@ -242,6 +399,22 @@ def enqueue_run(
     execute_run_task.delay(run.id, budget_override or {})
     session.refresh(run)
     return run
+
+
+def get_runtime_profile_snapshot(profile) -> dict:
+    if profile is None:
+        return {}
+    return {
+        "runtime_profile_id": profile.id,
+        "runtime_profile_name": profile.name,
+        "executor": "local_subprocess",
+        "python_version": profile.python_version,
+        "install_command": profile.install_command,
+        "test_command": profile.test_command,
+        "network_policy": profile.network_policy,
+        "env_template": dict(profile.env_template or {}),
+        "resource_limits": dict(profile.resource_limits or {}),
+    }
 
 
 def list_project_test_runs(session: Session, project_id: str) -> list[TestRun]:
@@ -336,6 +509,7 @@ def retry_run(session: Session, *, run_id: str) -> TestRun:
         test_plan_id=original.test_plan_id,
         retry_of_run_id=original.id,
         project_snapshot_id=original.project_snapshot_id,
+        runtime_profile_id=original.runtime_profile_id,
         strategy_version_id=original.strategy_version_id,
         runtime_snapshot=original.runtime_snapshot,
         strategy_snapshot=original.strategy_snapshot,

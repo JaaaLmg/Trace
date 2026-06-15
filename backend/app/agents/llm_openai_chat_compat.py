@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
 
 import httpx
@@ -59,6 +60,7 @@ class OpenAIChatCompatLLM:
             raise ValueError("openai_chat_compat 需要 --base-url 或 TRACE_LLM_BASE_URL/OPENAI_CHAT_COMPAT_BASE_URL")
         self.base_url = raw_base.rstrip("/")
         self._endpoint = _chat_endpoint(self.base_url)
+        self._responses_endpoint = _responses_endpoint(self.base_url)
         self._max_retries = max_retries
         self._retry_backoff = retry_backoff
         self._client = client or httpx.Client(timeout=timeout)
@@ -67,40 +69,50 @@ class OpenAIChatCompatLLM:
     def complete(self, messages: list[Message], **params) -> LLMResponse:
         if not self.model:
             raise ValueError("openai_chat_compat 需要 --model 或 TRACE_LLM_MODEL/OPENAI_CHAT_COMPAT_MODEL")
-        payload = {
-            "model": self.model,
-            "messages": [_message_to_chat(m) for m in messages],
-            "max_tokens": self.max_output_tokens,
-        }
         temperature = params.get("temperature", self.temperature)
-        if temperature is not None:
-            payload["temperature"] = temperature
+        last_error: TraceError | None = None
+        for endpoint, payload, error_label in _request_variants(
+            self.model,
+            messages,
+            max_output_tokens=self.max_output_tokens,
+            temperature=temperature,
+            chat_endpoint=self._endpoint,
+            responses_endpoint=self._responses_endpoint,
+        ):
+            try:
+                data = request_json(
+                    self._client,
+                    "POST",
+                    endpoint,
+                    headers=self._headers(),
+                    json_body=payload,
+                    error_label=error_label,
+                    api_key=self.api_key,
+                    max_retries=self._max_retries,
+                    backoff=self._retry_backoff,
+                )
+            except TraceError as exc:
+                last_error = exc
+                if _should_fallback_to_alt_shape(exc):
+                    continue
+                raise
 
-        data = request_json(
-            self._client,
-            "POST",
-            self._endpoint,
-            headers=self._headers(),
-            json_body=payload,
-            error_label="OpenAI-compatible Chat API",
-            api_key=self.api_key,
-            max_retries=self._max_retries,
-            backoff=self._retry_backoff,
-        )
-
-        text = _extract_chat_text(data)
-        # 响应被截断（finish_reason=length）且无文本：max_tokens 太小。给可定位错误，
-        # 而不是让空串去撞下游笼统的「JSON 解析失败」。
-        if not text and _finish_reason(data) == "length":
-            raise TraceError(
-                ErrorCode.INVALID_MODEL_OUTPUT,
-                f"兼容端点响应被截断（finish_reason=length）：未产出文本；"
-                f"max_tokens（当前 {self.max_output_tokens}）可能过小，请调大",
+            text = _extract_text(data)
+            # 响应被截断（finish_reason=length）且无文本：max_tokens 太小。给可定位错误，
+            # 而不是让空串去撞下游笼统的「JSON 解析失败」。
+            if not text and _finish_reason(data) == "length":
+                raise TraceError(
+                    ErrorCode.INVALID_MODEL_OUTPUT,
+                    f"兼容端点响应被截断（finish_reason=length）：未产出文本；"
+                    f"max_tokens（当前 {self.max_output_tokens}）可能过小，请调大",
+                )
+            tokens = _extract_usage_tokens(data) or (
+                sum(estimate_tokens(m.content) for m in messages) + estimate_tokens(text)
             )
-        tokens = _extract_usage_tokens(data) or (
-            sum(estimate_tokens(m.content) for m in messages) + estimate_tokens(text)
-        )
-        return LLMResponse(text=text, tokens=tokens)
+            return LLMResponse(text=text, tokens=tokens)
+
+        assert last_error is not None
+        raise last_error
 
     def list_models(self) -> list[str]:
         # 列模型是交互命令，失败就报错，不重试
@@ -145,11 +157,95 @@ def _chat_endpoint(base_url: str) -> str:
     return f"{base_url}/chat/completions"
 
 
+def _responses_endpoint(base_url: str) -> str:
+    if base_url.endswith("/responses"):
+        return base_url
+    return f"{base_url}/responses"
+
+
 def _message_to_chat(message: Message) -> dict:
     role = message.role if message.role in {"system", "user", "assistant", "developer"} else "user"
     if role == "developer":
         role = "system"
     return {"role": role, "content": message.content}
+
+
+def _message_to_input(message: Message) -> dict:
+    role = message.role if message.role in {"user", "assistant"} else "user"
+    return {
+        "type": "message",
+        "role": role,
+        "content": [{"type": "input_text", "text": message.content}],
+    }
+
+
+def _response_instructions(messages: list[Message]) -> str:
+    parts = [m.content for m in messages if m.role in {"system", "developer"} and m.content]
+    return "\n\n".join(parts)
+
+
+def _request_variants(
+    model: str,
+    messages: list[Message],
+    *,
+    max_output_tokens: int,
+    temperature: Optional[float],
+    chat_endpoint: str,
+    responses_endpoint: str,
+) -> list[tuple[str, dict, str]]:
+    chat_payload = {
+        "model": model,
+        "messages": [_message_to_chat(m) for m in messages],
+        "max_tokens": max_output_tokens,
+    }
+    if temperature is not None:
+        chat_payload["temperature"] = temperature
+
+    responses_payload = {
+        "model": model,
+        "input": [_message_to_input(m) for m in messages if m.role not in {"system", "developer"}],
+        "max_output_tokens": max_output_tokens,
+        "store": False,
+    }
+    instructions = _response_instructions(messages)
+    if instructions:
+        responses_payload["instructions"] = instructions
+    if temperature is not None:
+        responses_payload["temperature"] = temperature
+
+    if _model_prefers_responses(model):
+        return [
+            (responses_endpoint, responses_payload, "OpenAI-compatible Responses API"),
+            (chat_endpoint, chat_payload, "OpenAI-compatible Chat API"),
+        ]
+    return [
+        (chat_endpoint, chat_payload, "OpenAI-compatible Chat API"),
+        (responses_endpoint, responses_payload, "OpenAI-compatible Responses API"),
+    ]
+
+
+def _model_prefers_responses(model: str) -> bool:
+    normalized = model.strip().lower()
+    return bool(re.match(r"^(gpt-5(\.|$)|o\d)", normalized))
+
+
+def _should_fallback_to_alt_shape(exc: TraceError) -> bool:
+    text = (exc.message or "").lower()
+    return exc.code == ErrorCode.LLM_PROVIDER_ERROR and (
+        "http 400" in text
+        or "invalid_request_error" in text
+        or "upstream_rejected_request" in text
+        or "不符合当前接口要求" in text
+        or "unsupported" in text
+        or "unrecognized request argument" in text
+    )
+
+
+def _extract_text(data: dict) -> str:
+    text = _extract_chat_text(data)
+    if text:
+        return text
+    return _extract_response_text(data)
 
 
 def _extract_chat_text(data: dict) -> str:
@@ -170,6 +266,20 @@ def _extract_chat_text(data: dict) -> str:
     if isinstance(first.get("text"), str):
         return first["text"]
     return ""
+
+
+def _extract_response_text(data: dict) -> str:
+    if isinstance(data.get("output_text"), str):
+        return data["output_text"]
+
+    chunks: list[str] = []
+    for item in data.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            if isinstance(content, dict) and isinstance(content.get("text"), str):
+                ctype = content.get("type")
+                if ctype in {"output_text", "text"}:
+                    chunks.append(content["text"])
+    return "".join(chunks)
 
 
 def _finish_reason(data: dict) -> Optional[str]:

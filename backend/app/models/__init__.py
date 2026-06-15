@@ -1,14 +1,20 @@
 from app.models.artifacts import GeneratedTestCase, GeneratedTestFile, PytestCaseResult, RunArtifact, TestReport
 from app.models.project import Project, ProjectSnapshot
+from app.models.runtime_profile import RuntimeProfile
 from app.models.strategy import StrategyVersion
 from app.models.test_plan import TestPlan
 from app.models.test_run import RunAttempt, RunPlanItem, TestRun
 from app.models.trace import RunEvent, TraceStep
+from app.models.versioning import PromptVersion, Strategy, ToolSchemaVersion
 
 __all__ = [
     "Project",
     "ProjectSnapshot",
+    "RuntimeProfile",
+    "Strategy",
     "StrategyVersion",
+    "PromptVersion",
+    "ToolSchemaVersion",
     "TestPlan",
     "TestRun",
     "RunPlanItem",

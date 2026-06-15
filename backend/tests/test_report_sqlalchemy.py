@@ -28,7 +28,7 @@ def test_report_metrics_work_with_sqlalchemy_recorder(tmp_path, clean_db):
     engine = get_engine()
 
     root = tmp_path / "proj"
-    root.mkdir()
+    root.mkdir(parents=True)
     (root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
     with Session(engine) as session:

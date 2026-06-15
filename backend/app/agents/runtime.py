@@ -13,6 +13,7 @@ from app.agents.llm import LLMClient, Message
 from app.agents.recorder import RunRecorder
 from app.agents.structured import generate_structured
 from app.core.errors import ErrorCode, TraceError
+from app.schemas.evaluation import ContextCompletenessEvidence
 from app.schemas.records import TestRunRecord
 from app.schemas.strategy import StrategyVersionSpec
 from app.schemas.trace import RunEvent, Stage, StepType, TraceStep
@@ -54,6 +55,8 @@ class AgentContext:
     max_tool_calls: int = 12
     _step_index: int = 0
     current_attempt_id: Optional[str] = None
+    source_context_text: str = ""
+    context_completeness: Optional[ContextCompletenessEvidence] = None
 
     @property
     def run_id(self) -> str:
