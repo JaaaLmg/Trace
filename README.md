@@ -51,7 +51,7 @@ TRACE/
     src/
       api/        # B 线 API client
       components/ # Run Console / Trace / Report / Pytest 可视化组件
-      mock/       # C 线 mock run 与 comparison 数据
+      demo/       # 前端静态演示 fixture；不作为真实 API 状态证据
       pages/      # Projects / Run Console / Comparison
   eval/
     demo/clean/   # demo 被测项目：shop 定价函数 + FastAPI 路由
@@ -109,16 +109,34 @@ Copy-Item llm.config.example.json llm.config.json
 
 ```json
 {
-  "provider": "openai_chat_compat",
-  "base_url": "https://api.myy9.com/v1",
-  "model": "gpt-5.4",
+  "provider": "openai",
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-5",
   "api_key": "你的 API key",
   "temperature": 0,
   "max_output_tokens": 8192
 }
 ```
 
-`llm.config.json` 已被 `.gitignore` 忽略，不要提交真实 key。测试代码会通过 `backend/tests/fixtures/llm.mock.config.json` 显式走 MockLLM，避免单测误调用真实 API。
+也可以不创建 JSON 文件，直接用环境变量：
+
+```powershell
+$env:TRACE_LLM_PROVIDER="openai"
+$env:TRACE_LLM_MODEL="gpt-5"
+$env:TRACE_LLM_API_KEY="你的 API key"
+$env:TRACE_LLM_BASE_URL="https://api.openai.com/v1"
+```
+
+OpenAI Chat Completions 兼容端点需要显式设置 provider、base URL 和模型：
+
+```powershell
+$env:TRACE_LLM_PROVIDER="openai_chat_compat"
+$env:TRACE_LLM_MODEL="兼容端点模型名"
+$env:TRACE_LLM_API_KEY="你的兼容端点 key"
+$env:TRACE_LLM_BASE_URL="https://api.example.com/v1"
+```
+
+`llm.config.json` 已被 `.gitignore` 忽略，不要提交真实 key。文件配置优先于环境变量；如果显式设置 `TRACE_LLM_CONFIG_FILE` 但文件不存在，后端会直接报错。测试代码会通过 `backend/tests/fixtures/llm.mock.config.json` 显式走 MockLLM，避免单测误调用真实 API。
 
 运行测试：
 
@@ -185,7 +203,7 @@ Windows 下 worker 默认走 `--pool=solo`，这是为了让 Celery 在本地环
 Invoke-RestMethod http://127.0.0.1:8000/healthz
 ```
 
-正常应看到 `llm.provider`、`llm.model` 和 `llm.base_url`。如果前端新 run 仍显示 `mock-1` 或生成 `sync mock run`，通常是 API/worker 仍在跑旧进程；同时重启 API 和 worker 后再新建 run。旧 run 的 `strategy_snapshot` 已冻结，不会随配置变化自动更新。
+正常应看到 `llm.provider`、`llm.model` 和 `llm.base_url`。如果前端新 run 没有显示当前 `/healthz` 里的模型配置，通常是 API/worker 仍在跑旧进程；同时重启 API 和 worker 后再新建 run。旧 run 的 `strategy_snapshot` 已冻结，不会随配置变化自动更新。
 
 也可以直接用一个脚本同时拉起开发用 API 和 worker：
 
@@ -271,7 +289,7 @@ python eval/harness/run_eval.py --real --provider openai --model gpt-5 --repeats
 - Pytest Results 支持状态筛选、nodeid 搜索和失败行展开。
 - Report 页面用人类可读指标展示结论，不直接暴露 snake_case 字段。
 - Comparison 页面展示 `eval/results/comparison.json` 同形状的策略对比和逐 bug 捕获矩阵。
-- 前端默认使用 mock 数据，可切换到 B 线 API 数据源。
+- 前端默认使用 B 线 API 数据源；静态演示 fixture 只用于前端预览。
 
 ### 启动方式
 
@@ -285,7 +303,7 @@ npm run dev
 打开：
 
 ```text
-http://127.0.0.1:5173/#/runs/run-demo-react-001
+http://127.0.0.1:5173/#/projects
 ```
 
 构建验证：
@@ -300,11 +318,18 @@ npm run build
 VITE_TRACE_API_PROXY_TARGET=http://127.0.0.1:8001 npm run dev
 ```
 
-默认数据源是 mock。要默认进入 API 模式：
+默认数据源是 API。若只想预览前端静态演示 fixture，可以显式切到 demo：
 
 ```bash
-VITE_TRACE_DATA_SOURCE=api npm run dev
+VITE_TRACE_DATA_SOURCE=demo npm run dev
 ```
+
+### 数据源口径
+
+- 判断真实系统状态时，只看后端 API、数据库、trace steps、pytest results 和 report。
+- `frontend/src/demo/staticRunFixture.ts` 只是前端静态演示数据，不用于证明 API、token、pytest 或真实 LLM 是否正常。
+- 后端 `MockLLM` 只用于测试隔离，避免单测误调用真实 API；它不代表普通 API run 的真实能力。
+- `token`、`pytest_summary`、`report.metrics` 以后端真实 run 为准。
 
 `~/.codex/config.toml` 和 `~/.codex/auth.json` 是 Codex CLI 的个人配置；TRACE 不依赖也不读取其中的 key。
 

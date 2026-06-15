@@ -1,9 +1,8 @@
 {
-  "provider": "openai_chat_compat",
-  "base_url": "https://apiurl.com/v1",
-  "model": "gpt-5.4",
+  "provider": "openai",
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-5",
   "api_key": "sk-REPLACE_ME",
   "temperature": 0,
   "max_output_tokens": 8192
 }
-

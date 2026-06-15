@@ -3,6 +3,7 @@
 # 落 error trace、累计 token，而不是抛裸 RuntimeError 被 orchestrator 兜成笼统的内部错误。
 from __future__ import annotations
 
+import re
 import time
 from typing import Optional
 
@@ -18,11 +19,16 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # 4096 容易被推理吃光导致空输出，两个 adapter 统一留足余量。
 DEFAULT_MAX_OUTPUT_TOKENS = 8192
 
+_MASKED_SECRET_RE = re.compile(r"\b[A-Za-z0-9_-]{2,}\*{4,}[A-Za-z0-9_-]*\b")
+_BEARER_SECRET_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+
 
 def redact(text: str, secret: Optional[str]) -> str:
     # key 不进日志/错误信息：把 body 里出现的密钥替换掉
     if secret:
         text = text.replace(secret, "[redacted]")
+    text = _MASKED_SECRET_RE.sub("[redacted]", text)
+    text = _BEARER_SECRET_RE.sub("Bearer [redacted]", text)
     return text
 
 

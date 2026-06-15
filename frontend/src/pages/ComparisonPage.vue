@@ -2,10 +2,10 @@
 import { computed } from "vue";
 import { CheckCircle2, XCircle } from "@lucide/vue";
 import { useI18n } from "../i18n";
-import { mockComparison } from "../mock/data";
+import { demoComparison } from "../demo/staticRunFixture";
 
-const bugIds = computed(() => Object.keys(mockComparison.capture_matrix));
-const strategyIds = computed(() => mockComparison.rows.map((row) => row.strategy_id));
+const bugIds = computed(() => Object.keys(demoComparison.capture_matrix));
+const strategyIds = computed(() => demoComparison.rows.map((row) => row.strategy_id));
 const { t } = useI18n();
 
 function percent(value: number): string {
@@ -34,7 +34,7 @@ function percent(value: number): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in mockComparison.rows" :key="row.strategy_id">
+          <tr v-for="row in demoComparison.rows" :key="row.strategy_id">
             <td>{{ row.strategy_name }}</td>
             <td>{{ percent(row.capture_rate_mean) }} ({{ row.captured_mean }}/{{ row.total_in_scope }})</td>
             <td>{{ percent(row.false_positive_rate) }}</td>
@@ -63,7 +63,7 @@ function percent(value: number): string {
             <tr v-for="bugId in bugIds" :key="bugId">
               <td class="mono">{{ bugId }}</td>
               <td v-for="strategyId in strategyIds" :key="strategyId">
-                <span v-if="mockComparison.capture_matrix[bugId][strategyId]" class="matrix-ok">
+                <span v-if="demoComparison.capture_matrix[bugId][strategyId]" class="matrix-ok">
                   <CheckCircle2 :size="16" aria-hidden="true" />
                   {{ t("comparison.captured") }}
                 </span>

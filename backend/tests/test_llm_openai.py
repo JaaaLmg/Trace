@@ -146,7 +146,7 @@ def test_openai_falls_back_to_local_token_estimate_without_usage():
 
 def test_openai_http_error_is_readable_and_redacted():
     def handler(_request):
-        return httpx.Response(401, text='{"error":"bad key sk-test"}')
+        return httpx.Response(401, text='{"error":"bad key sk-test sk-sgClI***************************************MPBN"}')
 
     llm = OpenAILLM(api_key="sk-test", base_url="https://api.openai.test/v1", client=_client(handler))
 
@@ -158,6 +158,8 @@ def test_openai_http_error_is_readable_and_redacted():
     assert "OpenAI API HTTP 401 Unauthorized" in text
     assert "bad key" in text
     assert "sk-test" not in text
+    assert "sgClI" not in text
+    assert "MPBN" not in text
     assert "[redacted]" in text
 
 

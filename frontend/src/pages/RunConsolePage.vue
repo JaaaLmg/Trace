@@ -11,7 +11,7 @@ import TopicTabs from "../components/TopicTabs.vue";
 import TraceStepDetail from "../components/TraceStepDetail.vue";
 import TraceTimeline from "../components/TraceTimeline.vue";
 import { useI18n } from "../i18n";
-import { mockRunBundle } from "../mock/data";
+import { staticRunFixture } from "../demo/staticRunFixture";
 import type { RunBundle, TraceStepOut } from "../types/api";
 import type { DataSource, TopicTab } from "../types/ui";
 
@@ -59,8 +59,8 @@ const run = computed(() => bundle.value?.run ?? null);
 const canPoll = computed(() => props.dataSource === "api" && ["queued", "running"].includes(run.value?.status ?? ""));
 const isRunActive = computed(() => ["queued", "running"].includes(run.value?.status ?? ""));
 
-function cloneMockBundle(): RunBundle {
-  return structuredClone(mockRunBundle);
+function cloneDemoBundle(): RunBundle {
+  return structuredClone(staticRunFixture);
 }
 
 function keepSelectedStepIfPresent(nextBundle: RunBundle) {
@@ -82,7 +82,7 @@ async function loadBundle(options: { background?: boolean } = {}) {
   loading.value = true;
   errorMessage.value = null;
   try {
-    const nextBundle = props.dataSource === "mock" ? cloneMockBundle() : await getRunBundle(props.runId);
+    const nextBundle = props.dataSource === "demo" ? cloneDemoBundle() : await getRunBundle(props.runId);
     bundle.value = nextBundle;
     keepSelectedStepIfPresent(nextBundle);
   } catch (error) {
@@ -113,7 +113,7 @@ async function refresh() {
   await loadBundle();
 }
 
-function appendMockRetryStep() {
+function appendDemoRetryStep() {
   if (!bundle.value) {
     return;
   }
@@ -125,7 +125,7 @@ function appendMockRetryStep() {
     step_index: nextIndex,
     step_type: "system",
     name: "retry_run_queued",
-    input_summary: "User requested run retry in mock mode.",
+    input_summary: "User requested run retry in demo fixture mode.",
     output_summary: "New retry run returned queued state; stale content was replaced without blanking the page.",
     tool_name: null,
     payload: {
@@ -155,7 +155,7 @@ async function retryCurrentRun() {
       return;
     }
     await new Promise((resolve) => window.setTimeout(resolve, 900));
-    appendMockRetryStep();
+    appendDemoRetryStep();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : t("run.retryFailed");
   } finally {
@@ -239,7 +239,7 @@ onBeforeUnmount(stopPolling);
           <span class="source-pill">
             <Wifi v-if="props.dataSource === 'api'" :size="14" aria-hidden="true" />
             <WifiOff v-else :size="14" aria-hidden="true" />
-            {{ props.dataSource === "api" ? t("app.api") : t("app.mock") }}
+            {{ props.dataSource === "api" ? t("app.api") : t("app.demo") }}
           </span>
           <StatusBadge :value="run?.status ?? (loading ? 'running' : 'unknown')" :pulse="run?.status === 'running'" />
         </div>

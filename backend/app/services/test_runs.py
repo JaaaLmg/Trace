@@ -60,12 +60,12 @@ def _strategy_spec_from_model(model: StrategyVersion) -> StrategyVersionSpec:
 
 
 def _effective_strategy_spec(model: StrategyVersion) -> StrategyVersionSpec:
-    # V1 seeded strategy_versions 默认记录为 mock。运行时统一读取 backend/llm.config.json，
-    # 并把 provider/model 冻结进 run snapshot；只有配置文件显式 provider=mock 才使用 MockLLM。
+    # V1 seeded strategy_versions 默认记录为 mock。创建 run 时读取 LLM 配置，
+    # 并把 provider/model 冻结进 run snapshot；只有配置显式 provider=mock 才使用 MockLLM。
     spec = _strategy_spec_from_model(model)
     config = load_llm_config()
     if config is None:
-        raise ValueError("缺少 backend/llm.config.json；后端默认使用真实 LLM，请先创建配置文件")
+        raise ValueError("缺少 LLM 配置；请创建 backend/llm.config.json 或设置 TRACE_LLM_* 环境变量")
     return spec.model_copy(
         update={
             "model_provider": config.provider,
@@ -81,16 +81,42 @@ def _effective_strategy_spec(model: StrategyVersion) -> StrategyVersionSpec:
     )
 
 
+def _strategy_spec_from_run_snapshot(model: StrategyVersion, snapshot: dict | None) -> StrategyVersionSpec:
+    base = _strategy_spec_from_model(model)
+    snap = dict(snapshot or {})
+    if not snap:
+        return _effective_strategy_spec(model)
+    prompts = snap.get("prompts") if isinstance(snap.get("prompts"), dict) else {}
+    return StrategyVersionSpec(
+        id=base.id,
+        name=base.name,
+        workflow_type=snap.get("workflow_type", base.workflow_type),
+        model_provider=snap.get("model_provider", base.model_provider),
+        model_name=snap.get("model_name", base.model_name),
+        model_params=dict(snap.get("model_params") or {}),
+        allow_reflection=bool(snap.get("allow_reflection", base.allow_reflection)),
+        max_tool_calls=int(snap.get("max_tool_calls", base.max_tool_calls)),
+        prompt_ref=prompts.get("prompt_ref") or base.prompt_ref,
+        tool_schema_ref=snap.get("tool_schema_ref", base.tool_schema_ref),
+    )
+
+
+def _api_key_for_provider(provider: str) -> str | None:
+    config = load_llm_config()
+    if config is not None and config.provider == provider:
+        return config.api_key
+    return None
+
+
 def _llm_for_strategy(strategy_spec: StrategyVersionSpec):
     provider = strategy_spec.model_provider
     if provider == "mock":
         return _mock_llm()
-    config = load_llm_config()
     params = dict(strategy_spec.model_params or {})
     return create_llm(
         provider,
         strategy_spec.model_name,
-        api_key=(config.api_key if config else None),
+        api_key=_api_key_for_provider(provider),
         temperature=params.get("temperature"),
         max_output_tokens=int(params.get("max_output_tokens", 8192)),
         base_url=params.get("base_url"),
@@ -261,7 +287,7 @@ def execute_run_sync(
         root = validate_snapshot_root(snapshot.root_path, project_root=project.local_path)
         test_write_dir = ensure_generated_tests_dir(root)
         recorder = SQLAlchemyRunRecorder(session)
-        strategy_spec = _effective_strategy_spec(strategy)
+        strategy_spec = _strategy_spec_from_run_snapshot(strategy, run.strategy_snapshot)
         budget = dict(plan.budget or {})
         stored_override = dict((run.runtime_snapshot or {}).get("budget_override") or {})
         if stored_override:

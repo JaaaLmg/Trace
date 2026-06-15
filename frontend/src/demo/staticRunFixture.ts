@@ -9,7 +9,7 @@ import type {
 
 const now = "2026-06-14T08:00:00.000Z";
 
-export const mockProjects: ProjectOut[] = [
+export const demoProjects: ProjectOut[] = [
   {
     id: "proj-async-demo",
     name: "async_demo_project",
@@ -40,18 +40,18 @@ export const mockProjects: ProjectOut[] = [
   }
 ];
 
-export const mockSnapshots: ProjectSnapshotOut[] = [
+export const demoSnapshots: ProjectSnapshotOut[] = [
   {
     id: "snap-async-demo",
     project_id: "proj-async-demo",
     source_kind: "local_path",
     root_path: "D:/GitRepo/专业实训/TRACE/backend/tests/fixtures/async_demo_project",
-    content_hash: "sha256:mock-async-demo",
+    content_hash: "sha256:demo-async",
     created_at: now
   }
 ];
 
-export const mockPlans: TestPlanOut[] = [
+export const demoPlans: TestPlanOut[] = [
   {
     id: "plan-checkout-boundaries",
     project_id: "proj-async-demo",
@@ -67,12 +67,12 @@ export const mockPlans: TestPlanOut[] = [
   }
 ];
 
-export const mockStrategy: StrategyVersionOut = {
+export const demoStrategy: StrategyVersionOut = {
   id: "sv-react-v1",
   name: "ReAct+Reflection v1",
   workflow_type: "react_reflection",
-  model_provider: "mock",
-  model_name: "MockLLM",
+  model_provider: "demo_static",
+  model_name: "Static Demo Fixture",
   model_params: { temperature: 0, scripted_author: "react_reflection" },
   allow_reflection: true,
   max_tool_calls: 8,
@@ -80,7 +80,7 @@ export const mockStrategy: StrategyVersionOut = {
   tool_schema_ref: "tools_v1"
 };
 
-export const mockRunBundle: RunBundle = {
+export const staticRunFixture: RunBundle = {
   run: {
     id: "run-demo-react-001",
     test_plan_id: "plan-checkout-boundaries",
@@ -96,8 +96,8 @@ export const mockRunBundle: RunBundle = {
     },
     strategy_snapshot: {
       name: "ReAct+Reflection v1",
-      model_provider: "mock",
-      model_name: "MockLLM",
+      model_provider: "demo_static",
+      model_name: "Static Demo Fixture",
       prompt_ref: "react_v1",
       prompt_text_frozen: "Analyze project, generate pytest, execute, and reflect once without weakening assertions.",
       model_params: { temperature: 0 }
@@ -546,17 +546,17 @@ export const mockRunBundle: RunBundle = {
       reflection_used: true
     },
     risk_notes:
-      "Reflection 修改了测试期望计算，但没有删除核心断言。当前 token 来自 MockLLM 估算，不代表真实模型成本。pytest failure 不等于 run failed。",
+      "Reflection 修改了测试期望计算，但没有删除核心断言。当前 token 来自静态演示 fixture，不代表真实模型成本。pytest failure 不等于 run failed。",
     markdown_artifact_id: "artifact-report-md",
     json_artifact_id: "artifact-report-json",
     markdown_uri: "artifacts/run-demo-react-001/report.md",
     json_uri: "artifacts/run-demo-react-001/report.json",
     created_at: "2026-06-14T08:01:08.000Z"
   },
-  strategy: mockStrategy
+  strategy: demoStrategy
 };
 
-export const mockComparison: ComparisonResult = {
+export const demoComparison: ComparisonResult = {
   rows: [
     {
       strategy_id: "sv-direct-v1",
