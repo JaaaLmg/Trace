@@ -109,8 +109,10 @@ def _apply_llm_override(
     model: str | None = None,
     temperature: float | None = None,
     max_output_tokens: int | None = None,
+    model_params: dict | None = None,
 ) -> StrategyVersionSpec:
     params = dict(strategy_spec.model_params or {})
+    params.update(dict(model_params or {}))
     if max_output_tokens is not None:
         params["max_output_tokens"] = max_output_tokens
     return strategy_spec.model_copy(
@@ -130,6 +132,25 @@ def _selected_llm_spec(strategy_spec: StrategyVersionSpec, *, provider: str | No
         model=model,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
+    )
+
+
+def _selected_llm_spec_with_params(
+    strategy_spec: StrategyVersionSpec,
+    *,
+    provider: str | None,
+    model: str | None,
+    temperature: float | None,
+    max_output_tokens: int | None,
+    model_params: dict | None,
+) -> StrategyVersionSpec:
+    return _apply_llm_override(
+        strategy_spec,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        model_params=model_params,
     )
 
 
@@ -251,6 +272,10 @@ def _runtime_snapshot(
 
 
 def _strategy_snapshot(session: Session, strategy_spec: StrategyVersionSpec) -> dict:
+    return _strategy_snapshot_for_repeat(session, strategy_spec, repeat_index=0)
+
+
+def _strategy_snapshot_for_repeat(session: Session, strategy_spec: StrategyVersionSpec, *, repeat_index: int) -> dict:
     prompt_version = get_prompt_version(session, strategy_spec.prompt_version_id) if strategy_spec.prompt_version_id else None
     tool_schema_version = (
         get_tool_schema_version(session, strategy_spec.tool_schema_version_id) if strategy_spec.tool_schema_version_id else None
@@ -286,7 +311,7 @@ def _strategy_snapshot(session: Session, strategy_spec: StrategyVersionSpec) -> 
                 "experiment_llm_override",
                 "repeat_derivation",
             ],
-            "repeat_index": 0,
+            "repeat_index": repeat_index,
             "secret_included": False,
         },
     ).model_dump()
@@ -319,6 +344,8 @@ def create_run(
     llm_model: str | None = None,
     llm_temperature: float | None = None,
     llm_max_output_tokens: int | None = None,
+    llm_model_params: dict | None = None,
+    llm_repeat_index: int = 0,
     budget_override: dict | None = None,
     output_options: dict | None = None,
 ) -> TestRun:
@@ -342,12 +369,13 @@ def create_run(
     strategy = get_strategy_version(session, strategy_id)
     if strategy is None:
         raise ValueError("strategy not found")
-    strategy_spec = _selected_llm_spec(
+    strategy_spec = _selected_llm_spec_with_params(
         _strategy_spec_with_optional_runtime_defaults(strategy),
         provider=llm_provider,
         model=llm_model,
         temperature=llm_temperature,
         max_output_tokens=llm_max_output_tokens,
+        model_params=llm_model_params,
     )
     runtime_profile = (
         get_runtime_profile(session, runtime_profile_id)
@@ -366,7 +394,7 @@ def create_run(
         runtime_profile_id=runtime_profile.id,
         strategy_version_id=strategy.id,
         runtime_snapshot=_runtime_snapshot(runtime_profile, budget_override=budget_override, output_options=output_options),
-        strategy_snapshot=_strategy_snapshot(session, strategy_spec),
+        strategy_snapshot=_strategy_snapshot_for_repeat(session, strategy_spec, repeat_index=llm_repeat_index),
         status="queued",
         pytest_summary={},
     )
@@ -439,6 +467,7 @@ def execute_run_sync(
     *,
     run_id: str,
     budget_override: dict | None = None,
+    make_llm=None,
 ) -> TestRun:
     # 这是 run 的真正执行主链路。
     # worker 会调用这里：加载 DB 上下文 -> 构建 ToolContext/Recorder -> 调用 A 线 execute_run。
@@ -473,7 +502,7 @@ def execute_run_sync(
         if budget_override:
             # 本次 run 允许对计划默认预算做局部覆盖，如更短超时或关闭 reflection。
             budget.update(budget_override)
-        llm = _llm_for_strategy(strategy_spec)
+        llm = make_llm() if make_llm is not None else _llm_for_strategy(strategy_spec)
 
         try:
             execute_run(

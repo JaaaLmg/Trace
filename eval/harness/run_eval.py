@@ -59,6 +59,49 @@ def run_full_eval(workdir, repeats: int = 3, *, make_llm=None, author=demo_autho
     }
 
 
+def run_full_eval_via_service(*, repeats: int = 3, llm_override: dict | None = None) -> dict:
+    # V2 平台路径：CLI 只是薄包装，clean/replay/metrics 的核心逻辑走 DB experiment service。
+    from sqlalchemy.orm import Session
+
+    from app.db.session import get_engine
+    from app.services.evaluation_seed import DEMO_DATASET_ID, seed_demo_dataset
+    from app.services.experiments import create_experiment, get_experiment_metrics, run_experiment
+    from app.services.strategies import seed_strategy_versions
+
+    with Session(get_engine()) as session:
+        seed_strategy_versions(session)
+        seed_demo_dataset(session)
+        experiment = create_experiment(
+            session,
+            name="cli-v2-eval",
+            dataset_id=DEMO_DATASET_ID,
+            strategy_version_ids=["sv-direct-v1", "sv-plan-v1", "sv-react-v1"],
+            repeat_count=repeats,
+            llm_override=llm_override,
+        )
+        run_experiment(session, experiment["id"])
+        service_metrics = get_experiment_metrics(session, experiment["id"])
+
+    class _Bug:
+        def __init__(self, bug_id: str) -> None:
+            self.id = bug_id
+            self.bug_type = bug_id
+
+    rows = service_metrics["rows"]
+    matrix = service_metrics["capture_matrix"]
+    strategy_names = {row["strategy_id"]: row["strategy_name"] for row in rows}
+    runs_by_strategy = {sid: [type("_Run", (), {"strategy_name": name})()] for sid, name in strategy_names.items()}
+    bugs = [_Bug(bug_id) for bug_id in matrix]
+    return {
+        "rows": rows,
+        "capture_matrix": matrix,
+        "table_md": metrics.comparison_table_md(rows),
+        "matrix_md": metrics.capture_matrix_md(matrix, bugs, runs_by_strategy),
+        "runs_by_strategy": runs_by_strategy,
+        "experiment": service_metrics["experiment"],
+    }
+
+
 def main() -> None:
     # Windows 控制台默认 GBK，矩阵里的 ✓/✗ 会崩；切到 utf-8（文件写入本就是 utf-8）
     try:
@@ -152,7 +195,26 @@ def main() -> None:
     if args.smoke:
         specs = specs[:1]
     repeats = 1 if args.smoke else args.repeats
-    result = run_full_eval(_TRACE_ROOT / "eval" / ".work", repeats=repeats, make_llm=make_llm, specs=specs)
+    if args.smoke:
+        result = run_full_eval(_TRACE_ROOT / "eval" / ".work", repeats=repeats, make_llm=make_llm, specs=specs)
+    else:
+        service_override = None
+        if args.real:
+            service_override = {
+                "provider": provider,
+                "model": model,
+                "temperature_policy": {"mode": "fixed", "value": args.temperature}
+                if args.temperature is not None
+                else {"mode": "strategy_default"},
+                "model_params": {},
+            }
+            if args.reasoning_effort:
+                service_override["model_params"]["reasoning_effort"] = args.reasoning_effort
+            if args.base_url:
+                service_override["model_params"]["base_url"] = args.base_url
+        else:
+            service_override = {"provider": "mock", "model": "mock-1"}
+        result = run_full_eval_via_service(repeats=repeats, llm_override=service_override)
 
     # 冒烟：只验证真实调用能跑通、JSON 能解析、run 能完成；不覆盖任何对比文件
     if args.smoke:

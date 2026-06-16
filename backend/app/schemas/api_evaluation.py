@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.evaluation import LlmOverride
+
 
 class CanonicalPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -122,3 +124,65 @@ class EvalTaskDetailOut(EvalTaskOut):
 
 class EvalDatasetDetailOut(EvalDatasetOut):
     tasks: list[EvalTaskDetailOut] = Field(default_factory=list)
+
+
+class ExperimentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    name: str
+    dataset_id: str
+    strategy_version_ids: list[str] = Field(min_length=1)
+    repeat_count: int = Field(default=1, ge=1)
+    llm_override: LlmOverride | None = None
+
+
+class ExperimentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    dataset_id: str
+    repeat_count: int
+    llm_override: dict | None = None
+    status: str
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    strategy_version_ids: list[str] = Field(default_factory=list)
+
+
+class ExperimentCleanRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    experiment_id: str
+    eval_task_id: str
+    strategy_version_id: str
+    repeat_index: int
+    clean_run_id: str
+    generated_test_set_artifact_id: str
+    false_positive: bool
+    clean_metrics: dict
+    created_at: datetime
+
+
+class TestReplayOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    experiment_clean_run_id: str
+    generated_test_set_artifact_id: str
+    target_snapshot_id: str
+    bug_variant_id: str | None = None
+    status: str
+    pytest_summary: dict
+    replay_mode: str
+    llm_calls: int
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime
