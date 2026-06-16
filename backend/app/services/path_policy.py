@@ -54,6 +54,8 @@ def is_valid_project_root(path: str | Path) -> bool:
 def validate_snapshot_root(path: str | Path, *, project_root: str | Path) -> Path:
     root = validate_project_root(path)
     project = validate_project_root(project_root)
+    if is_trace_internal_tmp_path(root):
+        return root
     try:
         root.relative_to(project)
     except ValueError as exc:
