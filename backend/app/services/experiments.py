@@ -683,6 +683,11 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                     )
                     session.refresh(run)
                     _raise_if_cancelled(session, experiment.id)
+                    if run.status != "completed":
+                        detail = run.error_code or run.status
+                        if run.error_message:
+                            detail = f"{detail}: {run.error_message}"
+                        raise ExperimentError(f"clean run failed before replay: {detail}")
                     final_set = _final_test_set_from_db(session, run.id)
                     clean_metrics = {
                         "final_cases_total": final_set.n_cases,

@@ -9,9 +9,21 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.agents.final_attempts import final_attempts_from_records
 from app.db.session import get_engine
 from app.main import create_app
-from app.models import ExperimentCleanRun, ExperimentReplayRun, ProjectSnapshot, RunArtifact, TestReplay as ReplayModel
+from app.models import (
+    Experiment,
+    ExperimentCleanRun,
+    ExperimentReplayRun,
+    ProjectSnapshot,
+    PytestCaseResult,
+    RunArtifact,
+    RunAttempt,
+    RunPlanItem,
+    TestReplay as ReplayModel,
+    TestRun,
+)
 from app.services.evaluation import create_bug_variant, create_eval_task, create_seeded_bug
 from app.services.evaluation_seed import DEMO_DATASET_ID, DEMO_SNAPSHOT_ID, seed_demo_dataset
 from app.services.experiments import ExperimentError, _copy_clean_snapshot, run_experiment
@@ -30,6 +42,25 @@ def _seed_v2_demo() -> None:
 def _run_celery_eager(monkeypatch) -> None:
     monkeypatch.setattr(celery_app.conf, "task_always_eager", True)
     monkeypatch.setattr(celery_app.conf, "task_eager_propagates", True)
+
+
+def _passed_nodeids(summary: dict) -> set[str]:
+    return {
+        str(case.get("nodeid"))
+        for case in summary.get("case_results", [])
+        if isinstance(case, dict) and case.get("status") == "passed" and case.get("nodeid")
+    }
+
+
+def _assertion_failure_nodeids(summary: dict) -> set[str]:
+    return {
+        str(case.get("nodeid"))
+        for case in summary.get("case_results", [])
+        if isinstance(case, dict)
+        and case.get("status") == "failed"
+        and case.get("failure_type") == "assertion"
+        and case.get("nodeid")
+    }
 
 
 def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch, tmp_path, clean_db):
@@ -107,6 +138,13 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
         assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 18
         assert session.scalar(select(func.count()).select_from(ReplayModel)) == 21
 
+        strategy_key = {
+            "sv-direct-v1": "direct",
+            "sv-plan-v1": "plan_execute",
+            "sv-react-v1": "react_reflection",
+        }
+        audited_captures: dict[str, dict[int, int]] = {key: {} for key in strategy_key.values()}
+        audited_matrix: dict[str, dict[str, bool]] = {variant_id: {} for variant_id in matrix}
         artifacts = list(session.scalars(select(RunArtifact).where(RunArtifact.artifact_type == "generated_test_set")))
         assert len(artifacts) == 3
         for artifact in artifacts:
@@ -116,6 +154,149 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
             assert payload["files"]
             assert artifact.metadata_json["kind"] == "generated_test_set"
             assert artifact.metadata_json["experiment_id"] == "exp-stage4-demo"
+
+        clean_runs = list(
+            session.scalars(
+                select(ExperimentCleanRun)
+                .where(ExperimentCleanRun.experiment_id == "exp-stage4-demo")
+                .order_by(ExperimentCleanRun.strategy_version_id.asc(), ExperimentCleanRun.repeat_index.asc())
+            )
+        )
+        for clean in clean_runs:
+            run = session.get(TestRun, clean.clean_run_id)
+            assert run is not None
+            assert run.status == "completed"
+            assert clean.clean_metrics["total_tokens"] == run.total_tokens
+            assert clean.clean_metrics["tool_call_count"] == run.tool_call_count
+
+            attempts = list(
+                session.scalars(
+                    select(RunAttempt)
+                    .join_from(RunAttempt, RunPlanItem)
+                    .where(RunPlanItem.run_id == clean.clean_run_id)
+                )
+            )
+            results = list(
+                session.scalars(
+                    select(PytestCaseResult).where(PytestCaseResult.attempt_id.in_([attempt.id for attempt in attempts]))
+                )
+            )
+            final_ids = {attempt.id for attempt in final_attempts_from_records(attempts, results).values()}
+            final_results = [result for result in results if result.attempt_id in final_ids]
+            assert sum(1 for result in final_results if result.status == "passed") == clean.clean_metrics["final_passed"]
+            assert sum(1 for result in final_results if result.status in {"failed", "error"}) == clean.clean_metrics["final_failed"]
+
+            clean_replay = session.scalar(
+                select(ReplayModel).where(
+                    ReplayModel.experiment_clean_run_id == clean.id,
+                    ReplayModel.bug_variant_id.is_(None),
+                )
+            )
+            assert clean_replay is not None
+            clean_passed = _passed_nodeids(clean_replay.pytest_summary or {})
+            key = strategy_key[clean.strategy_version_id]
+            audited_captures[key].setdefault(clean.repeat_index, 0)
+            variant_replays = list(
+                session.scalars(
+                    select(ReplayModel)
+                    .where(
+                        ReplayModel.experiment_clean_run_id == clean.id,
+                        ReplayModel.bug_variant_id.is_not(None),
+                    )
+                    .order_by(ReplayModel.bug_variant_id.asc())
+                )
+            )
+            for replay in variant_replays:
+                assertion_failures = _assertion_failure_nodeids(replay.pytest_summary or {})
+                capturing = clean_passed & assertion_failures
+                captured = bool(capturing)
+                audited_captures[key][clean.repeat_index] += int(captured)
+                audited_matrix.setdefault(replay.bug_variant_id, {})[key] = (
+                    audited_matrix.setdefault(replay.bug_variant_id, {}).get(key, False) or captured
+                )
+                replay_result = session.scalar(
+                    select(ExperimentReplayRun).where(ExperimentReplayRun.replay_id == replay.id)
+                )
+                assert replay_result is not None
+                assert replay_result.captured_bug is captured
+                assert set(replay_result.replay_metrics["capturing_nodeids"]) == capturing
+
+        for row in metrics["rows"]:
+            per_repeat = audited_captures[row["strategy_id"]]
+            assert row["captured_per_repeat"] == [per_repeat[index] for index in sorted(per_repeat)]
+        assert audited_matrix == metrics["capture_matrix"]
+
+
+def test_experiment_fails_if_generated_test_set_artifact_hash_changes(monkeypatch, clean_db):
+    _seed_v2_demo()
+
+    import app.services.experiments as experiment_module
+
+    original_store = experiment_module._store_generated_test_set_artifact
+
+    def store_and_corrupt(*args, **kwargs):
+        artifact = original_store(*args, **kwargs)
+        Path(artifact.uri).write_bytes(b'{"files":{"tests/generated/test_corrupted.py":"def test_corrupted():\\n    assert False\\n"}}')
+        return artifact
+
+    monkeypatch.setattr(experiment_module, "_store_generated_test_set_artifact", store_and_corrupt)
+
+    with Session(get_engine()) as session:
+        experiment_module.create_experiment(
+            session,
+            experiment_id="exp-corrupt-artifact",
+            name="corrupt artifact",
+            dataset_id=DEMO_DATASET_ID,
+            strategy_version_ids=["sv-direct-v1"],
+            repeat_count=1,
+            llm_override={"provider": "mock", "model": "mock-1"},
+        )
+        with pytest.raises(ExperimentError, match="generated test set artifact hash mismatch"):
+            run_experiment(session, "exp-corrupt-artifact")
+
+        experiment = session.get(Experiment, "exp-corrupt-artifact")
+        assert experiment is not None
+        assert experiment.status == "failed"
+        assert experiment.error_code == "ExperimentError"
+        assert "generated test set artifact hash mismatch" in (experiment.error_message or "")
+
+
+def test_experiment_fails_when_clean_run_provider_call_fails(monkeypatch, clean_db):
+    _seed_v2_demo()
+
+    import app.services.experiments as experiment_module
+
+    def fail_clean_run(session, *, run_id, budget_override=None, make_llm=None):
+        run = session.get(TestRun, run_id)
+        run.status = "failed"
+        run.error_code = "LLM_PROVIDER_ERROR"
+        run.error_message = "provider rejected request"
+        session.commit()
+        return run
+
+    monkeypatch.setattr(experiment_module, "execute_run_sync", fail_clean_run)
+
+    with Session(get_engine()) as session:
+        experiment_module.create_experiment(
+            session,
+            experiment_id="exp-provider-failure",
+            name="provider failure",
+            dataset_id=DEMO_DATASET_ID,
+            strategy_version_ids=["sv-direct-v1"],
+            repeat_count=1,
+            llm_override={"provider": "openai", "model": "gpt-5"},
+        )
+        with pytest.raises(ExperimentError, match="clean run failed before replay: LLM_PROVIDER_ERROR"):
+            run_experiment(session, "exp-provider-failure")
+
+        experiment = session.get(Experiment, "exp-provider-failure")
+        assert experiment is not None
+        assert experiment.status == "failed"
+        assert experiment.error_code == "ExperimentError"
+        assert "provider rejected request" in (experiment.error_message or "")
+        assert session.scalar(
+            select(func.count()).select_from(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-provider-failure")
+        ) == 0
 
 
 def test_experiment_run_route_enqueues_without_sync(monkeypatch, clean_db):
