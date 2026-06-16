@@ -4,15 +4,20 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
 from app.main import create_app
-from app.models import ExperimentCleanRun, ExperimentReplayRun, RunArtifact, TestReplay as ReplayModel
-from app.services.evaluation_seed import DEMO_DATASET_ID, seed_demo_dataset
+from app.models import ExperimentCleanRun, ExperimentReplayRun, ProjectSnapshot, RunArtifact, TestReplay as ReplayModel
+from app.services.evaluation import create_bug_variant, create_eval_task, create_seeded_bug
+from app.services.evaluation_seed import DEMO_DATASET_ID, DEMO_SNAPSHOT_ID, seed_demo_dataset
+from app.services.experiments import ExperimentError, _copy_clean_snapshot, run_experiment
 from app.services.strategies import seed_strategy_versions
+from app.workers.celery_app import celery_app
+from eval.demo.bugs import BUGS
 from eval.harness.run_eval import run_full_eval, run_full_eval_via_service
 
 
@@ -22,7 +27,13 @@ def _seed_v2_demo() -> None:
         seed_demo_dataset(session)
 
 
-def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(tmp_path, clean_db):
+def _run_celery_eager(monkeypatch) -> None:
+    monkeypatch.setattr(celery_app.conf, "task_always_eager", True)
+    monkeypatch.setattr(celery_app.conf, "task_eager_propagates", True)
+
+
+def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch, tmp_path, clean_db):
+    _run_celery_eager(monkeypatch)
     _seed_v2_demo()
     app = create_app()
 
@@ -54,15 +65,23 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(tmp_path, c
     assert rows["direct"]["captured_per_repeat"] == [5]
     assert rows["direct"]["false_positive_rate"] == 1.0
     assert rows["direct"]["cost_per_captured_bug_status"] == "ok"
+    assert rows["direct"]["avg_duration_ms"] > 0
+    assert rows["direct"]["pytest_collection_success_rate"] == 1.0
+    assert rows["direct"]["reflection_contract_pass_rate"] is None
+    assert rows["direct"]["reflection_acceptance_rate"] is None
     assert rows["plan_execute"]["captured_per_repeat"] == [6]
     assert rows["plan_execute"]["false_positive_rate"] == 0.0
     assert rows["react_reflection"]["captured_per_repeat"] == [6]
     assert rows["react_reflection"]["reflection_used"] is True
+    assert rows["react_reflection"]["reflection_contract_pass_rate"] == 1.0
+    assert rows["react_reflection"]["reflection_acceptance_rate"] == 1.0
 
     matrix = metrics["capture_matrix"]
     assert matrix["variant-wrong-status"]["direct"] is False
     assert matrix["variant-wrong-status"]["plan_execute"] is True
     assert matrix["variant-wrong-status"]["react_reflection"] is True
+    assert metrics["capture_scope"]["unit"] == "bug_variant"
+    assert metrics["capture_scope"]["single_variant_per_seeded_bug"] is True
     assert metrics["data_source"]["kind"] == "mock"
 
     harness = run_full_eval(tmp_path / "harness", repeats=1)
@@ -75,6 +94,13 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(tmp_path, c
     assert len(metrics["experiment_replay_runs"]) == 18
     assert all(replay["llm_calls"] == 0 for replay in metrics["replay_runs"])
     assert any(replay["bug_variant_id"] is None for replay in metrics["replay_runs"])
+    for clean in metrics["clean_runs"]:
+        clean_replay = clean["clean_metrics"]["clean_replay"]
+        assert clean["clean_metrics"]["clean_replay_id"]
+        assert clean_replay["collection_errors"] == 0
+        assert clean_replay["duration_ms"] >= 0
+    for replay_result in metrics["experiment_replay_runs"]:
+        assert replay_result["replay_metrics"]["clean_replay_id"]
 
     with Session(get_engine()) as session:
         assert session.scalar(select(func.count()).select_from(ExperimentCleanRun)) == 3
@@ -92,7 +118,194 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(tmp_path, c
             assert artifact.metadata_json["experiment_id"] == "exp-stage4-demo"
 
 
-def test_experiment_metrics_use_null_cost_when_no_bug_is_captured(clean_db):
+def test_experiment_run_route_enqueues_without_sync(monkeypatch, clean_db):
+    calls = []
+
+    class DummyTask:
+        def delay(self, experiment_id):
+            calls.append(experiment_id)
+
+    import app.workers.tasks as task_module
+
+    monkeypatch.setattr(task_module, "execute_experiment_task", DummyTask())
+    _seed_v2_demo()
+    app = create_app()
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/experiments",
+            json={
+                "id": "exp-stage4-queued",
+                "name": "stage4 queued",
+                "dataset_id": DEMO_DATASET_ID,
+                "strategy_version_ids": ["sv-direct-v1"],
+                "repeat_count": 1,
+                "llm_override": {"provider": "mock", "model": "mock-1"},
+            },
+        )
+        assert created.status_code == 200
+        run = client.post("/api/v1/experiments/exp-stage4-queued/runs")
+        assert run.status_code == 200
+        assert run.json()["status"] == "queued"
+        assert calls == ["exp-stage4-queued"]
+
+
+def test_completed_experiment_is_not_rerun_in_place(monkeypatch, clean_db):
+    _run_celery_eager(monkeypatch)
+    _seed_v2_demo()
+    app = create_app()
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/experiments",
+            json={
+                "id": "exp-no-rerun",
+                "name": "no rerun",
+                "dataset_id": DEMO_DATASET_ID,
+                "strategy_version_ids": ["sv-direct-v1"],
+                "repeat_count": 1,
+                "llm_override": {"provider": "mock", "model": "mock-1"},
+            },
+        )
+        assert created.status_code == 200
+        assert client.post("/api/v1/experiments/exp-no-rerun/runs").json()["status"] == "completed"
+        again = client.post("/api/v1/experiments/exp-no-rerun/runs")
+        assert again.status_code == 200
+        assert again.json()["status"] == "completed"
+
+    with Session(get_engine()) as session:
+        clean_count = session.scalar(
+            select(func.count()).select_from(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-no-rerun")
+        )
+        assert clean_count == 1
+
+
+def test_run_experiment_observes_mid_run_cancel(monkeypatch, clean_db):
+    _seed_v2_demo()
+
+    import app.services.experiments as experiment_module
+
+    def cancel_during_execute(session, *, run_id, budget_override=None, make_llm=None):
+        experiment = session.get(experiment_module.Experiment, "exp-cancel-mid-run")
+        experiment.status = "cancelled"
+        experiment.finished_at = experiment_module._now()
+        session.commit()
+        return session.get(experiment_module.TestRun, run_id)
+
+    monkeypatch.setattr(experiment_module, "execute_run_sync", cancel_during_execute)
+
+    with Session(get_engine()) as session:
+        experiment_module.create_experiment(
+            session,
+            experiment_id="exp-cancel-mid-run",
+            name="cancel mid run",
+            dataset_id=DEMO_DATASET_ID,
+            strategy_version_ids=["sv-direct-v1"],
+            repeat_count=1,
+            llm_override={"provider": "mock", "model": "mock-1"},
+        )
+        result = run_experiment(session, "exp-cancel-mid-run")
+        assert result["status"] == "cancelled"
+        assert session.scalar(
+            select(func.count()).select_from(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-cancel-mid-run")
+        ) == 0
+
+
+def test_experiment_workdir_rejects_paths_outside_root(tmp_path):
+    clean_root = tmp_path / "clean"
+    clean_root.mkdir()
+    (clean_root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    snapshot = ProjectSnapshot(
+        id="snapshot-safe-copy",
+        project_id="project-safe-copy",
+        source_kind="local_path",
+        root_path=str(clean_root),
+    )
+
+    with pytest.raises(ExperimentError, match="escapes"):
+        _copy_clean_snapshot(snapshot, tmp_path / "outside")
+
+
+def test_experiment_create_rejects_unsafe_id(clean_db):
+    _seed_v2_demo()
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/experiments",
+            json={
+                "id": "../bad",
+                "name": "bad id",
+                "dataset_id": DEMO_DATASET_ID,
+                "strategy_version_ids": ["sv-direct-v1"],
+                "repeat_count": 1,
+                "llm_override": {"provider": "mock", "model": "mock-1"},
+            },
+        )
+        assert response.status_code == 422
+
+
+def _add_second_demo_task() -> None:
+    with Session(get_engine()) as session:
+        task = create_eval_task(
+            session,
+            dataset_id=DEMO_DATASET_ID,
+            task_id="task-demo-shop-pricing-v2-extra",
+            project_snapshot_id=DEMO_SNAPSHOT_ID,
+            target_scope={"targets": [bug.target for bug in BUGS], "bug_count": len(BUGS), "source": "test-extra-task"},
+            goal="Generate tests for the duplicated task scope.",
+            expected_capabilities=["boundary_value", "comparison_logic", "input_validation", "http_status_contract"],
+        )
+        for bug in BUGS:
+            seeded = create_seeded_bug(
+                session,
+                eval_task_id=task.id,
+                bug_id=f"{bug.id}-extra",
+                bug_type=bug.bug_type,
+                description=bug.description,
+                expected_detection=bug.expected_detection,
+            )
+            create_bug_variant(
+                session,
+                seeded_bug_id=seeded.id,
+                variant_id=f"variant-{bug.id}-extra",
+                variant_name=f"{bug.id} duplicate canonical patch",
+                patch={"file": bug.file, "old": bug.old, "new": bug.new},
+                ground_truth={"target": bug.target, "target_kind": bug.kind},
+            )
+
+
+def test_metrics_group_multiple_tasks_into_one_repeat(monkeypatch, clean_db):
+    _run_celery_eager(monkeypatch)
+    _seed_v2_demo()
+    _add_second_demo_task()
+    app = create_app()
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/experiments",
+            json={
+                "id": "exp-multi-task",
+                "name": "multi task",
+                "dataset_id": DEMO_DATASET_ID,
+                "strategy_version_ids": ["sv-direct-v1"],
+                "repeat_count": 1,
+                "llm_override": {"provider": "mock", "model": "mock-1"},
+            },
+        )
+        assert created.status_code == 200
+        assert client.post("/api/v1/experiments/exp-multi-task/runs").json()["status"] == "completed"
+        metrics = client.get("/api/v1/experiments/exp-multi-task/metrics").json()
+
+    [row] = metrics["rows"]
+    assert row["repeats"] == 1
+    assert row["total_in_scope"] == 12
+    assert len(row["captured_per_repeat"]) == 1
+    assert len(metrics["clean_runs"]) == 2
+
+
+def test_experiment_metrics_use_null_cost_when_no_bug_is_captured(monkeypatch, clean_db):
+    _run_celery_eager(monkeypatch)
     _seed_v2_demo()
     app = create_app()
 

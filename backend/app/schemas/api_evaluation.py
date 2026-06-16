@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.evaluation import LlmOverride
+
+
+_RESOURCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+def validate_resource_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not _RESOURCE_ID_RE.fullmatch(value):
+        raise ValueError("id must be 1-64 chars: letters, digits, dot, underscore or hyphen")
+    return value
 
 
 class CanonicalPatch(BaseModel):
@@ -36,6 +48,11 @@ class EvalDatasetCreate(BaseModel):
     description: str | None = None
     project_snapshot_ids: list[str] = Field(default_factory=list)
 
+    @field_validator("id")
+    @classmethod
+    def _id_is_safe(cls, value: str | None) -> str | None:
+        return validate_resource_id(value)
+
 
 class EvalTaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -46,6 +63,11 @@ class EvalTaskCreate(BaseModel):
     goal: str
     expected_capabilities: list = Field(default_factory=list)
 
+    @field_validator("id")
+    @classmethod
+    def _id_is_safe(cls, value: str | None) -> str | None:
+        return validate_resource_id(value)
+
 
 class SeededBugCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -54,6 +76,11 @@ class SeededBugCreate(BaseModel):
     bug_type: str
     description: str
     expected_detection: str
+
+    @field_validator("id")
+    @classmethod
+    def _id_is_safe(cls, value: str | None) -> str | None:
+        return validate_resource_id(value)
 
 
 class BugVariantCreate(BaseModel):
@@ -65,6 +92,11 @@ class BugVariantCreate(BaseModel):
     patch: CanonicalPatch
     mutated_snapshot_id: str | None = None
     ground_truth: dict = Field(default_factory=dict)
+
+    @field_validator("id")
+    @classmethod
+    def _id_is_safe(cls, value: str | None) -> str | None:
+        return validate_resource_id(value)
 
 
 class EvalDatasetOut(BaseModel):
@@ -135,6 +167,11 @@ class ExperimentCreate(BaseModel):
     strategy_version_ids: list[str] = Field(min_length=1)
     repeat_count: int = Field(default=1, ge=1)
     llm_override: LlmOverride | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _id_is_safe(cls, value: str | None) -> str | None:
+        return validate_resource_id(value)
 
 
 class ExperimentOut(BaseModel):

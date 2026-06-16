@@ -5,6 +5,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.db.session import get_engine
+from app.services.experiments import run_experiment
 from app.services.test_runs import execute_run_sync
 from app.repositories.test_runs import get_test_run
 from app.workers.celery_app import celery_app
@@ -26,3 +27,14 @@ def execute_run_task(run_id: str, budget_override: dict | None = None) -> str:
             if run is None:
                 raise
         return run.id
+
+
+@celery_app.task(name="trace.execute_experiment")
+def execute_experiment_task(experiment_id: str) -> str:
+    with Session(get_engine()) as session:
+        try:
+            run_experiment(session, experiment_id)
+        except Exception:
+            logger.warning("Experiment %s failed during worker execution.", experiment_id, exc_info=True)
+            raise
+        return experiment_id

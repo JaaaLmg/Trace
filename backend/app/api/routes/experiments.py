@@ -14,12 +14,12 @@ from app.services.experiments import (
     ExperimentError,
     cancel_experiment,
     create_experiment,
+    enqueue_experiment,
     get_experiment,
     get_experiment_metrics,
     list_clean_runs,
     list_experiments,
     list_replay_runs,
-    run_experiment,
 )
 
 router = APIRouter(tags=["experiments"])
@@ -61,7 +61,7 @@ def get_experiment_route(experiment_id: str, db: Session = Depends(get_db)):
 @router.post("/api/v1/experiments/{experiment_id}/runs", response_model=ExperimentOut)
 def run_experiment_route(experiment_id: str, db: Session = Depends(get_db)):
     try:
-        return run_experiment(db, experiment_id)
+        return enqueue_experiment(db, experiment_id)
     except ExperimentError as e:
         raise _experiment_http_error(e) from e
 

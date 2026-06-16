@@ -10,6 +10,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.final_attempts import final_attempts_from_records
 from app.agents.llm import MockLLM
 from app.core.ids import new_id
 from app.models import (
@@ -69,6 +70,13 @@ class MetricRun:
     tokens: int
     tool_calls: int
     reflection_used: bool
+    duration_ms: int = 0
+    collection_units: int = 0
+    collection_successes: int = 0
+    reflection_contract_total: int = 0
+    reflection_contract_passed: int = 0
+    reflection_acceptance_total: int = 0
+    reflection_accepted: int = 0
     variants: dict = field(default_factory=dict)
 
 
@@ -81,6 +89,10 @@ class ExperimentNotFoundError(EvaluationNotFoundError):
 
 
 class ExperimentConflictError(EvaluationConflictError):
+    pass
+
+
+class ExperimentCancelledError(ExperimentError):
     pass
 
 
@@ -98,6 +110,31 @@ def _json_bytes(payload: dict) -> bytes:
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt is not None else None
+
+
+def _safe_path_segment(value: str, *, label: str) -> str:
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+    if not value or any(char not in allowed for char in value) or ".." in value:
+        raise ExperimentError(f"{label} is not a safe path segment")
+    return value
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _ensure_experiment_work_path(path: Path) -> Path:
+    root = EXPERIMENT_WORK_ROOT.resolve()
+    resolved = path.resolve()
+    if not _is_relative_to(resolved, root):
+        raise ExperimentError(f"experiment work path escapes workspace: {resolved}")
+    if resolved == root:
+        raise ExperimentError("refusing to operate on experiment work root")
+    return resolved
 
 
 def _experiment_strategy_ids(session: Session, experiment_id: str) -> list[str]:
@@ -240,6 +277,27 @@ def cancel_experiment(session: Session, experiment_id: str) -> dict:
     return _serialize_experiment(session, experiment)
 
 
+def enqueue_experiment(session: Session, experiment_id: str) -> dict:
+    from app.workers.tasks import execute_experiment_task
+
+    experiment = session.get(Experiment, experiment_id)
+    if experiment is None:
+        raise ExperimentNotFoundError("experiment not found")
+    if experiment.status == "draft":
+        experiment.status = "queued"
+        experiment.started_at = None
+        experiment.finished_at = None
+        experiment.error_code = None
+        experiment.error_message = None
+        session.commit()
+        execute_experiment_task.delay(experiment.id)
+        session.refresh(experiment)
+        return _serialize_experiment(session, experiment)
+    if experiment.status in {"queued", "running", "completed", "cancelled"}:
+        return _serialize_experiment(session, experiment)
+    raise ExperimentConflictError("failed experiment cannot be rerun in place; create a new experiment")
+
+
 def _dataset_tasks(session: Session, dataset_id: str) -> list[EvalTask]:
     stmt = select(EvalTask).where(EvalTask.dataset_id == dataset_id).order_by(EvalTask.created_at.asc(), EvalTask.id.asc())
     return list(session.scalars(stmt))
@@ -253,6 +311,15 @@ def _task_bugs_and_variants(session: Session, task_id: str) -> list[tuple[Seeded
         .order_by(SeededBug.created_at.asc(), SeededBug.id.asc(), BugVariant.created_at.asc(), BugVariant.id.asc())
     )
     return list(session.execute(stmt).all())
+
+
+def _raise_if_cancelled(session: Session, experiment_id: str) -> None:
+    experiment = session.get(Experiment, experiment_id)
+    if experiment is None:
+        raise ExperimentNotFoundError("experiment not found")
+    session.refresh(experiment)
+    if experiment.status == "cancelled":
+        raise ExperimentCancelledError("experiment cancelled")
 
 
 def _final_attempt_ids(session: Session, run_id: str) -> set[str]:
@@ -272,18 +339,17 @@ def _final_attempt_ids(session: Session, run_id: str) -> set[str]:
             .where(RunPlanItem.run_id == run_id)
         )
     )
-    results_by_attempt: dict[str, list[PytestCaseResult]] = {}
-    for result in results:
-        results_by_attempt.setdefault(result.attempt_id, []).append(result)
-    attempts_by_item: dict[str, list[RunAttempt]] = {}
-    for attempt in attempts:
-        attempts_by_item.setdefault(attempt.run_plan_item_id, []).append(attempt)
-    final_ids = set()
-    for item_attempts in attempts_by_item.values():
-        with_results = [attempt for attempt in item_attempts if attempt.id in results_by_attempt]
-        pool = with_results or item_attempts
-        final_ids.add(max(pool, key=lambda attempt: attempt.attempt_no).id)
-    return final_ids
+    return {attempt.id for attempt in final_attempts_from_records(attempts, results).values()}
+
+
+def _final_pytest_duration_ms(session: Session, run_id: str) -> int:
+    final_ids = _final_attempt_ids(session, run_id)
+    if not final_ids:
+        return 0
+    return sum(
+        int(result.duration_ms or 0)
+        for result in session.scalars(select(PytestCaseResult).where(PytestCaseResult.attempt_id.in_(final_ids)))
+    )
 
 
 def _final_test_set_from_db(session: Session, run_id: str) -> FinalTestSet:
@@ -376,7 +442,7 @@ def _read_generated_test_set_artifact(artifact: RunArtifact) -> dict[str, str]:
 
 def _copy_clean_snapshot(snapshot: ProjectSnapshot, dest: Path) -> Path:
     root = Path(snapshot.root_path).resolve()
-    dest = dest.resolve()
+    dest = _ensure_experiment_work_path(dest)
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(root, dest)
@@ -384,9 +450,11 @@ def _copy_clean_snapshot(snapshot: ProjectSnapshot, dest: Path) -> Path:
 
 
 def _materialize_clean_snapshot(session: Session, *, source_snapshot: ProjectSnapshot, experiment_id: str, unit: str) -> ProjectSnapshot:
+    experiment_segment = _safe_path_segment(experiment_id, label="experiment_id")
+    unit_segment = _safe_path_segment(unit, label="experiment unit")
     root = _copy_clean_snapshot(
         source_snapshot,
-        EXPERIMENT_WORK_ROOT / experiment_id / unit / "clean",
+        EXPERIMENT_WORK_ROOT / experiment_segment / unit_segment / "clean",
     )
     content_hash = _hash_directory(root)
     snapshot = ProjectSnapshot(
@@ -446,6 +514,27 @@ def _pytest_summary_from_replay(out) -> dict:
     }
 
 
+def _passed_nodeids_from_pytest_summary(summary: dict) -> set[str]:
+    return {
+        str(case.get("nodeid"))
+        for case in summary.get("case_results", [])
+        if isinstance(case, dict) and case.get("status") == "passed" and case.get("nodeid")
+    }
+
+
+def _compact_pytest_summary(summary: dict) -> dict:
+    return {
+        "collected": int(summary.get("collected", 0)),
+        "passed": int(summary.get("passed", 0)),
+        "failed": int(summary.get("failed", 0)),
+        "skipped": int(summary.get("skipped", 0)),
+        "collection_errors": int(summary.get("collection_errors", 0)),
+        "duration_ms": int(summary.get("duration_ms") or 0),
+        "exit_code": summary.get("exit_code"),
+        "error": summary.get("error"),
+    }
+
+
 def _run_replay(
     session: Session,
     *,
@@ -474,9 +563,12 @@ def _run_replay(
 
     try:
         files = _read_generated_test_set_artifact(artifact)
+        experiment_segment = _safe_path_segment(clean_run.experiment_id, label="experiment_id")
+        clean_segment = _safe_path_segment(clean_run.id, label="experiment_clean_run_id")
+        replay_segment = _safe_path_segment(replay_id, label="replay_id")
         replay_root = _copy_clean_snapshot(
             target_snapshot,
-            EXPERIMENT_WORK_ROOT / clean_run.experiment_id / clean_run.id / f"replay-{replay_id}",
+            EXPERIMENT_WORK_ROOT / experiment_segment / clean_segment / f"replay-{replay_segment}",
         )
         if variant is not None:
             _apply_inline_patch(replay_root, variant)
@@ -515,8 +607,10 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
     experiment = session.get(Experiment, experiment_id)
     if experiment is None:
         raise ExperimentNotFoundError("experiment not found")
-    if experiment.status == "cancelled":
+    if experiment.status in {"completed", "cancelled"}:
         return _serialize_experiment(session, experiment)
+    if experiment.status == "failed":
+        raise ExperimentConflictError("failed experiment cannot be rerun in place; create a new experiment")
 
     tasks = _dataset_tasks(session, experiment.dataset_id)
     if not tasks:
@@ -534,15 +628,18 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
 
     try:
         for task in tasks:
+            _raise_if_cancelled(session, experiment.id)
             snapshot = session.get(ProjectSnapshot, task.project_snapshot_id)
             if snapshot is None:
                 raise ExperimentError("eval task project snapshot not found")
             variants = _task_bugs_and_variants(session, task.id)
             for strategy_version_id in strategy_ids:
+                _raise_if_cancelled(session, experiment.id)
                 strategy = get_strategy_version(session, strategy_version_id)
                 if strategy is None:
                     raise ExperimentError(f"strategy version not found: {strategy_version_id}")
                 for repeat_index in range(experiment.repeat_count):
+                    _raise_if_cancelled(session, experiment.id)
                     unit = f"{task.id}-{strategy_version_id}-rep{repeat_index}"
                     clean_snapshot = _materialize_clean_snapshot(
                         session,
@@ -577,6 +674,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         output_options={"experiment_id": experiment.id, "eval_task_id": task.id},
                     )
                     session.refresh(run)
+                    _raise_if_cancelled(session, experiment.id)
                     provider = ((run.strategy_snapshot or {}).get("resolved_llm") or {}).get("provider", "mock")
                     execute_run_sync(
                         session,
@@ -584,6 +682,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         make_llm=_make_llm_for_strategy(provider),
                     )
                     session.refresh(run)
+                    _raise_if_cancelled(session, experiment.id)
                     final_set = _final_test_set_from_db(session, run.id)
                     clean_metrics = {
                         "final_cases_total": final_set.n_cases,
@@ -617,7 +716,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                     session.commit()
                     session.refresh(clean_row)
 
-                    _run_replay(
+                    clean_replay_row, _clean_capturing, clean_assertion_failures = _run_replay(
                         session,
                         clean_run=clean_row,
                         artifact=artifact,
@@ -626,14 +725,45 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         clean_passed=final_set.clean_passed,
                         timeout_seconds=60,
                     )
+                    clean_replay_summary = _compact_pytest_summary(clean_replay_row.pytest_summary or {})
+                    clean_metrics = dict(clean_row.clean_metrics or {})
+                    clean_metrics["clean_replay_id"] = clean_replay_row.id
+                    clean_metrics["clean_replay"] = clean_replay_summary
+                    clean_metrics["clean_replay_assertion_failure_nodeids"] = sorted(clean_assertion_failures)
+
+                    if clean_replay_row.status != "completed":
+                        # clean 测试集在干净代码上无法复现：这一个 (task, strategy, repeat) 单元作废，
+                        # 记为失败并跳过它的变体重放。环境抖动只废掉这个单元，不连累整场实验——
+                        # 其它策略/重复仍继续。真正的系统级损坏（artifact hash 不符、拷贝失败）由
+                        # _run_replay 抛异常走外层 except，仍会让实验失败。
+                        clean_metrics["clean_replay_error"] = clean_replay_row.error_message or clean_replay_row.error_code
+                        clean_metrics["clean_replay_matches_generation"] = False
+                        clean_row.false_positive = True
+                        clean_row.clean_metrics = clean_metrics
+                        session.commit()
+                        continue
+
+                    clean_replay_passed = _passed_nodeids_from_pytest_summary(clean_replay_row.pytest_summary or {})
+                    clean_replay_failed = bool(clean_assertion_failures) or clean_replay_summary["collection_errors"] > 0
+                    clean_row.false_positive = clean_replay_failed
+                    clean_metrics["clean_replay_matches_generation"] = (
+                        clean_replay_summary["passed"] == final_set.final_passed
+                        and clean_replay_summary["failed"] == final_set.final_failed
+                        and clean_replay_summary["skipped"] == final_set.final_skipped
+                        and clean_replay_summary["collection_errors"] == final_set.collection_errors
+                    )
+                    clean_row.clean_metrics = clean_metrics
+                    session.commit()
+
                     for _bug, variant in variants:
+                        _raise_if_cancelled(session, experiment.id)
                         replay_row, capturing, assertion_failures = _run_replay(
                             session,
                             clean_run=clean_row,
                             artifact=artifact,
                             target_snapshot=snapshot,
                             variant=variant,
-                            clean_passed=final_set.clean_passed,
+                            clean_passed=clean_replay_passed,
                             timeout_seconds=60,
                         )
                         session.add(
@@ -645,9 +775,10 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                                 captured_bug=bool(capturing),
                                 replay_metrics={
                                     "capture_rule": "clean_passed_variant_assertion_failure_same_nodeid",
-                                    "clean_passed_nodeids": sorted(final_set.clean_passed),
+                                    "clean_passed_nodeids": sorted(clean_replay_passed),
                                     "variant_assertion_failure_nodeids": sorted(assertion_failures),
                                     "capturing_nodeids": sorted(capturing),
+                                    "clean_replay_id": clean_replay_row.id,
                                 },
                             )
                         )
@@ -656,6 +787,16 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
         experiment.status = "completed"
         experiment.finished_at = _now()
         session.commit()
+    except ExperimentCancelledError:
+        session.rollback()
+        experiment = session.get(Experiment, experiment_id)
+        if experiment is not None:
+            experiment.status = "cancelled"
+            experiment.finished_at = experiment.finished_at or _now()
+            session.commit()
+            session.refresh(experiment)
+            return _serialize_experiment(session, experiment)
+        raise
     except Exception as exc:
         session.rollback()
         experiment = session.get(Experiment, experiment_id)
@@ -695,13 +836,60 @@ def list_replay_runs(session: Session, experiment_id: str) -> list[TestReplay]:
     return list(session.scalars(stmt))
 
 
+def _reflection_evidence(metrics: dict) -> dict:
+    quality = metrics.get("report_quality") or {}
+    evidence = quality.get("reflection_evidence") if isinstance(quality, dict) else {}
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def _metric_detail_for_clean(session: Session, clean: ExperimentCleanRun, run: TestRun | None, metrics: dict) -> dict:
+    replay_rows = list(
+        session.scalars(
+            select(TestReplay)
+            .where(TestReplay.experiment_clean_run_id == clean.id)
+            .order_by(TestReplay.created_at.asc(), TestReplay.id.asc())
+        )
+    )
+    final_collection_errors = int((clean.clean_metrics or {}).get("collection_errors", 0))
+    collection_units = 1 + len(replay_rows)
+    collection_successes = 1 if final_collection_errors == 0 else 0
+    replay_duration = 0
+    for replay_row in replay_rows:
+        summary = replay_row.pytest_summary or {}
+        replay_duration += int(summary.get("duration_ms") or 0)
+        if int(summary.get("collection_errors") or 0) == 0 and replay_row.error_code is None:
+            collection_successes += 1
+
+    # reflection 的单一真相口径：是否发生、契约是否通过、是否被采纳，全部从 report 写的
+    # reflection_evidence 读。别再混用顶层 metrics["reflection_used"]，否则分母/分子两处来源会漂。
+    evidence = _reflection_evidence(metrics)
+    reflection_used = bool(evidence.get("used"))
+    accepted_attempt_id = evidence.get("accepted_attempt_id")
+    contract_passed = evidence.get("contract_passed")
+    contract_total = 1 if reflection_used else 0
+    contract_ok = 1 if reflection_used and contract_passed is True else 0
+    acceptance_total = 1 if reflection_used else 0
+    accepted = 1 if reflection_used and accepted_attempt_id else 0
+
+    return {
+        "duration_ms": _final_pytest_duration_ms(session, clean.clean_run_id) + replay_duration,
+        "collection_units": collection_units,
+        "collection_successes": collection_successes,
+        "reflection_used": reflection_used,
+        "reflection_contract_total": contract_total,
+        "reflection_contract_passed": contract_ok,
+        "reflection_acceptance_total": acceptance_total,
+        "reflection_accepted": accepted,
+    }
+
+
 def _metric_runs(session: Session, experiment_id: str) -> dict[str, list[MetricRun]]:
     stmt = (
         select(ExperimentCleanRun)
         .where(ExperimentCleanRun.experiment_id == experiment_id)
         .order_by(ExperimentCleanRun.strategy_version_id.asc(), ExperimentCleanRun.repeat_index.asc())
     )
-    runs_by_strategy: dict[str, list[MetricRun]] = {}
+    grouped: dict[str, dict[int, MetricRun]] = {}
     for clean in session.scalars(stmt):
         run = session.get(TestRun, clean.clean_run_id)
         report = session.scalar(select(TestReport).where(TestReport.run_id == clean.clean_run_id))
@@ -718,21 +906,74 @@ def _metric_runs(session: Session, experiment_id: str) -> dict[str, list[MetricR
                 "capturing_tests": replay_result.replay_metrics.get("capturing_nodeids", []),
             }
         sid = _strategy_key(session, clean.strategy_version_id)
-        metric_run = MetricRun(
-            strategy_id=sid,
-            strategy_name=_strategy_parent_name(session, clean.strategy_version_id),
-            repeat=clean.repeat_index,
-            status=run.status if run is not None else "unknown",
-            clean_passed=set(),
-            clean_failed=clean.false_positive,
-            n_cases=int((clean.clean_metrics or {}).get("final_cases_total", 0)),
-            tokens=int((clean.clean_metrics or {}).get("total_tokens", 0)),
-            tool_calls=int((clean.clean_metrics or {}).get("tool_call_count", 0)),
-            reflection_used=bool(metrics.get("reflection_used")),
-            variants=variants,
-        )
-        runs_by_strategy.setdefault(sid, []).append(metric_run)
-    return runs_by_strategy
+        detail = _metric_detail_for_clean(session, clean, run, metrics)
+        repeat_runs = grouped.setdefault(sid, {})
+        existing = repeat_runs.get(clean.repeat_index)
+        if existing is None:
+            repeat_runs[clean.repeat_index] = MetricRun(
+                strategy_id=sid,
+                strategy_name=_strategy_parent_name(session, clean.strategy_version_id),
+                repeat=clean.repeat_index,
+                status=run.status if run is not None else "unknown",
+                clean_passed=set(),
+                clean_failed=clean.false_positive,
+                n_cases=int((clean.clean_metrics or {}).get("final_cases_total", 0)),
+                tokens=int((clean.clean_metrics or {}).get("total_tokens", 0)),
+                tool_calls=int((clean.clean_metrics or {}).get("tool_call_count", 0)),
+                reflection_used=detail["reflection_used"],
+                duration_ms=detail["duration_ms"],
+                collection_units=detail["collection_units"],
+                collection_successes=detail["collection_successes"],
+                reflection_contract_total=detail["reflection_contract_total"],
+                reflection_contract_passed=detail["reflection_contract_passed"],
+                reflection_acceptance_total=detail["reflection_acceptance_total"],
+                reflection_accepted=detail["reflection_accepted"],
+                variants=variants,
+            )
+            continue
+
+        existing.clean_failed = existing.clean_failed or clean.false_positive
+        existing.n_cases += int((clean.clean_metrics or {}).get("final_cases_total", 0))
+        existing.tokens += int((clean.clean_metrics or {}).get("total_tokens", 0))
+        existing.tool_calls += int((clean.clean_metrics or {}).get("tool_call_count", 0))
+        existing.reflection_used = existing.reflection_used or detail["reflection_used"]
+        existing.duration_ms += detail["duration_ms"]
+        existing.collection_units += detail["collection_units"]
+        existing.collection_successes += detail["collection_successes"]
+        existing.reflection_contract_total += detail["reflection_contract_total"]
+        existing.reflection_contract_passed += detail["reflection_contract_passed"]
+        existing.reflection_acceptance_total += detail["reflection_acceptance_total"]
+        existing.reflection_accepted += detail["reflection_accepted"]
+        existing.variants.update(variants)
+        run_status = run.status if run is not None else "unknown"
+        if existing.status == "completed" and run_status != "completed":
+            existing.status = run_status
+
+    return {
+        strategy_id: [runs[repeat] for repeat in sorted(runs)]
+        for strategy_id, runs in grouped.items()
+    }
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def _add_v2_metric_fields(rows: list[dict], runs_by_strategy: dict[str, list[MetricRun]]) -> None:
+    for row in rows:
+        runs = runs_by_strategy.get(row["strategy_id"], [])
+        row["avg_duration_ms"] = (sum(run.duration_ms for run in runs) / len(runs)) if runs else 0.0
+        collection_units = sum(run.collection_units for run in runs)
+        collection_successes = sum(run.collection_successes for run in runs)
+        row["pytest_collection_success_rate"] = _rate(collection_successes, collection_units) or 0.0
+        contract_total = sum(run.reflection_contract_total for run in runs)
+        contract_passed = sum(run.reflection_contract_passed for run in runs)
+        row["reflection_contract_pass_rate"] = _rate(contract_passed, contract_total)
+        acceptance_total = sum(run.reflection_acceptance_total for run in runs)
+        accepted = sum(run.reflection_accepted for run in runs)
+        row["reflection_acceptance_rate"] = _rate(accepted, acceptance_total)
 
 
 def _capture_matrix_variant_ids(session: Session, experiment: Experiment) -> list[str]:
@@ -744,6 +985,26 @@ def _capture_matrix_variant_ids(session: Session, experiment: Experiment) -> lis
         .order_by(SeededBug.created_at.asc(), SeededBug.id.asc(), BugVariant.created_at.asc(), BugVariant.id.asc())
     )
     return [row for row in session.scalars(stmt)]
+
+
+def _capture_scope(session: Session, experiment: Experiment) -> dict:
+    stmt = (
+        select(SeededBug.id, BugVariant.id)
+        .join_from(SeededBug, EvalTask)
+        .join(BugVariant, BugVariant.seeded_bug_id == SeededBug.id)
+        .where(EvalTask.dataset_id == experiment.dataset_id)
+        .order_by(SeededBug.created_at.asc(), SeededBug.id.asc(), BugVariant.created_at.asc(), BugVariant.id.asc())
+    )
+    variants_by_bug: dict[str, list[str]] = {}
+    for bug_id, variant_id in session.execute(stmt):
+        variants_by_bug.setdefault(bug_id, []).append(variant_id)
+    return {
+        "unit": "bug_variant",
+        "total_seeded_bugs": len(variants_by_bug),
+        "total_bug_variants": sum(len(variants) for variants in variants_by_bug.values()),
+        "single_variant_per_seeded_bug": all(len(variants) == 1 for variants in variants_by_bug.values()),
+        "variants_per_seeded_bug": {bug_id: len(variants) for bug_id, variants in variants_by_bug.items()},
+    }
 
 
 def _data_source(experiment: Experiment, rows: list[dict]) -> dict:
@@ -772,6 +1033,7 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
     runs_by_strategy = _metric_runs(session, experiment_id)
     total_in_scope = len(_capture_matrix_variant_ids(session, experiment))
     rows = harness_metrics.aggregate(runs_by_strategy, total_in_scope=total_in_scope)
+    _add_v2_metric_fields(rows, runs_by_strategy)
 
     for row in rows:
         clean_run_ids = [
@@ -859,6 +1121,7 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
             "missing_context_marker": "context_incomplete",
             "agent_source_write_permission": "generated_tests_only",
         },
+        "capture_scope": _capture_scope(session, experiment),
         "rows": rows,
         "capture_matrix": matrix,
         "clean_runs": [

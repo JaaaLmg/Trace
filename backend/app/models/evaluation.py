@@ -128,7 +128,9 @@ class ExperimentCleanRun(Base):
     clean_run_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("test_runs.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    generated_test_set_artifact_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    generated_test_set_artifact_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("run_artifacts.id", ondelete="RESTRICT"), nullable=False
+    )
     false_positive: Mapped[bool] = mapped_column(Boolean, nullable=False)
     clean_metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
@@ -141,7 +143,9 @@ class TestReplay(Base):
     experiment_clean_run_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("experiment_clean_runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    generated_test_set_artifact_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    generated_test_set_artifact_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("run_artifacts.id", ondelete="RESTRICT"), nullable=False
+    )
     target_snapshot_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("project_snapshots.id", ondelete="RESTRICT"), nullable=False, index=True
     )

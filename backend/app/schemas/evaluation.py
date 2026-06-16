@@ -318,6 +318,10 @@ class CleanRunMetricsContract(ContractModel):
     collection_errors: int = Field(default=0, ge=0)
     tool_call_count: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
+    clean_replay_id: str | None = None
+    clean_replay: dict[str, Any] = Field(default_factory=dict)
+    clean_replay_assertion_failure_nodeids: list[str] = Field(default_factory=list)
+    clean_replay_matches_generation: bool | None = None
 
     @model_validator(mode="after")
     def _case_counts_are_consistent(self) -> CleanRunMetricsContract:
@@ -345,7 +349,15 @@ class CleanRunContract(ContractModel):
     def _repeat_index_matches_snapshot(self) -> CleanRunContract:
         if self.strategy_snapshot.resolved_llm.repeat_index != self.repeat_index:
             raise ValueError("clean run repeat_index must match strategy_snapshot.resolved_llm.repeat_index")
-        clean_failed = self.clean_metrics.final_failed > 0 or self.clean_metrics.collection_errors > 0
+        if self.clean_metrics.clean_replay:
+            replay = self.clean_metrics.clean_replay
+            clean_failed = (
+                int(replay.get("failed", 0)) > 0
+                or int(replay.get("collection_errors", 0)) > 0
+                or bool(replay.get("error"))
+            )
+        else:
+            clean_failed = self.clean_metrics.final_failed > 0 or self.clean_metrics.collection_errors > 0
         if self.false_positive != clean_failed:
             raise ValueError("false_positive must match clean final failures or collection errors")
         return self
@@ -432,7 +444,11 @@ class ExperimentMetricRow(ContractModel):
     false_positive_rate: float = Field(ge=0, le=1)
     avg_tokens: float = Field(ge=0)
     avg_tool_calls: float = Field(ge=0)
+    avg_duration_ms: float = Field(default=0.0, ge=0)
+    pytest_collection_success_rate: float = Field(default=0.0, ge=0, le=1)
     reflection_used: bool
+    reflection_contract_pass_rate: float | None = Field(default=None, ge=0, le=1)
+    reflection_acceptance_rate: float | None = Field(default=None, ge=0, le=1)
     cost_per_captured_bug: float | None = Field(default=None, ge=0)
     cost_per_captured_bug_status: CostPerCapturedBugStatus
     data_source: DataSourceKind
@@ -505,6 +521,7 @@ class ExperimentMetricsResponse(ContractModel):
     data_source: DataSourceLabel
     experiment: ExperimentDefinition
     source_context_policy: SourceContextPolicy
+    capture_scope: dict[str, Any] = Field(default_factory=dict)
     rows: list[ExperimentMetricRow]
     capture_matrix: dict[str, dict[str, bool]]
     clean_runs: list[CleanRunContract]
