@@ -1,4 +1,15 @@
 from app.models.artifacts import GeneratedTestCase, GeneratedTestFile, PytestCaseResult, RunArtifact, TestReport
+from app.models.evaluation import (
+    BugVariant,
+    EvalDataset,
+    EvalTask,
+    Experiment,
+    ExperimentCleanRun,
+    ExperimentReplayRun,
+    ExperimentStrategyVersion,
+    SeededBug,
+    TestReplay,
+)
 from app.models.project import Project, ProjectSnapshot
 from app.models.runtime_profile import RuntimeProfile
 from app.models.strategy import StrategyVersion
@@ -15,6 +26,15 @@ __all__ = [
     "StrategyVersion",
     "PromptVersion",
     "ToolSchemaVersion",
+    "EvalDataset",
+    "EvalTask",
+    "SeededBug",
+    "BugVariant",
+    "Experiment",
+    "ExperimentStrategyVersion",
+    "ExperimentCleanRun",
+    "TestReplay",
+    "ExperimentReplayRun",
     "TestPlan",
     "TestRun",
     "RunPlanItem",
@@ -31,5 +51,5 @@ __all__ = [
 
 
 def load_all_models() -> None:
-    # 导入副作用：让 SQLAlchemy metadata 注册完整 14 张表
+    # 导入副作用：让 SQLAlchemy metadata 注册完整 TRACE 表
     return None

@@ -151,10 +151,16 @@ cd backend
 python -m pytest tests/test_db_models.py tests/test_schema_migrations.py tests/test_sqlalchemy_recorder.py tests/test_report_sqlalchemy.py tests/test_api_async_run.py tests/test_api_retry_cancel.py -q --rootdir . -p no:cacheprovider
 ```
 
-pytest 默认使用仓库内 `.pytest_tmp` 作为临时目录。如果仍需要覆盖，可显式指定可写目录：
+pytest 默认使用当前系统/用户的临时目录，避免在仓库内生成跨用户权限残留。如果需要保留临时文件方便调试，可在个人命令里显式指定自己的可写目录：
 
 ```bash
-python -m pytest backend/tests -q --rootdir backend -p no:cacheprovider -o tmp_path_retention_policy=none --basetemp="D:/tmpdir/Temp/trace_pytest"
+python -m pytest backend/tests -q --rootdir backend -p no:cacheprovider -o tmp_path_retention_policy=none --basetemp="${TMPDIR:-/tmp}/trace_pytest"
+```
+
+Windows PowerShell 示例：
+
+```powershell
+python -m pytest backend/tests -q --rootdir backend -p no:cacheprovider -o tmp_path_retention_policy=none --basetemp="$env:TEMP\trace_pytest"
 ```
 
 运行评测：

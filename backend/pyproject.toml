@@ -27,6 +27,5 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--basetemp=.pytest_tmp"
 # A 的端到端测试会生成临时 pytest 文件并子进程执行，主测试套件只扫 tests/
 norecursedirs = ["generated"]

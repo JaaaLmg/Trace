@@ -21,6 +21,15 @@ from app.models import load_all_models  # noqa: E402
 
 
 TRACE_TABLES = [
+    "experiment_replay_runs",
+    "test_replays",
+    "experiment_clean_runs",
+    "experiment_strategy_versions",
+    "experiments",
+    "bug_variants",
+    "seeded_bugs",
+    "eval_tasks",
+    "eval_datasets",
     "test_reports",
     "run_artifacts",
     "trace_steps",

@@ -67,8 +67,8 @@ def test_async_run_is_enqueued(monkeypatch, tmp_path, clean_db):
 
 
 def test_list_projects_hides_pytest_tmp_projects(monkeypatch, tmp_path, clean_db):
-    # 不能往仓库根的共享 .pytest_tmp 里写：那是个不受 pytest 管理、不会被清理的硬编码路径，
-    # Windows 上残留目录被占用后会变成永久 access-denied，让本测试无故挂掉。
+    # 兼容历史残留或手工覆盖出来的仓库内 .pytest_tmp：它不该出现在项目列表里。
+    # 测试目录仍放在 pytest 管理的 tmp_path 下，避免 Windows access-denied 残留。
     # 改为把 TRACE_ROOT 指到 pytest 管理的 tmp_path，隐藏目录也建在 tmp_path 下，跑完自动清理。
     from app.services import path_policy
 
