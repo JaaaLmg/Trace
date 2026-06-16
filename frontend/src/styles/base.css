@@ -237,6 +237,21 @@ td {
   background: rgba(255, 255, 255, 0.82);
 }
 
+.error-banner {
+  margin: 18px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(159, 58, 47, 0.22);
+  border-radius: 7px;
+  background: rgba(159, 58, 47, 0.08);
+  color: var(--failed);
+}
+
+.mode-note {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .tabular {
   font-feature-settings: "tnum" 1;
 }

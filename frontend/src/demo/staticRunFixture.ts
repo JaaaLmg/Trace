@@ -1,5 +1,7 @@
 import type {
   ComparisonResult,
+  EvalDatasetDetailOut,
+  ExperimentMetricsResponse,
   ProjectOut,
   ProjectSnapshotOut,
   RunBundle,
@@ -612,4 +614,373 @@ export const demoComparison: ComparisonResult = {
     "missing-clamp": { "sv-direct-v1": true, "sv-plan-v1": true, "sv-react-v1": true },
     "wrong-status": { "sv-direct-v1": false, "sv-plan-v1": true, "sv-react-v1": true }
   }
+};
+
+export const demoExperimentMetrics: ExperimentMetricsResponse = {
+  schema_version: "v2.phase0",
+  generated_at: "2026-06-15T00:00:00.000Z",
+  data_source: {
+    kind: "mock",
+    label: "TRACE static experiment fixture",
+    provider_label: "mock",
+    model_label: "scripted-v2",
+    generated_by: "frontend/src/demo/staticRunFixture.ts"
+  },
+  experiment: {
+    id: "exp-demo-v2-static",
+    name: "demo-scripted-v2",
+    dataset_id: "dataset-demo-v2",
+    strategy_version_ids: ["sv-direct-v1", "sv-plan-v1", "sv-react-v1"],
+    repeat_count: 3,
+    llm_override: {
+      provider: "mock",
+      model: "scripted-v2",
+      temperature_policy: { mode: "fixed", value: 0, seed: null },
+      max_output_tokens: null,
+      model_params: { scripted_author: "frontend-demo" }
+    },
+    status: "completed",
+    created_at: "2026-06-15T00:00:00.000Z",
+    started_at: "2026-06-15T00:00:01.000Z",
+    finished_at: "2026-06-15T00:00:22.000Z",
+    error_code: null,
+    error_message: null
+  },
+  source_context_policy: {
+    project_root_boundary: "project_snapshot_root",
+    read_allowlist_globs: ["**/*.py"],
+    deny_globs: ["../**", "tests/generated/**"],
+    generated_tests_dir: "tests/generated",
+    max_file_bytes: 64000,
+    max_total_bytes: 128000,
+    max_snippets: 12,
+    trace_payload_required: true,
+    missing_context_marker: "context_incomplete",
+    agent_source_write_permission: "generated_tests_only"
+  },
+  rows: demoComparison.rows.map((row) => ({
+    ...row,
+    cost_per_captured_bug_status: row.cost_per_captured_bug === null ? "no_bug_captured" : "ok",
+    data_source: "mock",
+    llm_display: {
+      provider: "mock",
+      model: "scripted-v2",
+      derived_from_clean_run_ids: [`ecr-${row.strategy_id}-r0`, `ecr-${row.strategy_id}-r1`, `ecr-${row.strategy_id}-r2`],
+      source: "derived_from_clean_run_strategy_snapshots"
+    }
+  })),
+  capture_matrix: demoComparison.capture_matrix,
+  clean_runs: demoComparison.rows.flatMap((row) =>
+    [0, 1, 2].map((repeatIndex) => ({
+      id: `ecr-${row.strategy_id}-r${repeatIndex}`,
+      experiment_id: "exp-demo-v2-static",
+      eval_task_id: "task-demo-pricing",
+      strategy_version_id: row.strategy_id,
+      repeat_index: repeatIndex,
+      clean_run_id: repeatIndex === 0 && row.strategy_id === "sv-react-v1" ? "run-demo-react-001" : `run-clean-${row.strategy_id}-r${repeatIndex}`,
+      status: "completed",
+      generated_test_set_artifact_id: `artifact-testset-${row.strategy_id}-r${repeatIndex}`,
+      false_positive: row.false_positive_rate > 0,
+      clean_metrics: {
+        final_cases_total: row.total_in_scope,
+        final_passed: row.false_positive_rate > 0 ? row.total_in_scope - 1 : row.total_in_scope,
+        final_failed: row.false_positive_rate > 0 ? 1 : 0,
+        final_skipped: 0,
+        collection_errors: 0,
+        tool_call_count: row.avg_tool_calls,
+        total_tokens: row.avg_tokens
+      },
+      runtime_snapshot: {
+        runtime_profile_id: "runtime-demo-python311",
+        executor: "local_subprocess",
+        python_version: "3.11",
+        test_command: "pytest tests/generated",
+        network_policy: "disabled",
+        timeout_seconds: 120,
+        resource_limits: { cpu: "declared_only_v2_1", memory: "declared_only_v2_1" },
+        env_keys: ["PYTHONPATH"],
+        secret_included: false
+      },
+      strategy_snapshot: {
+        strategy_version_id: row.strategy_id,
+        prompt_version_id: "prompt-v2-demo",
+        prompt_content_hash: `sha256:prompt-${row.strategy_id}`,
+        tool_schema_version_id: "tool-schema-v2-demo",
+        tool_schema_content_hash: "sha256:tool-schema-demo",
+        workflow_type: row.reflection_used ? "react_reflection" : row.strategy_id === "sv-plan-v1" ? "plan_execute" : "direct",
+        allow_reflection: row.reflection_used,
+        resolved_llm: {
+          provider: "mock",
+          model: "scripted-v2",
+          temperature: 0,
+          max_output_tokens: null,
+          model_params: { scripted_author: "frontend-demo" },
+          resolution_order: ["strategy_version_defaults", "experiment_llm_override", "repeat_derivation"],
+          repeat_index: repeatIndex,
+          secret_included: false
+        }
+      },
+      report_quality: {
+        test_inventory: [
+          {
+            test_name: "test_checkout_pricing_boundary",
+            source_path: "tests/generated/test_checkout_generated.py",
+            start_line: 10,
+            end_line: 28,
+            nodeid: "tests/generated/test_checkout_generated.py::test_checkout_pricing_boundary"
+          }
+        ],
+        target_mappings: [
+          {
+            target_type: "function",
+            target_ref: "checkout.pricing.calculate_total",
+            source_path: "checkout/pricing.py",
+            symbol: "calculate_total",
+            mapping_status: "mapped",
+            trace_step_id: "trace-demo-context"
+          }
+        ],
+        assertion_summaries: [
+          {
+            test_name: "test_checkout_pricing_boundary",
+            nodeid: "tests/generated/test_checkout_generated.py::test_checkout_pricing_boundary",
+            assertion_summary: "discount, shipping and status-code boundary behavior",
+            target_ref: "checkout.pricing.calculate_total"
+          }
+        ],
+        failure_classifications: row.false_positive_rate > 0
+          ? [
+              {
+                nodeid: "tests/generated/test_checkout_generated.py::test_checkout_pricing_boundary",
+                classification: "assertion",
+                message: "static fixture marks one clean false positive"
+              }
+            ]
+          : [],
+        reflection_evidence: {
+          used: row.reflection_used,
+          contract_checked: row.reflection_used,
+          contract_passed: row.reflection_used ? true : null,
+          violation_reasons: [],
+          accepted_attempt_id: row.reflection_used ? "attempt-reflection" : null,
+          rejected_attempt_ids: []
+        },
+        context_completeness: {
+          status: "complete",
+          context_incomplete: false,
+          snippets: [
+            {
+              path: "checkout/pricing.py",
+              target_ref: "checkout.pricing.calculate_total",
+              start_line: 1,
+              end_line: 80,
+              content_hash: "sha256:demo-snippet",
+              bytes: 2048,
+              trace_step_id: "trace-demo-context"
+            }
+          ],
+          missing_targets: [],
+          risk_notes: []
+        }
+      }
+    }))
+  ),
+  replay_runs: [
+    // Clean replay validates the frozen test set on clean code (no bug_variant_id,
+    // no experiment_replay_runs result) — shown as clean validation, not captured/missed.
+    ...demoComparison.rows.map((row) => ({
+      id: `replay-clean-${row.strategy_id}`,
+      experiment_clean_run_id: `ecr-${row.strategy_id}-r0`,
+      generated_test_set_artifact_id: `artifact-testset-${row.strategy_id}-r0`,
+      target_snapshot_id: "snapshot-clean",
+      bug_variant_id: null,
+      status: "completed" as const,
+      pytest_summary: {
+        collected: row.total_in_scope,
+        passed: row.false_positive_rate > 0 ? row.total_in_scope - 1 : row.total_in_scope,
+        failed: row.false_positive_rate > 0 ? 1 : 0,
+        skipped: 0,
+        collection_errors: 0,
+        duration_ms: 810
+      },
+      replay_mode: "frozen_test_set" as const,
+      llm_calls: 0 as const,
+      started_at: "2026-06-15T00:00:10.000Z",
+      finished_at: "2026-06-15T00:00:11.000Z",
+      error_code: null,
+      error_message: null
+    })),
+    ...Object.keys(demoComparison.capture_matrix).flatMap((bugId) =>
+      demoComparison.rows.map((row) => ({
+        id: `replay-${bugId}-${row.strategy_id}`,
+        experiment_clean_run_id: `ecr-${row.strategy_id}-r0`,
+        generated_test_set_artifact_id: `artifact-testset-${row.strategy_id}-r0`,
+        target_snapshot_id: `snapshot-${bugId}`,
+        bug_variant_id: bugId,
+        status: "completed" as const,
+        pytest_summary: {
+          collected: row.total_in_scope,
+          passed: demoComparison.capture_matrix[bugId][row.strategy_id] ? row.total_in_scope - 1 : row.total_in_scope,
+          failed: demoComparison.capture_matrix[bugId][row.strategy_id] ? 1 : 0,
+          skipped: 0,
+          collection_errors: 0,
+          duration_ms: 820
+        },
+        replay_mode: "frozen_test_set" as const,
+        llm_calls: 0 as const,
+        started_at: "2026-06-15T00:00:12.000Z",
+        finished_at: "2026-06-15T00:00:13.000Z",
+        error_code: null,
+        error_message: null
+      }))
+    )
+  ],
+  experiment_replay_runs: Object.keys(demoComparison.capture_matrix).flatMap((bugId) =>
+    demoComparison.rows.map((row) => {
+      const captured = demoComparison.capture_matrix[bugId][row.strategy_id];
+      return {
+        id: `err-${bugId}-${row.strategy_id}`,
+        experiment_clean_run_id: `ecr-${row.strategy_id}-r0`,
+        bug_variant_id: bugId,
+        replay_id: `replay-${bugId}-${row.strategy_id}`,
+        captured_bug: captured,
+        replay_metrics: {
+          capture_rule: "clean_passed_variant_assertion_failure_same_nodeid",
+          clean_passed_nodeids: ["tests/generated/test_checkout_generated.py::test_checkout_pricing_boundary"],
+          variant_assertion_failure_nodeids: captured ? ["tests/generated/test_checkout_generated.py::test_checkout_pricing_boundary"] : [],
+          capturing_nodeids: captured ? ["tests/generated/test_checkout_generated.py::test_checkout_pricing_boundary"] : []
+        }
+      };
+    })
+  ),
+  artifacts: demoComparison.rows.map((row) => ({
+    id: `artifact-testset-${row.strategy_id}-r0`,
+    artifact_type: "generated_test_set",
+    uri: `artifacts/experiments/exp-demo-v2-static/${row.strategy_id}/tests-generated.zip`,
+    content_hash: `sha256:testset-${row.strategy_id}`,
+    size_bytes: 4096,
+    metadata: {
+      kind: "generated_test_set",
+      created_by: "experiment_service",
+      experiment_id: "exp-demo-v2-static",
+      clean_run_id: `ecr-${row.strategy_id}-r0`,
+      replay_id: null,
+      content_role: "final generated pytest set",
+      relative_paths: ["tests/generated/test_checkout_generated.py"],
+      hash_algorithm: "sha256"
+    }
+  }))
+};
+
+export const demoEvalDataset: EvalDatasetDetailOut = {
+  id: "dataset-demo-v2",
+  name: "TRACE seeded bug demo",
+  version: "v2-static",
+  description: "Static frontend fixture mirroring the V2 seeded bug evaluation dataset.",
+  project_snapshot_ids: ["snap-async-demo"],
+  created_at: "2026-06-15T00:00:00.000Z",
+  tasks: [
+    {
+      id: "task-demo-pricing",
+      dataset_id: "dataset-demo-v2",
+      project_snapshot_id: "snap-async-demo",
+      target_scope: {
+        files: ["checkout/pricing.py", "checkout/status.py"],
+        symbols: ["checkout.pricing.calculate_total", "checkout.status.resolve_status"]
+      },
+      goal: "Generate pytest cases that catch seeded pricing and status regressions without creating clean false positives.",
+      expected_capabilities: ["boundary assertions", "status-code assertions", "frozen replay compatibility"],
+      created_at: "2026-06-15T00:00:00.000Z",
+      seeded_bugs: [
+        {
+          id: "bug-pricing-boundaries",
+          eval_task_id: "task-demo-pricing",
+          bug_type: "boundary",
+          description: "Pricing boundary behavior changes around shipping, loyalty discount and clamping rules.",
+          expected_detection: "At least one frozen generated pytest case fails on the mutated variant while passing on clean.",
+          created_at: "2026-06-15T00:00:00.000Z",
+          variants: [
+            {
+              id: "boundary-shipping",
+              seeded_bug_id: "bug-pricing-boundaries",
+              variant_name: "free shipping threshold off by one",
+              canonical_kind: "patch",
+              patch_artifact_id: null,
+              mutated_snapshot_id: "snapshot-boundary-shipping",
+              ground_truth: {
+                patch_artifact: {
+                  file: "checkout/pricing.py",
+                  old: "subtotal >= 100",
+                  new: "subtotal > 100",
+                  content_hash: "sha256:demo-boundary-shipping"
+                }
+              },
+              created_at: "2026-06-15T00:00:00.000Z"
+            },
+            {
+              id: "boundary-loyalty",
+              seeded_bug_id: "bug-pricing-boundaries",
+              variant_name: "loyalty threshold relaxed",
+              canonical_kind: "patch",
+              patch_artifact_id: null,
+              mutated_snapshot_id: "snapshot-boundary-loyalty",
+              ground_truth: {
+                patch_artifact: {
+                  file: "checkout/pricing.py",
+                  old: "orders_count >= 5",
+                  new: "orders_count > 5",
+                  content_hash: "sha256:demo-boundary-loyalty"
+                }
+              },
+              created_at: "2026-06-15T00:00:00.000Z"
+            },
+            {
+              id: "missing-clamp",
+              seeded_bug_id: "bug-pricing-boundaries",
+              variant_name: "discount clamp removed",
+              canonical_kind: "patch",
+              patch_artifact_id: null,
+              mutated_snapshot_id: "snapshot-missing-clamp",
+              ground_truth: {
+                patch_artifact: {
+                  file: "checkout/pricing.py",
+                  old: "discount = min(discount, subtotal)",
+                  new: "discount = discount",
+                  content_hash: "sha256:demo-missing-clamp"
+                }
+              },
+              created_at: "2026-06-15T00:00:00.000Z"
+            }
+          ]
+        },
+        {
+          id: "bug-status-regressions",
+          eval_task_id: "task-demo-pricing",
+          bug_type: "semantic",
+          description: "Checkout status code mapping regresses for invalid coupon and payment states.",
+          expected_detection: "Generated tests assert the externally visible status mapping.",
+          created_at: "2026-06-15T00:00:00.000Z",
+          variants: [
+            {
+              id: "wrong-status",
+              seeded_bug_id: "bug-status-regressions",
+              variant_name: "invalid coupon returns success status",
+              canonical_kind: "patch",
+              patch_artifact_id: null,
+              mutated_snapshot_id: "snapshot-wrong-status",
+              ground_truth: {
+                patch_artifact: {
+                  file: "checkout/status.py",
+                  old: "\"invalid_coupon\": 400",
+                  new: "\"invalid_coupon\": 200",
+                  content_hash: "sha256:demo-wrong-status"
+                }
+              },
+              created_at: "2026-06-15T00:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    }
+  ]
 };

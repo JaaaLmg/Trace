@@ -338,6 +338,7 @@ class CleanRunContract(ContractModel):
     strategy_version_id: str
     repeat_index: int = Field(ge=0)
     clean_run_id: str
+    status: ReplayStatus
     generated_test_set_artifact_id: str
     false_positive: bool
     clean_metrics: CleanRunMetricsContract

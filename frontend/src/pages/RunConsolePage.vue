@@ -10,6 +10,7 @@ import StatusBadge from "../components/StatusBadge.vue";
 import TopicTabs from "../components/TopicTabs.vue";
 import TraceStepDetail from "../components/TraceStepDetail.vue";
 import TraceTimeline from "../components/TraceTimeline.vue";
+import { useLatestRequest } from "../composables/useLatestRequest";
 import { useI18n } from "../i18n";
 import { staticRunFixture } from "../demo/staticRunFixture";
 import type { RunBundle, TraceStepOut } from "../types/api";
@@ -36,6 +37,7 @@ const isPollingRefresh = ref(false);
 const errorMessage = ref<string | null>(null);
 const { t } = useI18n();
 let poller: number | null = null;
+const bundleRequest = useLatestRequest();
 
 const tabs = computed<TopicTab[]>(() => [
   { key: "overview", label: t("run.overview") },
@@ -63,6 +65,8 @@ function cloneDemoBundle(): RunBundle {
   return structuredClone(staticRunFixture);
 }
 
+let backgroundLoadInFlight = false;
+
 function keepSelectedStepIfPresent(nextBundle: RunBundle) {
   const current = selectedStepId.value;
   if (!current) {
@@ -76,20 +80,36 @@ function keepSelectedStepIfPresent(nextBundle: RunBundle) {
 
 async function loadBundle(options: { background?: boolean } = {}) {
   const background = options.background === true && bundle.value !== null;
+  if (background && (loading.value || backgroundLoadInFlight)) {
+    return;
+  }
+  const requestSeq = bundleRequest.next();
   if (background) {
+    backgroundLoadInFlight = true;
     isPollingRefresh.value = true;
   }
   loading.value = true;
   errorMessage.value = null;
   try {
     const nextBundle = props.dataSource === "demo" ? cloneDemoBundle() : await getRunBundle(props.runId);
+    if (!bundleRequest.isCurrent(requestSeq)) {
+      return;
+    }
     bundle.value = nextBundle;
     keepSelectedStepIfPresent(nextBundle);
   } catch (error) {
+    if (!bundleRequest.isCurrent(requestSeq)) {
+      return;
+    }
     errorMessage.value = error instanceof Error ? error.message : t("run.loadFailed");
   } finally {
-    loading.value = false;
-    isPollingRefresh.value = false;
+    if (background) {
+      backgroundLoadInFlight = false;
+    }
+    if (bundleRequest.isCurrent(requestSeq)) {
+      loading.value = false;
+      isPollingRefresh.value = false;
+    }
   }
 }
 

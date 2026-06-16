@@ -125,6 +125,7 @@
       "strategy_version_id": "sv-direct-v2",
       "repeat_index": 0,
       "clean_run_id": "run-clean-direct-r0",
+      "status": "completed",
       "generated_test_set_artifact_id": "artifact-testset-direct-r0",
       "false_positive": true,
       "clean_metrics": {
@@ -252,6 +253,7 @@
       "strategy_version_id": "sv-react-v2",
       "repeat_index": 0,
       "clean_run_id": "run-clean-react-r0",
+      "status": "completed",
       "generated_test_set_artifact_id": "artifact-testset-react-r0",
       "false_positive": false,
       "clean_metrics": {

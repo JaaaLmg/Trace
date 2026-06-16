@@ -251,6 +251,57 @@ export interface ComparisonResult {
   capture_matrix: Record<string, Record<string, boolean>>;
 }
 
+export interface EvalDatasetOut {
+  id: string;
+  name: string;
+  version: string;
+  description: string | null;
+  project_snapshot_ids: string[];
+  created_at: string;
+}
+
+export interface EvalTaskOut {
+  id: string;
+  dataset_id: string;
+  project_snapshot_id: string;
+  target_scope: JsonObject;
+  goal: string;
+  expected_capabilities: JsonValue[];
+  created_at: string;
+}
+
+export interface SeededBugOut {
+  id: string;
+  eval_task_id: string;
+  bug_type: string;
+  description: string;
+  expected_detection: string;
+  created_at: string;
+}
+
+export interface BugVariantOut {
+  id: string;
+  seeded_bug_id: string;
+  variant_name: string;
+  canonical_kind: string;
+  patch_artifact_id: string | null;
+  mutated_snapshot_id: string | null;
+  ground_truth: JsonObject;
+  created_at: string;
+}
+
+export interface SeededBugDetailOut extends SeededBugOut {
+  variants: BugVariantOut[];
+}
+
+export interface EvalTaskDetailOut extends EvalTaskOut {
+  seeded_bugs: SeededBugDetailOut[];
+}
+
+export interface EvalDatasetDetailOut extends EvalDatasetOut {
+  tasks: EvalTaskDetailOut[];
+}
+
 export type ExperimentDataSourceKind = "mock" | "scripted" | "real_llm";
 export type ExperimentStatus = "draft" | "queued" | "running" | "completed" | "failed" | "cancelled";
 export type ReplayStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -293,6 +344,36 @@ export interface ExperimentDefinition {
   finished_at: string | null;
   error_code: string | null;
   error_message: string | null;
+}
+
+export interface ExperimentCleanRunOut {
+  id: string;
+  experiment_id: string;
+  eval_task_id: string;
+  strategy_version_id: string;
+  repeat_index: number;
+  clean_run_id: string;
+  generated_test_set_artifact_id: string;
+  false_positive: boolean;
+  clean_metrics: JsonObject;
+  created_at: string;
+}
+
+export interface TestReplayOut {
+  id: string;
+  experiment_clean_run_id: string;
+  generated_test_set_artifact_id: string;
+  target_snapshot_id: string;
+  bug_variant_id: string | null;
+  status: ReplayStatus;
+  pytest_summary: JsonObject;
+  replay_mode: string;
+  llm_calls: number;
+  started_at: string | null;
+  finished_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
 }
 
 export interface ExperimentDataSourceLabel {
@@ -399,6 +480,7 @@ export interface CleanRunContract {
   strategy_version_id: string;
   repeat_index: number;
   clean_run_id: string;
+  status: RunStatus;
   generated_test_set_artifact_id: string;
   false_positive: boolean;
   clean_metrics: CleanRunMetricsContract;

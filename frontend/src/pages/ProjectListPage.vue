@@ -12,6 +12,7 @@ import {
 } from "../api/projects";
 import { createRun } from "../api/runs";
 import PathPickerField from "../components/PathPickerField.vue";
+import { useLatestRequest } from "../composables/useLatestRequest";
 import { useI18n } from "../i18n";
 import { demoPlans, demoProjects, demoSnapshots } from "../demo/staticRunFixture";
 import type { ProjectOut, ProjectSnapshotOut, TestPlanOut, TestRunOut } from "../types/api";
@@ -60,6 +61,7 @@ const runForm = reactive({
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
 const selectedPlan = computed(() => plans.value.find((plan) => plan.id === selectedPlanId.value) ?? null);
 const latestRun = computed(() => runs.value[0] ?? null);
+const projectDetailsRequest = useLatestRequest();
 
 function openDemoRun() {
   emit("navigate", "#/runs/run-demo-react-001");
@@ -113,6 +115,7 @@ async function loadProjects() {
 }
 
 async function loadProjectDetails() {
+  const requestSeq = projectDetailsRequest.next();
   const project = selectedProject.value;
   if (!project) {
     snapshots.value = [];
@@ -123,13 +126,20 @@ async function loadProjectDetails() {
     return;
   }
 
+  const projectId = project.id;
+  const source = props.dataSource;
   applyProjectDefaults(project);
   loadingDetails.value = true;
   errorMessage.value = null;
   try {
-    if (props.dataSource === "demo") {
-      snapshots.value = demoSnapshots.filter((snapshot) => snapshot.project_id === project.id);
-      plans.value = demoPlans.filter((plan) => plan.project_id === project.id);
+    if (source === "demo") {
+      const nextSnapshots = demoSnapshots.filter((snapshot) => snapshot.project_id === project.id);
+      const nextPlans = demoPlans.filter((plan) => plan.project_id === project.id);
+      if (!projectDetailsRequest.isCurrent(requestSeq) || selectedProjectId.value !== projectId || props.dataSource !== source) {
+        return;
+      }
+      snapshots.value = nextSnapshots;
+      plans.value = nextPlans;
       runs.value = [];
       runForm.snapshotId = snapshots.value[0]?.id ?? "";
       selectedPlanId.value = plans.value[0]?.id ?? null;
@@ -140,6 +150,9 @@ async function loadProjectDetails() {
       listProjectTestPlans(project.id),
       listProjectTestRuns(project.id)
     ]);
+    if (!projectDetailsRequest.isCurrent(requestSeq) || selectedProjectId.value !== projectId || props.dataSource !== source) {
+      return;
+    }
     snapshots.value = nextSnapshots;
     plans.value = nextPlans;
     runs.value = nextRuns;
@@ -147,13 +160,18 @@ async function loadProjectDetails() {
     runForm.snapshotId =
       nextSnapshots.find((snapshot) => snapshot.root_path === project.local_path)?.id ?? nextSnapshots[0]?.id ?? "";
   } catch (error) {
+    if (!projectDetailsRequest.isCurrent(requestSeq) || selectedProjectId.value !== projectId || props.dataSource !== source) {
+      return;
+    }
     errorMessage.value = error instanceof Error ? error.message : t("projects.detailsFailed");
     snapshots.value = [];
     plans.value = [];
     runs.value = [];
     selectedPlanId.value = null;
   } finally {
-    loadingDetails.value = false;
+    if (projectDetailsRequest.isCurrent(requestSeq)) {
+      loadingDetails.value = false;
+    }
   }
 }
 
@@ -581,15 +599,6 @@ watch(selectedProjectId, () => {
   flex-wrap: wrap;
 }
 
-.error-banner {
-  margin: 18px 0 0;
-  padding: 10px 12px;
-  border: 1px solid rgba(159, 58, 47, 0.22);
-  border-radius: 7px;
-  background: rgba(159, 58, 47, 0.08);
-  color: var(--failed);
-}
-
 .create-project {
   margin-top: 18px;
   padding: 18px;
@@ -798,7 +807,6 @@ textarea {
   overflow-wrap: anywhere;
 }
 
-.mode-note,
 .muted-note {
   color: var(--muted);
   font-size: 13px;

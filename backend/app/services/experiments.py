@@ -1026,6 +1026,26 @@ def _data_source(experiment: Experiment, rows: list[dict]) -> dict:
     }
 
 
+def _clean_run_payload(session: Session, clean: ExperimentCleanRun) -> dict:
+    run = session.get(TestRun, clean.clean_run_id)
+    report = session.scalar(select(TestReport).where(TestReport.run_id == clean.clean_run_id))
+    return {
+        "id": clean.id,
+        "experiment_id": clean.experiment_id,
+        "eval_task_id": clean.eval_task_id,
+        "strategy_version_id": clean.strategy_version_id,
+        "repeat_index": clean.repeat_index,
+        "clean_run_id": clean.clean_run_id,
+        "status": run.status if run is not None else "unknown",
+        "generated_test_set_artifact_id": clean.generated_test_set_artifact_id,
+        "false_positive": clean.false_positive,
+        "clean_metrics": clean.clean_metrics,
+        "runtime_snapshot": (run.runtime_snapshot or {}) if run is not None else {},
+        "strategy_snapshot": (run.strategy_snapshot or {}) if run is not None else {},
+        "report_quality": ((report.metrics or {}).get("report_quality", {}) if report is not None else {}),
+    }
+
+
 def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
     experiment = session.get(Experiment, experiment_id)
     if experiment is None:
@@ -1124,23 +1144,7 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
         "capture_scope": _capture_scope(session, experiment),
         "rows": rows,
         "capture_matrix": matrix,
-        "clean_runs": [
-            {
-                "id": clean.id,
-                "experiment_id": clean.experiment_id,
-                "eval_task_id": clean.eval_task_id,
-                "strategy_version_id": clean.strategy_version_id,
-                "repeat_index": clean.repeat_index,
-                "clean_run_id": clean.clean_run_id,
-                "generated_test_set_artifact_id": clean.generated_test_set_artifact_id,
-                "false_positive": clean.false_positive,
-                "clean_metrics": clean.clean_metrics,
-                "runtime_snapshot": (session.get(TestRun, clean.clean_run_id).runtime_snapshot or {}),
-                "strategy_snapshot": (session.get(TestRun, clean.clean_run_id).strategy_snapshot or {}),
-                "report_quality": ((session.scalar(select(TestReport).where(TestReport.run_id == clean.clean_run_id))).metrics or {}).get("report_quality", {}),
-            }
-            for clean in clean_runs
-        ],
+        "clean_runs": [_clean_run_payload(session, clean) for clean in clean_runs],
         "replay_runs": [
             {
                 "id": replay_row.id,

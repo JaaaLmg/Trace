@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { BarChart3, FolderGit2, MonitorDot, Server } from "@lucide/vue";
+import { BarChart3, Beaker, FolderGit2, MonitorDot, Server } from "@lucide/vue";
 import ComparisonPage from "./pages/ComparisonPage.vue";
+import DatasetDetailPage from "./pages/DatasetDetailPage.vue";
+import ExperimentDetailPage from "./pages/ExperimentDetailPage.vue";
+import ExperimentListPage from "./pages/ExperimentListPage.vue";
 import ProjectListPage from "./pages/ProjectListPage.vue";
 import RunConsolePage from "./pages/RunConsolePage.vue";
 import { useI18n, type Locale } from "./i18n";
@@ -10,6 +13,8 @@ import type { DataSource } from "./types/ui";
 const initialSource = (import.meta.env.VITE_TRACE_DATA_SOURCE === "demo" ? "demo" : "api") as DataSource;
 const dataSource = ref<DataSource>(initialSource);
 const sampleRunId = "run-demo-react-001";
+const sampleExperimentId = "exp-demo-v2-static";
+const sampleDatasetId = "dataset-demo-v2";
 const defaultHash = computed(() => (dataSource.value === "demo" ? "#/runs/run-demo-react-001" : "#/projects"));
 const currentHash = ref(window.location.hash || defaultHash.value);
 const { locale, setLocale, t } = useI18n();
@@ -46,10 +51,48 @@ function navigate(hash: string) {
   syncHash();
 }
 
+function demoHashForRoute(name: string, id: string): string {
+  if (name === "runs") {
+    return `#/runs/${sampleRunId}`;
+  }
+  if (name === "experiments") {
+    return id ? `#/experiments/${sampleExperimentId}` : "#/experiments";
+  }
+  if (name === "datasets") {
+    return `#/datasets/${sampleDatasetId}`;
+  }
+  if (name === "comparison") {
+    return "#/comparison";
+  }
+  if (name === "projects") {
+    return "#/projects";
+  }
+  return `#/runs/${sampleRunId}`;
+}
+
+function apiHashForRoute(name: string, id: string): string | null {
+  if (name === "runs" && id === sampleRunId) {
+    return "#/projects";
+  }
+  if (name === "experiments" && id === sampleExperimentId) {
+    return "#/experiments";
+  }
+  if (name === "datasets" && id === sampleDatasetId) {
+    return "#/experiments";
+  }
+  return null;
+}
+
 function setSource(source: DataSource) {
+  const currentRoute = route.value;
   dataSource.value = source;
-  if (source === "api" && route.value.name === "runs" && runId.value === sampleRunId) {
-    navigate("#/projects");
+  if (source === "demo") {
+    navigate(demoHashForRoute(currentRoute.name, currentRoute.id));
+    return;
+  }
+  const apiHash = apiHashForRoute(currentRoute.name, currentRoute.id);
+  if (apiHash) {
+    navigate(apiHash);
   }
 }
 
@@ -80,6 +123,10 @@ onBeforeUnmount(() => {
         <MonitorDot :size="16" aria-hidden="true" />
         {{ t("app.runConsole") }}
       </a>
+      <a href="#/experiments" :class="{ active: route.name === 'experiments' }">
+        <Beaker :size="16" aria-hidden="true" />
+        {{ t("app.experiments") }}
+      </a>
       <a href="#/comparison" :class="{ active: route.name === 'comparison' }">
         <BarChart3 :size="16" aria-hidden="true" />
         {{ t("app.comparison") }}
@@ -103,7 +150,20 @@ onBeforeUnmount(() => {
   </header>
 
   <ProjectListPage v-if="route.name === 'projects' || (route.name === 'runs' && !runId)" :data-source="dataSource" @navigate="navigate" />
-  <ComparisonPage v-else-if="route.name === 'comparison'" />
+  <DatasetDetailPage
+    v-else-if="route.name === 'datasets' && route.id"
+    :dataset-id="route.id"
+    :data-source="dataSource"
+    @navigate="navigate"
+  />
+  <ExperimentDetailPage
+    v-else-if="route.name === 'experiments' && route.id"
+    :experiment-id="route.id"
+    :data-source="dataSource"
+    @navigate="navigate"
+  />
+  <ExperimentListPage v-else-if="route.name === 'experiments'" :data-source="dataSource" @navigate="navigate" />
+  <ComparisonPage v-else-if="route.name === 'comparison'" :data-source="dataSource" @navigate="navigate" />
   <RunConsolePage v-else :run-id="runId" :data-source="dataSource" @navigate="navigate" />
 </template>
 
