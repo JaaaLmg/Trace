@@ -499,6 +499,7 @@ export interface CleanRunMetricsContract {
   total_tokens: number;
   validity_status?: "evaluable" | "invalid_test_set";
   invalid_reason?: string | null;
+  pipeline_reject_error?: string | null;
   context_completeness?: ContextCompletenessEvidence | null;
   analysis_warnings?: string[];
 }

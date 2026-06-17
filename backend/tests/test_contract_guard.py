@@ -2,7 +2,7 @@
 # 这些不起子进程，快；端到端的「模型撒谎」集成验证在 test_e2e_mockllm.py。
 from __future__ import annotations
 
-from app.agents.contract_guard import check_reflection_contract
+from app.agents.contract_guard import check_generation_contract, check_reflection_contract
 
 # 首轮：两个有意义的断言
 OLD = "def test_x():\n    assert f(2) == 5\n    assert g() is True\n"
@@ -21,6 +21,11 @@ def test_trivial_assert_true():
 
 def test_assert_or_true_short_circuit():
     new = "def test_x():\n    assert f(2) == 4 or True\n    assert g() is True\n"
+    assert any("空洞断言" in v for v in check_reflection_contract(OLD, new))
+
+
+def test_assert_is_not_none_is_trivial():
+    new = "def test_x():\n    value = f(2)\n    assert value is not None\n    assert g() is True\n"
     assert any("空洞断言" in v for v in check_reflection_contract(OLD, new))
 
 
@@ -79,3 +84,41 @@ def test_pytest_raises_only_passes_floor():
     old = "def test_x(:\n    bad\n"
     new = "import pytest\ndef test_x():\n    with pytest.raises(ValueError):\n        f(-1)\n"
     assert check_reflection_contract(old, new) == []
+
+
+def test_generation_contract_rejects_trivial_assert_and_missing_target_binding():
+    content = "def test_x():\n    assert True\n"
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_x", "assertion_summary": "空断言"}],
+        target_type="function",
+        target_ref="target_fn",
+    )
+
+    assert any("空洞断言" in violation for violation in violations)
+    assert any("target_function/target_route" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_metadata_drift():
+    content = "def test_real():\n    assert target_fn(1) == 2\n"
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_declared", "target_function": "target_fn", "assertion_summary": "验证返回值"}],
+        target_type="function",
+        target_ref="target_fn",
+    )
+
+    assert any("缺少 cases 声明" in violation for violation in violations)
+    assert any("未对应真实测试函数" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_target_bound_assertion():
+    content = "def test_target():\n    assert target_fn(1) == 2\n"
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_target", "target_function": "target_fn", "assertion_summary": "验证 target_fn 返回值"}],
+        target_type="function",
+        target_ref="target_fn",
+    )
+
+    assert violations == []

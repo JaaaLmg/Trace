@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+from typing import Any, Sequence
 
 _SKIP_NAMES = {"skip", "skipif", "xfail"}
 _BROAD_EXC = {"Exception", "BaseException"}
@@ -42,6 +43,82 @@ def check_reflection_contract(old_content: str, new_content: str) -> list[str]:
         if _count_tests(new_tree) < _count_tests(old_tree):
             violations.append("测试函数数量较首轮减少")
     return violations
+
+
+def check_generation_contract(
+    content: str,
+    declared_cases: Sequence[Any],
+    *,
+    target_type: str | None = None,
+    target_ref: str | None = None,
+) -> list[str]:
+    """校验生成测试本身是否有基本测试价值和目标绑定。"""
+    violations: list[str] = []
+    try:
+        tree = ast.parse(content or "")
+    except SyntaxError as e:
+        return [f"生成测试无法解析为 Python：{e}"]
+
+    if _has_skip_or_xfail(tree):
+        violations.append("生成测试引入 pytest.skip/xfail 跳过测试")
+    if _has_trivial_assert(tree):
+        violations.append("生成测试出现空洞断言（assert True / assert 1 / ... or True 之类）")
+    if _has_broad_except(tree):
+        violations.append("生成测试用宽泛 except 吞掉失败（bare except / except Exception）")
+    if _count_tests(tree) == 0:
+        violations.append("生成测试没有任何测试函数")
+    if _count_checks(tree) == 0:
+        violations.append("生成测试没有任何断言/pytest.raises（疑似空测试）")
+
+    parsed_names = set(_test_names(tree))
+    declared_by_name = {_field(case, "test_name"): case for case in declared_cases if _field(case, "test_name")}
+    if not declared_by_name:
+        violations.append("生成测试缺少 cases 元数据声明")
+    missing = sorted(parsed_names - set(declared_by_name))
+    extra = sorted(set(declared_by_name) - parsed_names)
+    if missing:
+        violations.append("真实测试函数缺少 cases 声明：" + ", ".join(missing))
+    if extra:
+        violations.append("cases 声明未对应真实测试函数：" + ", ".join(extra))
+
+    for name in sorted(parsed_names & set(declared_by_name)):
+        case = declared_by_name[name]
+        if not str(_field(case, "assertion_summary") or "").strip():
+            violations.append(f"{name} 缺少 assertion_summary")
+        target_function = str(_field(case, "target_function") or "").strip()
+        target_route = str(_field(case, "target_route") or "").strip()
+        if not target_function and not target_route:
+            violations.append(f"{name} 缺少 target_function/target_route 绑定")
+            continue
+        if not _target_matches(target_type, target_ref, target_function, target_route):
+            violations.append(f"{name} 的目标绑定不匹配 plan item：{target_type}:{target_ref}")
+
+    return violations
+
+
+def _field(obj: Any, name: str) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _test_names(tree) -> list[str]:
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+            names.append(node.name)
+    return names
+
+
+def _target_matches(target_type: str | None, target_ref: str | None, target_function: str, target_route: str) -> bool:
+    ref = (target_ref or "").strip()
+    if not ref or ref == "all":
+        return True
+    if target_type == "function":
+        return target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
+    if target_type == "route":
+        return target_route == ref or target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
+    return True
 
 
 def _attr_chain(node) -> str:
@@ -89,7 +166,20 @@ def _has_trivial_assert(tree) -> bool:
         if isinstance(t, ast.BoolOp) and isinstance(t.op, ast.Or):
             if any(_is_truthy_const(v) for v in t.values):
                 return True
+        if _is_not_none_check(t):
+            return True
     return False
+
+
+def _is_not_none_check(node) -> bool:
+    return (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.IsNot)
+        and len(node.comparators) == 1
+        and isinstance(node.comparators[0], ast.Constant)
+        and node.comparators[0].value is None
+    )
 
 
 def _has_broad_except(tree) -> bool:

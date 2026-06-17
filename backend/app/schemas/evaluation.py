@@ -326,6 +326,7 @@ class CleanRunMetricsContract(ContractModel):
     clean_replay_matches_generation: bool | None = None
     validity_status: CleanRunValidityStatus = "evaluable"
     invalid_reason: str | None = None
+    pipeline_reject_error: str | None = None
     context_completeness: ContextCompletenessEvidence | None = None
     analysis_warnings: list[str] = Field(default_factory=list)
 

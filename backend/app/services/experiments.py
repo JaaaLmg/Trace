@@ -769,6 +769,40 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                     session.refresh(run)
                     _raise_if_cancelled(session, experiment.id)
                     if run.status != "completed":
+                        if run.error_code == "PIPELINE_REJECT":
+                            clean_id = new_id()
+                            artifact = _store_generated_test_set_artifact(
+                                session,
+                                run_id=run.id,
+                                experiment_id=experiment.id,
+                                clean_run_id=clean_id,
+                                final_set=_empty_final_test_set(),
+                            )
+                            clean_row = ExperimentCleanRun(
+                                id=clean_id,
+                                experiment_id=experiment.id,
+                                eval_task_id=task.id,
+                                strategy_version_id=strategy_version_id,
+                                repeat_index=repeat_index,
+                                clean_run_id=run.id,
+                                generated_test_set_artifact_id=artifact.id,
+                                false_positive=False,
+                                clean_metrics={
+                                    "final_cases_total": 0,
+                                    "final_passed": 0,
+                                    "final_failed": 0,
+                                    "final_skipped": 0,
+                                    "collection_errors": 0,
+                                    "tool_call_count": run.tool_call_count,
+                                    "total_tokens": run.total_tokens,
+                                    "validity_status": "invalid_test_set",
+                                    "invalid_reason": "pipeline_reject",
+                                    "pipeline_reject_error": run.error_message,
+                                },
+                            )
+                            session.add(clean_row)
+                            session.commit()
+                            continue
                         detail = run.error_code or run.status
                         if run.error_message:
                             detail = f"{detail}: {run.error_message}"

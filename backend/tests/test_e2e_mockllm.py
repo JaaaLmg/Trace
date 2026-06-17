@@ -388,3 +388,28 @@ def test_invalid_model_output_fails_with_error_trace(tmp_path):
     e = err[0]
     assert len(e.payload["attempt_logs"]) == 3 and e.payload["attempts"] == 3
     assert e.tokens and e.tokens > 0
+
+
+def test_generation_contract_rejects_weak_test_before_pytest(tmp_path):
+    ctx = _mini_project(tmp_path, CALC_OK)
+
+    def responder(messages):
+        b = _blob(messages)
+        if "TASK: GENERATE" in b:
+            return _gen_payload(
+                "from calc import add\n\n"
+                "def test_add():\n"
+                "    assert True\n",
+                [{"test_name": "test_add", "target_function": "add", "assertion_summary": "空洞断言"}],
+            )
+        raise AssertionError("未预期的任务消息：" + b[:120])
+
+    outcome, rec = _run(ctx, "direct", responder, artifacts=tmp_path / "art")
+    run = outcome.run
+
+    assert run.status == "failed"
+    assert run.error_code == "PIPELINE_REJECT"
+    assert any("空洞断言" in (step.error or "") for step in rec.trace_steps)
+    assert rec.files == []
+    assert outcome.report is None
+    assert run.total_tokens > 0

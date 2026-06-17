@@ -7,10 +7,11 @@ from typing import Optional
 
 from app.agents import prompts
 from app.agents.case_mapping import base_nodeid, nodeid_for_case, parse_generated_cases, test_name_of
-from app.agents.contract_guard import check_reflection_contract
+from app.agents.contract_guard import check_generation_contract, check_reflection_contract
 from app.agents.runtime import AgentContext, PlanInput
 from app.services.source_context import build_source_context_bundle
 from app.core.errors import ErrorCode
+from app.core.errors import TraceError
 from app.schemas.agent import GenerationOutput, PlanItemDraft, ReflectionOutput
 from app.schemas.records import (
     GeneratedTestCaseRecord,
@@ -56,6 +57,19 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
         source_context=ctx.source_context_text,
     )
     gen: GenerationOutput = ctx.think(msgs, GenerationOutput, step_type="generation", name="生成测试")
+    violations = check_generation_contract(
+        gen.test_file_content,
+        gen.cases,
+        target_type=getattr(draft, "target_type", None),
+        target_ref=getattr(draft, "target_ref", None),
+    )
+    if violations:
+        reason = "；".join(violations)
+        attempt.status = "error"
+        attempt.error_code = ErrorCode.PIPELINE_REJECT.value
+        ctx.recorder.save_attempt(attempt)
+        ctx.trace("generation", "生成测试契约拒绝：" + reason, status="error", error=reason)
+        raise TraceError(ErrorCode.PIPELINE_REJECT, reason, details={"violations": violations})
     # 不信任 LLM 给的路径，强制写到策略指定的受控 target_path（白名单在 write_test_file 内）
     wout = ctx.call_tool(
         "write_test_file",

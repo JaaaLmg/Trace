@@ -610,6 +610,53 @@ def test_experiment_blocks_seeded_bug_run_when_target_source_context_is_missing(
         assert metrics["capture_matrix"]["variant-missing-context"]["direct"] is False
 
 
+def test_experiment_marks_pipeline_reject_as_invalid_test_set(monkeypatch, clean_db):
+    _seed_v2_demo()
+
+    import app.services.experiments as experiment_module
+
+    def reject_generation(session, *, run_id, budget_override=None, make_llm=None):
+        run = session.get(TestRun, run_id)
+        run.status = "failed"
+        run.error_code = "PIPELINE_REJECT"
+        run.error_message = "生成测试出现空洞断言"
+        run.total_tokens = 123
+        run.tool_call_count = 2
+        session.commit()
+        return run
+
+    monkeypatch.setattr(experiment_module, "execute_run_sync", reject_generation)
+
+    with Session(get_engine()) as session:
+        experiment_module.create_experiment(
+            session,
+            experiment_id="exp-pipeline-reject",
+            name="pipeline reject",
+            dataset_id=DEMO_DATASET_ID,
+            strategy_version_ids=["sv-direct-v1"],
+            repeat_count=1,
+            llm_override={"provider": "mock", "model": "mock-1"},
+        )
+        result = run_experiment(session, "exp-pipeline-reject")
+        assert result["status"] == "completed"
+
+        [clean] = list(
+            session.scalars(select(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-pipeline-reject"))
+        )
+        assert clean.false_positive is False
+        assert clean.clean_metrics["validity_status"] == "invalid_test_set"
+        assert clean.clean_metrics["invalid_reason"] == "pipeline_reject"
+        assert "空洞断言" in clean.clean_metrics["pipeline_reject_error"]
+        assert clean.clean_metrics["total_tokens"] == 123
+        assert session.scalar(select(func.count()).select_from(ReplayModel)) == 0
+        assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 0
+
+        metrics = get_experiment_metrics(session, "exp-pipeline-reject")
+        [row] = metrics["rows"]
+        assert row["metric_status"] == "invalid_test_set"
+        assert row["invalid_test_set_count"] == 1
+
+
 def test_eval_cli_service_path_reuses_experiment_service(clean_db):
     result = run_full_eval_via_service(repeats=1, llm_override={"provider": "mock", "model": "mock-1"})
     rows = {row["strategy_id"]: row for row in result["rows"]}
