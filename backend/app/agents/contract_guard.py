@@ -79,6 +79,9 @@ def check_generation_contract(
     except SyntaxError as e:
         return [f"生成测试无法解析为 Python：{e}"]
 
+    parsed_names = set(_test_names(tree))
+    declared_by_name = {_field(case, "test_name"): case for case in declared_cases if _field(case, "test_name")}
+
     if _has_skip_or_xfail(tree):
         violations.append("生成测试引入 pytest.skip/xfail 跳过测试")
     if _has_trivial_assert(tree):
@@ -89,6 +92,13 @@ def check_generation_contract(
         violations.append("生成测试没有任何测试函数")
     if _count_checks(tree) == 0:
         violations.append("生成测试没有任何断言/pytest.raises（疑似空测试）")
+    route_json_without_schema = (
+        _route_tests_with_json_body(tree, declared_by_name)
+        if allowed_request_fields is not None and not list(allowed_request_fields)
+        else []
+    )
+    if route_json_without_schema:
+        violations.append("请求 JSON 缺少模型字段证据：" + ", ".join(route_json_without_schema))
     unknown_fields = _unknown_json_body_fields(tree, allowed_request_fields or [])
     if unknown_fields:
         violations.append("请求 JSON 字段缺少模型证据：" + ", ".join(unknown_fields))
@@ -96,8 +106,6 @@ def check_generation_contract(
     if unknown_fixtures:
         violations.append("测试函数 fixture 缺少项目证据：" + ", ".join(unknown_fixtures))
 
-    parsed_names = set(_test_names(tree))
-    declared_by_name = {_field(case, "test_name"): case for case in declared_cases if _field(case, "test_name")}
     if not declared_by_name:
         violations.append("生成测试缺少 cases 元数据声明")
     missing = sorted(parsed_names - set(declared_by_name))
@@ -199,6 +207,24 @@ def _dict_literal_keys(node: ast.AST | None) -> set[str] | None:
         if isinstance(key, ast.Constant) and isinstance(key.value, str):
             keys.add(key.value)
     return keys
+
+
+def _route_tests_with_json_body(tree: ast.AST, declared_by_name: dict[str, Any]) -> list[str]:
+    route_tests = {
+        name
+        for name, case in declared_by_name.items()
+        if str(_field(case, "target_route") or "").strip()
+    }
+    if not route_tests:
+        return []
+    offenders: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name not in route_tests:
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call) and any(kw.arg == "json" for kw in node.keywords):
+                offenders.add(fn.name)
+    return sorted(offenders)
 
 
 def _unknown_test_fixtures(tree: ast.AST, allowed_fixtures: Sequence[str]) -> list[str]:

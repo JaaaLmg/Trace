@@ -177,6 +177,44 @@ def test_generation_contract_accepts_json_request_fields_from_model_schema():
     assert violations == []
 
 
+def test_generation_contract_rejects_json_body_without_model_schema():
+    content = (
+        "def test_create(client):\n"
+        "    response = client.post('/prices', json={'sku': 'A'})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['sku'] == 'A'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/prices", "assertion_summary": "验证创建价格"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=[],
+        allowed_fixtures=["client"],
+    )
+
+    assert any("请求 JSON 缺少模型字段证据" in violation for violation in violations)
+
+
+def test_generation_contract_allows_route_without_json_body_when_model_schema_missing():
+    content = (
+        "def test_health(client):\n"
+        "    response = client.get('/health')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['ok'] is True\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_health", "target_route": "/health", "assertion_summary": "验证健康检查"}],
+        target_type="route",
+        target_ref="/health",
+        allowed_request_fields=[],
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_rejects_unknown_fixture_argument():
     content = "def test_create(client):\n    assert client.get('/health').status_code == 200\n"
     violations = check_generation_contract(
