@@ -21,9 +21,9 @@ CALC_OK = (
     "def is_even(n):\n"
     "    return n % 2 == 0\n"
 )
-CALC_BUG = (
+CALC_BUG_OPAQUE = (
     "def add(a, b):\n"
-    "    return a + b + 1  # 故意 bug：多加 1\n"
+    "    return sum([a, b]) + 1  # 故意 bug：静态 Guard 不展开 sum\n"
     "\n"
     "\n"
     "def is_even(n):\n"
@@ -46,11 +46,11 @@ T_ADD_OK = (
     "def test_add():\n"
     "    assert add(2, 3) == 5\n"
 )
-T_ADD_WRONG = (  # 断言期望值写成 6，在 CALC_OK 下必然失败
-    "from calc import add\n"
+T_ADD_IMPORT_WRONG = (  # 测试自身 import 写错，留给 Reflection 修复
+    "from calc import addd\n"
     "\n"
     "def test_add():\n"
-    "    assert add(2, 3) == 6\n"
+    "    assert addd(2, 3) == 5\n"
 )
 T_ISEVEN_OK = (
     "from calc import is_even\n"
@@ -165,6 +165,10 @@ def test_direct_pass(tmp_path):
     assert "PIPELINE_REJECT" in pb["generate_contract"]
     assert "响应 JSON" in pb["generate_contract"]
     assert "未知参数" in pb["generate_contract"]
+    assert "TestClient(app)" in pb["generate_contract"]
+    assert "fixture 缺少项目证据：client" in pb["generate_retry_instruction"]
+    assert "目标绑定不匹配 plan item" in pb["generate_retry_instruction"]
+    assert "路由响应 oracle 与目标源码行为不一致" in pb["generate_retry_instruction"]
 
 
 def test_generated_class_nodeid_maps_with_class_name(tmp_path):
@@ -246,7 +250,7 @@ def test_react_reflection_recovers(tmp_path):
                 ensure_ascii=False,
             )
         if "TASK: GENERATE" in b:
-            return _gen_payload(T_ADD_WRONG, [_case("test_add", "add", "2+3=5")])
+            return _gen_payload(T_ADD_IMPORT_WRONG, [_case("test_add", "add", "2+3=5")])
         raise AssertionError("未预期的任务消息：" + b[:120])
 
     outcome, rec = _run(ctx, "react_reflection", responder, allow_reflection=True, artifacts=tmp_path / "art")
@@ -285,7 +289,7 @@ def test_react_reflection_contract_violation(tmp_path):
                 ensure_ascii=False,
             )
         if "TASK: GENERATE" in b:
-            return _gen_payload(T_ADD_WRONG, [_case("test_add", "add", "2+3=5")])
+            return _gen_payload(T_ADD_IMPORT_WRONG, [_case("test_add", "add", "2+3=5")])
         raise AssertionError("未预期的任务消息：" + b[:120])
 
     outcome, rec = _run(ctx, "react_reflection", responder, allow_reflection=True, artifacts=tmp_path / "art")
@@ -296,7 +300,7 @@ def test_react_reflection_contract_violation(tmp_path):
     assert m["reflection_contract_violation"] is True
     assert m["suspected_code_bug"] is False
     # 违规修复不采纳：最终测试集回退到首轮失败，绝不能掩盖成空集/全绿
-    assert m["final_failed"] >= 1 and m["final_cases_total"] >= 1
+    assert (m["final_failed"] + m["collection_errors"]) >= 1
 
     a2 = [a for a in rec.attempts.values() if a.kind == "reflection"][0]
     assert a2.status == "error"
@@ -306,7 +310,7 @@ def test_react_reflection_contract_violation(tmp_path):
 
 # ---------- 场景 5：断言正确但被真 bug 干翻 → 反思判定疑似业务缺陷，保留失败 ----------
 def test_react_reflection_suspects_code_bug(tmp_path):
-    ctx = _mini_project(tmp_path, CALC_BUG)  # add 返回 a+b+1
+    ctx = _mini_project(tmp_path, CALC_BUG_OPAQUE)  # add 返回 a+b+1，但静态 Guard 不展开 sum
 
     def responder(messages):
         b = _blob(messages)
@@ -355,7 +359,7 @@ def test_react_reflection_static_guard_catches_lie(tmp_path):
                 ensure_ascii=False,
             )
         if "TASK: GENERATE" in b:
-            return _gen_payload(T_ADD_WRONG, [_case("test_add", "add", "2+3=5")])
+            return _gen_payload(T_ADD_IMPORT_WRONG, [_case("test_add", "add", "2+3=5")])
         raise AssertionError("未预期的任务消息：" + b[:120])
 
     outcome, rec = _run(ctx, "react_reflection", responder, allow_reflection=True, artifacts=tmp_path / "art")
@@ -365,7 +369,7 @@ def test_react_reflection_static_guard_catches_lie(tmp_path):
     m = outcome.report.metrics
     # 靠静态比对 AST 拦下，而不是模型自觉
     assert m["reflection_contract_violation"] is True
-    assert m["final_failed"] >= 1  # 谎言不被采纳，保留首轮失败，绝不掩盖成全绿
+    assert (m["final_failed"] + m["collection_errors"]) >= 1  # 谎言不被采纳，保留首轮失败
     a2 = [a for a in rec.attempts.values() if a.kind == "reflection"][0]
     assert a2.error_code == "REFLECTION_CONTRACT_VIOLATION"
 
@@ -416,3 +420,30 @@ def test_generation_contract_rejects_weak_test_before_pytest(tmp_path):
     assert rec.files == []
     assert outcome.report is None
     assert run.total_tokens > 0
+
+
+def test_generation_contract_retry_can_recover_before_pytest(tmp_path):
+    ctx = _mini_project(tmp_path, CALC_OK)
+    calls = {"generate": 0}
+
+    def responder(messages):
+        b = _blob(messages)
+        if "TASK: GENERATE" in b:
+            calls["generate"] += 1
+            if "Contract Guard" in b:
+                return _gen_payload(T_ADD_OK, [_case("test_add", "add", "2+3=5")])
+            return _gen_payload(
+                "from calc import add\n\n"
+                "def test_add():\n"
+                "    assert True\n",
+                [{"test_name": "test_add", "target_function": "add", "assertion_summary": "空洞断言"}],
+            )
+        raise AssertionError("未预期的任务消息：" + b[:120])
+
+    outcome, rec = _run(ctx, "direct", responder, artifacts=tmp_path / "art")
+    run = outcome.run
+
+    assert run.status == "completed", run.error_message
+    assert calls["generate"] == 2
+    assert outcome.report.metrics["final_passed"] == 1
+    assert any(step.name == "生成测试契约重试" for step in rec.trace_steps)

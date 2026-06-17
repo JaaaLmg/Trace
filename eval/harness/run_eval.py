@@ -120,6 +120,7 @@ def main() -> None:
     parser.add_argument("--model", default=None, help="真实模型 ID；openai 默认 gpt-5，openai_chat_compat 必须显式提供或走环境变量")
     parser.add_argument("--repeats", type=int, default=3, help="每策略重复次数")
     parser.add_argument("--temperature", type=float, default=None, help="真实模型采样温度；不传则使用模型默认值")
+    parser.add_argument("--max-output-tokens", type=int, default=None, help="真实模型最大输出 token；不传则使用 provider 默认值")
     parser.add_argument(
         "--reasoning-effort",
         default=None,
@@ -168,6 +169,8 @@ def main() -> None:
         model_params: dict = {}
         if args.temperature is not None:
             model_params["temperature"] = args.temperature
+        if args.max_output_tokens is not None:
+            model_params["max_output_tokens"] = args.max_output_tokens
         if args.base_url:
             model_params["base_url"] = args.base_url
         if args.reasoning_effort:
@@ -208,6 +211,8 @@ def main() -> None:
                 else {"mode": "strategy_default"},
                 "model_params": {},
             }
+            if args.max_output_tokens is not None:
+                service_override["max_output_tokens"] = args.max_output_tokens
             if args.reasoning_effort:
                 service_override["model_params"]["reasoning_effort"] = args.reasoning_effort
             if args.base_url:

@@ -3,8 +3,10 @@
     {
       "strategy_id": "direct",
       "strategy_name": "Direct v1",
-      "repeats": 1,
+      "repeats": 3,
       "captured_per_repeat": [
+        6,
+        6,
         6
       ],
       "captured_mean": 6,
@@ -12,13 +14,13 @@
       "capture_rate_mean": 1.0,
       "capture_rate_std": 0.0,
       "false_positive_rate": 0.0,
-      "avg_tokens": 4029,
+      "avg_tokens": 9713.666666666666,
       "avg_tool_calls": 3,
       "reflection_used": false,
       "invalid_test_set_count": 0,
       "metric_status": "ok",
-      "cost_per_captured_bug": 671.5,
-      "avg_duration_ms": 10078.0,
+      "cost_per_captured_bug": 1618.9444444444443,
+      "avg_duration_ms": 10024.333333333334,
       "pytest_collection_success_rate": 1.0,
       "reflection_contract_pass_rate": null,
       "reflection_acceptance_rate": null,
@@ -28,7 +30,9 @@
         "provider": "openai_chat_compat",
         "model": "deepseek-v4-flash",
         "derived_from_clean_run_ids": [
-          "7bf94333-2731-4188-9695-c368fe567939"
+          "c0771da4-11b0-4482-a9ad-53a3bfc873a8",
+          "995f5a57-d2dc-493a-909c-9f6eedae1907",
+          "8c78e8a7-b99d-409f-8190-01542e8a53da"
         ],
         "source": "derived_from_clean_run_strategy_snapshots"
       }
@@ -36,41 +40,10 @@
     {
       "strategy_id": "plan_execute",
       "strategy_name": "Plan-and-Execute v1",
-      "repeats": 1,
+      "repeats": 3,
       "captured_per_repeat": [
-        6
-      ],
-      "captured_mean": 6,
-      "total_in_scope": 6,
-      "capture_rate_mean": 1.0,
-      "capture_rate_std": 0.0,
-      "false_positive_rate": 1.0,
-      "avg_tokens": 18153,
-      "avg_tool_calls": 15,
-      "reflection_used": false,
-      "invalid_test_set_count": 0,
-      "metric_status": "ok",
-      "cost_per_captured_bug": 3025.5,
-      "avg_duration_ms": 11443.0,
-      "pytest_collection_success_rate": 1.0,
-      "reflection_contract_pass_rate": null,
-      "reflection_acceptance_rate": null,
-      "cost_per_captured_bug_status": "ok",
-      "data_source": "real_llm",
-      "llm_display": {
-        "provider": "openai_chat_compat",
-        "model": "deepseek-v4-flash",
-        "derived_from_clean_run_ids": [
-          "2ce76f68-6d51-4783-abb0-64a16dea96a0"
-        ],
-        "source": "derived_from_clean_run_strategy_snapshots"
-      }
-    },
-    {
-      "strategy_id": "react_reflection",
-      "strategy_name": "ReAct+Reflection v1",
-      "repeats": 1,
-      "captured_per_repeat": [
+        6,
+        6,
         6
       ],
       "captured_mean": 6,
@@ -78,13 +51,13 @@
       "capture_rate_mean": 1.0,
       "capture_rate_std": 0.0,
       "false_positive_rate": 0.0,
-      "avg_tokens": 4707,
-      "avg_tool_calls": 3,
+      "avg_tokens": 27642.333333333332,
+      "avg_tool_calls": 13.666666666666666,
       "reflection_used": false,
       "invalid_test_set_count": 0,
       "metric_status": "ok",
-      "cost_per_captured_bug": 784.5,
-      "avg_duration_ms": 10545.0,
+      "cost_per_captured_bug": 4607.055555555556,
+      "avg_duration_ms": 9871.666666666666,
       "pytest_collection_success_rate": 1.0,
       "reflection_contract_pass_rate": null,
       "reflection_acceptance_rate": null,
@@ -94,7 +67,46 @@
         "provider": "openai_chat_compat",
         "model": "deepseek-v4-flash",
         "derived_from_clean_run_ids": [
-          "ef6b6f00-b7cd-426d-a854-d84e0819a116"
+          "0ba3c847-332c-4b8a-b61f-2e670b063930",
+          "9357cd8f-fb72-4960-b4c0-6304e8609927",
+          "456e6836-6c71-4573-b0d5-b71e950522b9"
+        ],
+        "source": "derived_from_clean_run_strategy_snapshots"
+      }
+    },
+    {
+      "strategy_id": "react_reflection",
+      "strategy_name": "ReAct+Reflection v1",
+      "repeats": 3,
+      "captured_per_repeat": [
+        6,
+        6,
+        6
+      ],
+      "captured_mean": 6,
+      "total_in_scope": 6,
+      "capture_rate_mean": 1.0,
+      "capture_rate_std": 0.0,
+      "false_positive_rate": 0.0,
+      "avg_tokens": 7062,
+      "avg_tool_calls": 3,
+      "reflection_used": false,
+      "invalid_test_set_count": 0,
+      "metric_status": "ok",
+      "cost_per_captured_bug": 1177.0,
+      "avg_duration_ms": 8815.333333333334,
+      "pytest_collection_success_rate": 1.0,
+      "reflection_contract_pass_rate": null,
+      "reflection_acceptance_rate": null,
+      "cost_per_captured_bug_status": "ok",
+      "data_source": "real_llm",
+      "llm_display": {
+        "provider": "openai_chat_compat",
+        "model": "deepseek-v4-flash",
+        "derived_from_clean_run_ids": [
+          "2388f9ec-0367-4434-bb4d-482db601566c",
+          "01e55a2e-4140-4d4d-aa5a-8c9cfce667a0",
+          "588ffdcd-517f-4881-b29f-bb8c4ede08af"
         ],
         "source": "derived_from_clean_run_strategy_snapshots"
       }
@@ -133,7 +145,7 @@
     }
   },
   "experiment": {
-    "id": "exp-ae74f9a4-66e7-4b33-aa81-2761c8c68457",
+    "id": "exp-8d9f99fe-e7b4-4d2f-b807-7a2f1857a798",
     "name": "cli-v2-eval",
     "dataset_id": "dataset-demo-v2",
     "strategy_version_ids": [
@@ -141,21 +153,22 @@
       "sv-plan-v1",
       "sv-react-v1"
     ],
-    "repeat_count": 1,
+    "repeat_count": 3,
     "llm_override": {
       "model": "deepseek-v4-flash",
       "provider": "openai_chat_compat",
       "model_params": {
         "base_url": "https://api.deepseek.com"
       },
+      "max_output_tokens": 16384,
       "temperature_policy": {
         "mode": "strategy_default"
       }
     },
     "status": "completed",
-    "created_at": "2026-06-17T17:23:30.124415+08:00",
-    "started_at": "2026-06-17T17:23:30.134523+08:00",
-    "finished_at": "2026-06-17T17:26:45.579993+08:00",
+    "created_at": "2026-06-17T22:48:51.059966+08:00",
+    "started_at": "2026-06-17T22:48:51.068864+08:00",
+    "finished_at": "2026-06-17T23:05:39.207350+08:00",
     "error_code": null,
     "error_message": null
   }

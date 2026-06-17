@@ -295,6 +295,63 @@ def test_generation_contract_accepts_route_target_with_method_prefix():
     assert violations == []
 
 
+def test_generation_contract_accepts_route_target_with_type_and_method_prefix():
+    content = (
+        "def test_price(client):\n"
+        "    response = client.get('/price/apple')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['item'] == 'apple'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_price", "target_route": "route:GET /price/{item}", "assertion_summary": "验证价格查询"}],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
+
+PRICE_ROUTE_SOURCE_CONTEXT = """## shop/api.py:11-15 (get_price)
+```python
+@app.get("/price/{item}")
+def get_price(item: str, member: bool = False):
+    if item not in _PRICES:
+        raise HTTPException(status_code=404, detail="item not found")
+    return {"item": item, "total": apply_discount(_PRICES[item], member)}
+```"""
+
+
+def test_generation_contract_rejects_empty_path_param_route_case():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_price_empty_string_item(monkeypatch):\n"
+        "    monkeypatch.setattr('shop.api._PRICES', {'': 10})\n"
+        "    client = TestClient(app)\n"
+        "    response = client.get('/price/')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['item'] == ''\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_empty_string_item",
+                "target_route": "/price/{item}",
+                "assertion_summary": "空字符串 item 可查询",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["monkeypatch"],
+        source_context=PRICE_ROUTE_SOURCE_CONTEXT,
+    )
+
+    assert any("空 path 参数" in violation for violation in violations)
+
+
 def test_generation_contract_allows_error_status_route_check():
     content = "def test_missing(client):\n    assert client.get('/missing').status_code == 404\n"
     violations = check_generation_contract(
@@ -354,3 +411,319 @@ def test_generation_contract_accepts_parametrized_case_metadata_names():
     )
 
     assert violations == []
+
+
+def test_generation_contract_accepts_class_method_case_metadata_names():
+    content = (
+        "from shop.pricing import apply_discount\n\n"
+        "class TestApplyDiscount:\n"
+        "    def test_member_100(self):\n"
+        "        assert apply_discount(100, True) == 90.0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "TestApplyDiscount.test_member_100",
+                "target_function": "apply_discount",
+                "assertion_summary": "会员满 100 打折",
+            }
+        ],
+        target_type="function",
+        target_ref="apply_discount",
+        allowed_fixtures=[],
+    )
+
+    assert violations == []
+
+
+APPLY_DISCOUNT_SOURCE_CONTEXT = """## shop/pricing.py:5-9 (apply_discount)
+```python
+def apply_discount(total, is_member):
+    if is_member and total >= 100:
+        return round(total * 0.9, 2)
+    return round(total, 2)
+```"""
+
+PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT = PRICE_ROUTE_SOURCE_CONTEXT + "\n" + APPLY_DISCOUNT_SOURCE_CONTEXT
+
+
+def test_generation_contract_rejects_boundary_oracle_that_contradicts_source_context():
+    content = (
+        "from shop.pricing import apply_discount\n\n"
+        "def test_apply_discount_negative_total():\n"
+        "    result = apply_discount(-50, True)\n"
+        "    assert result == round(-50 * 0.9, 2)\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_apply_discount_negative_total",
+                "target_function": "apply_discount",
+                "assertion_summary": "负数边界仍按会员折扣",
+            }
+        ],
+        target_type="function",
+        target_ref="apply_discount",
+        source_context=APPLY_DISCOUNT_SOURCE_CONTEXT,
+    )
+
+    assert any("源码行为" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_boundary_oracle_matching_source_context():
+    content = (
+        "from shop.pricing import apply_discount\n\n"
+        "def test_apply_discount_negative_total():\n"
+        "    result = apply_discount(-50, True)\n"
+        "    assert result == -50.0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_apply_discount_negative_total",
+                "target_function": "apply_discount",
+                "assertion_summary": "负数边界按源码 fallback 返回原值",
+            }
+        ],
+        target_type="function",
+        target_ref="apply_discount",
+        source_context=APPLY_DISCOUNT_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_rejects_route_oracle_that_contradicts_handler_source():
+    content = (
+        "import pytest\n"
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "client = TestClient(app)\n\n"
+        "@pytest.mark.parametrize('item, member, expected_total', [\n"
+        "    ('apple', True, 4.5),\n"
+        "    ('banana', True, 27.0),\n"
+        "])\n"
+        "def test_get_price_existing_item(item, member, expected_total, monkeypatch):\n"
+        "    monkeypatch.setattr('shop.api._PRICES', {'apple': 5.0, 'banana': 30.0})\n"
+        "    response = client.get(f'/price/{item}', params={'member': member})\n"
+        "    data = response.json()\n"
+        "    assert response.status_code == 200\n"
+        "    assert data['item'] == item\n"
+        "    assert data['total'] == expected_total\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_existing_item[apple-True-4.5]",
+                "target_route": "/price/{item}",
+                "assertion_summary": "会员商品价格",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["monkeypatch"],
+        source_context=PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT,
+    )
+
+    assert any("路由响应 oracle" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_route_oracle_matching_handler_source():
+    content = (
+        "import pytest\n"
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "client = TestClient(app)\n\n"
+        "@pytest.mark.parametrize('item, member, expected_total', [\n"
+        "    ('apple', True, 5.0),\n"
+        "    ('banana', True, 30.0),\n"
+        "])\n"
+        "def test_get_price_existing_item(item, member, expected_total, monkeypatch):\n"
+        "    monkeypatch.setattr('shop.api._PRICES', {'apple': 5.0, 'banana': 30.0})\n"
+        "    response = client.get(f'/price/{item}', params={'member': member})\n"
+        "    data = response.json()\n"
+        "    assert response.status_code == 200\n"
+        "    assert data['item'] == item\n"
+        "    assert data['total'] == expected_total\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_existing_item[apple-True-5.0]",
+                "target_route": "/price/{item}",
+                "assertion_summary": "会员商品价格按源码阈值计算",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["monkeypatch"],
+        source_context=PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_accepts_route_oracle_with_query_string_matching_source():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n"
+        "from shop.pricing import apply_discount\n\n"
+        "def test_get_price_item_exists(monkeypatch):\n"
+        "    prices = {'widget': 250.0}\n"
+        "    monkeypatch.setattr('shop.api._PRICES', prices)\n"
+        "    client = TestClient(app)\n"
+        "    resp = client.get('/price/widget')\n"
+        "    assert resp.status_code == 200\n"
+        "    data = resp.json()\n"
+        "    assert data == {'item': 'widget', 'total': apply_discount(prices['widget'], False)}\n"
+        "    resp = client.get('/price/widget?member=true')\n"
+        "    assert resp.status_code == 200\n"
+        "    data = resp.json()\n"
+        "    assert data == {'item': 'widget', 'total': apply_discount(prices['widget'], True)}\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_item_exists",
+                "target_route": "/price/{item}",
+                "assertion_summary": "路由价格按 handler 和 apply_discount 计算",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["monkeypatch"],
+        source_context=PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_rejects_boundary_raises_without_source_raise():
+    content = (
+        "import pytest\n"
+        "from shop.pricing import apply_discount\n\n"
+        "def test_apply_discount_negative_total():\n"
+        "    with pytest.raises(ValueError):\n"
+        "        apply_discount(-50, True)\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_apply_discount_negative_total",
+                "target_function": "apply_discount",
+                "assertion_summary": "负数边界应抛异常",
+            }
+        ],
+        target_type="function",
+        target_ref="apply_discount",
+        source_context=APPLY_DISCOUNT_SOURCE_CONTEXT,
+    )
+
+    assert any("没有可见 raise 证据" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_rounding_oracle_that_contradicts_source_context():
+    content = (
+        "from shop.pricing import apply_discount\n\n"
+        "def test_rounding_behavior():\n"
+        "    assert apply_discount(1.015, False) == 1.02\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_rounding_behavior",
+                "target_function": "apply_discount",
+                "assertion_summary": "rounding behavior for float precision",
+            }
+        ],
+        target_type="function",
+        target_ref="apply_discount",
+        source_context=APPLY_DISCOUNT_SOURCE_CONTEXT,
+    )
+
+    assert any("源码行为" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_parametrized_oracle_that_contradicts_source_context():
+    content = (
+        "import pytest\n"
+        "from shop.pricing import apply_discount\n\n"
+        "@pytest.mark.parametrize('total,is_member,expected', [(999.99, True, 899.991)])\n"
+        "def test_apply_discount(total, is_member, expected):\n"
+        "    result = apply_discount(total, is_member)\n"
+        "    assert result == expected\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_apply_discount[999.99-True-899.991]",
+                "target_function": "apply_discount",
+                "assertion_summary": "会员金额打折",
+            }
+        ],
+        target_type="function",
+        target_ref="apply_discount",
+        source_context=APPLY_DISCOUNT_SOURCE_CONTEXT,
+    )
+
+    assert any("源码行为" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_parametrized_oracle_matching_source_context():
+    content = (
+        "import pytest\n"
+        "from shop.pricing import apply_discount\n\n"
+        "@pytest.mark.parametrize('total,is_member,expected', [(999.99, True, 899.99)])\n"
+        "def test_apply_discount(total, is_member, expected):\n"
+        "    result = apply_discount(total, is_member)\n"
+        "    assert result == expected\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_apply_discount[999.99-True-899.99]",
+                "target_function": "apply_discount",
+                "assertion_summary": "会员金额按源码 round 后打折",
+            }
+        ],
+        target_type="function",
+        target_ref="apply_discount",
+        source_context=APPLY_DISCOUNT_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_rejects_redefining_target_function_in_test_file():
+    content = (
+        "def loyalty_points(years):\n"
+        "    if years >= 3:\n"
+        "        return 100\n"
+        "    return 10\n\n"
+        "def test_loyalty_points_equal_3():\n"
+        "    assert loyalty_points(3) == 100\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_loyalty_points_equal_3",
+                "target_function": "loyalty_points",
+                "assertion_summary": "满 3 年送 100 分",
+            }
+        ],
+        target_type="function",
+        target_ref="loyalty_points",
+    )
+
+    assert any("重新定义被测目标" in violation for violation in violations)

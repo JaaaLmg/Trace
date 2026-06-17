@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import ast
+import math
+import re
 from typing import Any, Sequence
+from urllib.parse import parse_qs, urlsplit
 
 _SKIP_NAMES = {"skip", "skipif", "xfail"}
 _BROAD_EXC = {"Exception", "BaseException"}
+_HTTP_VERBS = {"get", "post", "put", "delete", "patch", "options", "head"}
 _PYTEST_BUILTIN_FIXTURES = {
     "cache",
     "capsys",
@@ -71,6 +75,7 @@ def check_generation_contract(
     target_ref: str | None = None,
     allowed_request_fields: Sequence[str] | None = None,
     allowed_fixtures: Sequence[str] | None = None,
+    source_context: str | None = None,
 ) -> list[str]:
     """校验生成测试本身是否有基本测试价值和目标绑定。"""
     violations: list[str] = []
@@ -107,6 +112,9 @@ def check_generation_contract(
     unknown_fixtures = _unknown_test_fixtures(tree, allowed_fixtures) if allowed_fixtures is not None else []
     if unknown_fixtures:
         violations.append("测试函数 fixture 缺少项目证据：" + ", ".join(unknown_fixtures))
+    shadowed_targets = _shadowed_target_definitions(tree, declared_by_name, target_type, target_ref)
+    if shadowed_targets:
+        violations.append("生成测试重新定义被测目标：" + ", ".join(shadowed_targets))
 
     if not declared_by_name:
         violations.append("生成测试缺少 cases 元数据声明")
@@ -119,6 +127,15 @@ def check_generation_contract(
     weak_route_oracles = _success_status_only_route_tests(tree, declared_by_name)
     if weak_route_oracles:
         violations.append("路由测试缺少业务 oracle（只有 2xx status_code 断言）：" + ", ".join(weak_route_oracles))
+    empty_path_param_routes = _empty_path_param_route_tests(tree, source_context or "")
+    if empty_path_param_routes:
+        violations.append("路由测试使用空 path 参数，无法命中目标 handler：" + ", ".join(empty_path_param_routes))
+    source_oracle_violations = _source_backed_oracle_violations(tree, declared_by_name, source_context or "")
+    if source_oracle_violations:
+        violations.extend(source_oracle_violations)
+    route_oracle_violations = _route_response_oracle_violations(tree, source_context or "")
+    if route_oracle_violations:
+        violations.extend(route_oracle_violations)
 
     for name in sorted(parsed_names & set(declared_by_name)):
         case = declared_by_name[name]
@@ -142,7 +159,10 @@ def _field(obj: Any, name: str) -> Any:
 
 
 def _base_test_name(name: Any) -> str:
-    return str(name).split("::")[-1].split("[", 1)[0].strip()
+    base = str(name).split("::")[-1].split("[", 1)[0].strip()
+    if "." in base and base.rsplit(".", 1)[-1].startswith("test"):
+        return base.rsplit(".", 1)[-1]
+    return base
 
 
 def _test_names(tree) -> list[str]:
@@ -167,10 +187,701 @@ def _target_matches(target_type: str | None, target_ref: str | None, target_func
 
 
 def _route_path_without_method(value: str) -> str:
-    parts = value.strip().split(maxsplit=1)
+    normalized = value.strip()
+    if normalized.lower().startswith("route:"):
+        normalized = normalized.split(":", 1)[1].strip()
+    parts = normalized.split(maxsplit=1)
     if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
         return parts[1].strip()
-    return value.strip()
+    return normalized
+
+
+def _empty_path_param_route_tests(tree: ast.AST, source_context: str) -> list[str]:
+    empty_paths = _empty_path_param_routes(source_context)
+    if not empty_paths:
+        return []
+    offenders: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call) or _last(node.func).lower() not in _HTTP_VERBS:
+                continue
+            if not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str) and first.value in empty_paths:
+                offenders.add(fn.name)
+    return sorted(offenders)
+
+
+def _empty_path_param_routes(source_context: str) -> set[str]:
+    routes: set[str] = set()
+    for template in _route_templates_from_source_context(source_context):
+        match = re.fullmatch(r"(.*/)\{[^/{}]+\}/?", template)
+        if match:
+            routes.add(match.group(1))
+    return routes
+
+
+def _route_templates_from_source_context(source_context: str) -> set[str]:
+    chunks = re.findall(r"```(?:python)?\s*(.*?)```", source_context, flags=re.DOTALL)
+    if not chunks:
+        chunks = [source_context]
+    routes: set[str] = set()
+    for chunk in chunks:
+        try:
+            tree = ast.parse(chunk)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for dec in node.decorator_list:
+                call = dec if isinstance(dec, ast.Call) else None
+                if call is None or _last(call.func).lower() not in _HTTP_VERBS:
+                    continue
+                if call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+                    routes.add(call.args[0].value)
+    return routes
+
+
+def _shadowed_target_definitions(
+    tree: ast.AST,
+    declared_by_name: dict[str, Any],
+    target_type: str | None,
+    target_ref: str | None,
+) -> list[str]:
+    targets: set[str] = set()
+    if target_type == "function" and target_ref:
+        targets.add(str(target_ref).rsplit(".", 1)[-1])
+    for case in declared_by_name.values():
+        target_function = str(_field(case, "target_function") or "").strip()
+        if target_function:
+            targets.add(target_function.rsplit(".", 1)[-1])
+    if not targets:
+        return []
+
+    shadowed: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("test"):
+            if node.name in targets:
+                shadowed.add(node.name)
+    return sorted(shadowed)
+
+
+class _EvalUnknown(Exception):
+    pass
+
+
+class _EvalRaised(Exception):
+    pass
+
+
+_NO_RETURN = object()
+
+
+class _RouteResponse:
+    def __init__(self, *, status_code: int, json_body: Any) -> None:
+        self.status_code = status_code
+        self.json_body = json_body
+
+
+def _source_backed_oracle_violations(
+    tree: ast.AST,
+    declared_by_name: dict[str, Any],
+    source_context: str,
+) -> list[str]:
+    if not source_context.strip():
+        return []
+    functions = _source_functions(source_context)
+    if not functions:
+        return []
+
+    violations: list[str] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for base_env in _parametrize_envs(fn):
+            env: dict[str, Any] = dict(base_env)
+            tainted_names: set[str] = set()
+            for stmt in fn.body:
+                _remember_static_assignment(stmt, functions, env, tainted_names)
+                if isinstance(stmt, ast.Assert):
+                    if not _expr_uses_source_value(stmt.test, functions, tainted_names):
+                        continue
+                    ok = _try_eval_assert(stmt.test, functions, env)
+                    if ok is False:
+                        violations.append(f"{fn.name} 的 oracle 与目标源码行为不一致")
+                elif _is_pytest_raises_with_source_call(stmt, functions, env):
+                    violations.append(f"{fn.name} 预期异常但目标源码没有可见 raise 证据")
+    return sorted(set(violations))
+
+
+def _route_response_oracle_violations(tree: ast.AST, source_context: str) -> list[str]:
+    if not source_context.strip():
+        return []
+    functions = _source_functions(source_context)
+    routes = _route_handlers_from_source_context(source_context)
+    if not functions or not routes:
+        return []
+
+    violations: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not any(isinstance(node, ast.Call) and _last(node.func).lower() in _HTTP_VERBS for node in ast.walk(fn)):
+            continue
+        for base_env in _parametrize_envs(fn):
+            env = dict(base_env)
+            global_env: dict[str, Any] = {}
+            tainted_names: set[str] = set()
+            for stmt in fn.body:
+                _remember_monkeypatch_global(stmt, functions, env, global_env)
+                if _remember_route_response_assignment(stmt, routes, functions, env, global_env, tainted_names):
+                    continue
+                _remember_route_static_assignment(stmt, functions, env, tainted_names)
+                if isinstance(stmt, ast.Assert) and _expr_uses_route_value(stmt.test, tainted_names):
+                    ok = _try_eval_assert(stmt.test, functions, env)
+                    if ok is False:
+                        violations.add(f"{fn.name} 的路由响应 oracle 与目标源码行为不一致")
+                        break
+    return sorted(violations)
+
+
+def _route_handlers_from_source_context(source_context: str) -> dict[str, str]:
+    chunks = re.findall(r"```(?:python)?\s*(.*?)```", source_context, flags=re.DOTALL)
+    if not chunks:
+        chunks = [source_context]
+    routes: dict[str, str] = {}
+    for chunk in chunks:
+        try:
+            tree = ast.parse(chunk)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for dec in node.decorator_list:
+                call = dec if isinstance(dec, ast.Call) else None
+                if call is None or _last(call.func).lower() not in _HTTP_VERBS:
+                    continue
+                if call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+                    routes.setdefault(call.args[0].value, node.name)
+    return routes
+
+
+def _parametrize_envs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[dict[str, Any]]:
+    envs: list[dict[str, Any]] = [{}]
+    for dec in fn.decorator_list:
+        call = dec if isinstance(dec, ast.Call) else None
+        if call is None or _last(call.func) != "parametrize" or len(call.args) < 2:
+            continue
+        names = _parametrize_names(call.args[0])
+        if not names:
+            continue
+        try:
+            raw_cases = _eval_expr(call.args[1], {}, {})
+        except (_EvalUnknown, _EvalRaised):
+            continue
+        if not isinstance(raw_cases, (list, tuple)):
+            continue
+        next_envs: list[dict[str, Any]] = []
+        for env in envs:
+            for raw_case in raw_cases:
+                values = raw_case if isinstance(raw_case, tuple) else (raw_case,)
+                if len(values) != len(names):
+                    continue
+                merged = dict(env)
+                merged.update(zip(names, values))
+                next_envs.append(merged)
+        if next_envs:
+            envs = next_envs
+    return envs
+
+
+def _parametrize_names(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [part.strip() for part in node.value.split(",") if part.strip()]
+    if isinstance(node, (ast.List, ast.Tuple)):
+        names: list[str] = []
+        for item in node.elts:
+            if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                names.append(item.value)
+        return names
+    return []
+
+
+def _remember_monkeypatch_global(
+    stmt: ast.stmt,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+    global_env: dict[str, Any],
+) -> None:
+    for call in [node for node in ast.walk(stmt) if isinstance(node, ast.Call)]:
+        if _last(call.func) != "setattr" or len(call.args) < 2:
+            continue
+        target = call.args[0]
+        if not isinstance(target, ast.Constant) or not isinstance(target.value, str):
+            continue
+        name = target.value.rsplit(".", 1)[-1]
+        if not name:
+            continue
+        try:
+            global_env[name] = _eval_expr(call.args[1], functions, env)
+        except (_EvalUnknown, _EvalRaised):
+            continue
+
+
+def _remember_route_response_assignment(
+    stmt: ast.stmt,
+    routes: dict[str, str],
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+    global_env: dict[str, Any],
+    tainted_names: set[str],
+) -> bool:
+    targets: list[ast.expr] = []
+    value: ast.AST | None = None
+    if isinstance(stmt, ast.Assign):
+        targets = list(stmt.targets)
+        value = stmt.value
+    elif isinstance(stmt, ast.AnnAssign):
+        targets = [stmt.target]
+        value = stmt.value
+    if value is None or not isinstance(value, ast.Call) or _last(value.func).lower() not in _HTTP_VERBS:
+        return False
+    try:
+        response = _eval_route_response_call(value, routes, functions, env, global_env)
+    except (_EvalUnknown, _EvalRaised):
+        _clear_assigned_names(targets, env, tainted_names)
+        return True
+    for target in targets:
+        if isinstance(target, ast.Name):
+            env[target.id] = response
+            tainted_names.add(target.id)
+    return True
+
+
+def _remember_route_static_assignment(
+    stmt: ast.stmt,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+    tainted_names: set[str],
+) -> None:
+    targets: list[ast.expr] = []
+    value: ast.AST | None = None
+    if isinstance(stmt, ast.Assign):
+        targets = list(stmt.targets)
+        value = stmt.value
+    elif isinstance(stmt, ast.AnnAssign):
+        targets = [stmt.target]
+        value = stmt.value
+    if value is None:
+        return
+    try:
+        evaluated = _eval_expr(value, functions, env)
+    except (_EvalUnknown, _EvalRaised):
+        _clear_assigned_names(targets, env, tainted_names)
+        return
+    tainted = _expr_uses_route_value(value, tainted_names)
+    for target in targets:
+        if isinstance(target, ast.Name):
+            env[target.id] = evaluated
+            if tainted:
+                tainted_names.add(target.id)
+
+
+def _eval_route_response_call(
+    call: ast.Call,
+    routes: dict[str, str],
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+    global_env: dict[str, Any],
+) -> _RouteResponse:
+    if not call.args:
+        raise _EvalUnknown()
+    path = _eval_expr(call.args[0], functions, env)
+    if not isinstance(path, str):
+        raise _EvalUnknown()
+    parsed = urlsplit(path)
+    route_path = parsed.path or path
+    query_params: dict[str, Any] = {}
+    for key, values in parse_qs(parsed.query).items():
+        if values:
+            query_params[key] = _coerce_query_value(values[-1])
+    for kw in call.keywords:
+        if kw.arg == "params":
+            value = _eval_expr(kw.value, functions, env)
+            if isinstance(value, dict):
+                query_params.update(value)
+    for template, handler_name in routes.items():
+        route_params = _match_route_params(template, route_path)
+        if route_params is None or handler_name not in functions:
+            continue
+        kwargs = {**route_params, **query_params}
+        body = _eval_source_function(functions[handler_name], [], kwargs, functions, global_env)
+        return _RouteResponse(status_code=200, json_body=body)
+    raise _EvalUnknown()
+
+
+def _coerce_query_value(value: str) -> Any:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def _clear_assigned_names(targets: Sequence[ast.expr], env: dict[str, Any], tainted_names: set[str]) -> None:
+    for target in targets:
+        if isinstance(target, ast.Name):
+            env.pop(target.id, None)
+            tainted_names.discard(target.id)
+
+
+def _match_route_params(template: str, path: str) -> dict[str, str] | None:
+    template_parts = template.strip("/").split("/") if template.strip("/") else []
+    path_parts = path.strip("/").split("/") if path.strip("/") else []
+    if len(template_parts) != len(path_parts):
+        return None
+    params: dict[str, str] = {}
+    for template_part, path_part in zip(template_parts, path_parts):
+        match = re.fullmatch(r"\{([^/{}]+)\}", template_part)
+        if match:
+            if path_part == "":
+                return None
+            params[match.group(1)] = path_part
+            continue
+        if template_part != path_part:
+            return None
+    return params
+
+
+def _expr_uses_route_value(node: ast.AST, tainted_names: set[str]) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id in tainted_names:
+            return True
+        if (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr == "json"
+            and isinstance(child.func.value, ast.Name)
+            and child.func.value.id in tainted_names
+        ):
+            return True
+    return False
+
+
+def _source_functions(source_context: str) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    chunks = re.findall(r"```(?:python)?\s*(.*?)```", source_context, flags=re.DOTALL)
+    if not chunks:
+        chunks = [source_context]
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for chunk in chunks:
+        try:
+            tree = ast.parse(chunk)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions.setdefault(node.name, node)
+    return functions
+
+
+def _remember_static_assignment(
+    stmt: ast.stmt,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+    tainted_names: set[str],
+) -> None:
+    targets: list[ast.expr] = []
+    value: ast.AST | None = None
+    if isinstance(stmt, ast.Assign):
+        targets = list(stmt.targets)
+        value = stmt.value
+    elif isinstance(stmt, ast.AnnAssign):
+        targets = [stmt.target]
+        value = stmt.value
+    if value is None:
+        return
+    try:
+        evaluated = _eval_expr(value, functions, env)
+    except (_EvalUnknown, _EvalRaised):
+        return
+    tainted = _expr_uses_source_value(value, functions, tainted_names)
+    for target in targets:
+        if isinstance(target, ast.Name):
+            env[target.id] = evaluated
+            if tainted:
+                tainted_names.add(target.id)
+
+
+def _try_eval_assert(
+    node: ast.AST,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+) -> bool | None:
+    try:
+        value = _eval_expr(node, functions, env)
+    except (_EvalUnknown, _EvalRaised):
+        return None
+    if isinstance(value, bool):
+        return value
+    return bool(value)
+
+
+def _is_pytest_raises_with_source_call(
+    stmt: ast.stmt,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+) -> bool:
+    if not isinstance(stmt, ast.With):
+        return False
+    has_pytest_raises = any(
+        isinstance(item.context_expr, ast.Call) and _last(item.context_expr.func) == "raises"
+        for item in stmt.items
+    )
+    if not has_pytest_raises:
+        return False
+    for inner in stmt.body:
+        for call in [node for node in ast.walk(inner) if isinstance(node, ast.Call)]:
+            if _last(call.func) not in functions:
+                continue
+            try:
+                _eval_expr(call, functions, env)
+            except _EvalRaised:
+                return False
+            except _EvalUnknown:
+                continue
+            return True
+    return False
+
+
+def _expr_uses_source_value(
+    node: ast.AST,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    tainted_names: set[str],
+) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and _last(child.func) in functions:
+            return True
+        if isinstance(child, ast.Name) and child.id in tainted_names:
+            return True
+    return False
+
+
+def _eval_source_function(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    args: list[Any],
+    kwargs: dict[str, Any],
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    global_env: dict[str, Any] | None = None,
+) -> Any:
+    if isinstance(node, ast.AsyncFunctionDef):
+        raise _EvalUnknown()
+    arg_nodes = list(node.args.args)
+    defaults = list(node.args.defaults)
+    if len(args) > len(arg_nodes):
+        raise _EvalUnknown()
+
+    env: dict[str, Any] = dict(global_env or {})
+    for arg_node, value in zip(arg_nodes, args):
+        env[arg_node.arg] = value
+
+    default_offset = len(arg_nodes) - len(defaults)
+    for index, arg_node in enumerate(arg_nodes[len(args) :], start=len(args)):
+        if arg_node.arg in kwargs:
+            env[arg_node.arg] = kwargs.pop(arg_node.arg)
+            continue
+        default_index = index - default_offset
+        if default_index < 0:
+            raise _EvalUnknown()
+        env[arg_node.arg] = _eval_expr(defaults[default_index], functions, env)
+    if kwargs:
+        raise _EvalUnknown()
+
+    result = _exec_statements(node.body, functions, env)
+    if result is _NO_RETURN:
+        raise _EvalUnknown()
+    return result
+
+
+def _exec_statements(
+    statements: Sequence[ast.stmt],
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+) -> Any:
+    for stmt in statements:
+        if isinstance(stmt, ast.Return):
+            return _eval_expr(stmt.value, functions, env)
+        if isinstance(stmt, ast.Raise):
+            raise _EvalRaised()
+        if isinstance(stmt, ast.If):
+            branch = stmt.body if _eval_expr(stmt.test, functions, env) else stmt.orelse
+            result = _exec_statements(branch, functions, dict(env))
+            if result is not _NO_RETURN:
+                return result
+            continue
+        if isinstance(stmt, ast.Assign):
+            value = _eval_expr(stmt.value, functions, env)
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    env[target.id] = value
+            continue
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+            env[stmt.target.id] = _eval_expr(stmt.value, functions, env)
+            continue
+        if isinstance(stmt, (ast.Expr, ast.Pass)):
+            continue
+        raise _EvalUnknown()
+    return _NO_RETURN
+
+
+def _eval_expr(
+    node: ast.AST | None,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+) -> Any:
+    if node is None:
+        return None
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id in env:
+            return env[node.id]
+        raise _EvalUnknown()
+    if isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name):
+            value = env.get(node.value.id)
+            if isinstance(value, _RouteResponse) and node.attr == "status_code":
+                return value.status_code
+        raise _EvalUnknown()
+    if isinstance(node, ast.UnaryOp):
+        operand = _eval_expr(node.operand, functions, env)
+        if isinstance(node.op, ast.USub):
+            return -operand
+        if isinstance(node.op, ast.UAdd):
+            return +operand
+        if isinstance(node.op, ast.Not):
+            return not operand
+        raise _EvalUnknown()
+    if isinstance(node, ast.BoolOp):
+        values = [_eval_expr(value, functions, env) for value in node.values]
+        if isinstance(node.op, ast.And):
+            return all(values)
+        if isinstance(node.op, ast.Or):
+            return any(values)
+        raise _EvalUnknown()
+    if isinstance(node, ast.BinOp):
+        left = _eval_expr(node.left, functions, env)
+        right = _eval_expr(node.right, functions, env)
+        return _eval_binop(node.op, left, right)
+    if isinstance(node, ast.Compare):
+        left = _eval_expr(node.left, functions, env)
+        for op, comparator in zip(node.ops, node.comparators):
+            right = _eval_expr(comparator, functions, env)
+            if not _compare_values(left, op, right):
+                return False
+            left = right
+        return True
+    if isinstance(node, ast.Call):
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "json"
+            and isinstance(node.func.value, ast.Name)
+            and isinstance(env.get(node.func.value.id), _RouteResponse)
+        ):
+            return env[node.func.value.id].json_body
+        name = _last(node.func)
+        args = [_eval_expr(arg, functions, env) for arg in node.args]
+        kwargs = {kw.arg: _eval_expr(kw.value, functions, env) for kw in node.keywords if kw.arg}
+        if name == "round":
+            return round(*args, **kwargs)
+        if name in functions:
+            return _eval_source_function(functions[name], args, kwargs, functions)
+        raise _EvalUnknown()
+    if isinstance(node, ast.Subscript):
+        value = _eval_expr(node.value, functions, env)
+        key = _eval_expr(node.slice, functions, env)
+        return value[key]
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                parts.append(str(_eval_expr(value.value, functions, env)))
+            else:
+                raise _EvalUnknown()
+        return "".join(parts)
+    if isinstance(node, ast.Tuple):
+        return tuple(_eval_expr(elt, functions, env) for elt in node.elts)
+    if isinstance(node, ast.List):
+        return [_eval_expr(elt, functions, env) for elt in node.elts]
+    if isinstance(node, ast.Dict):
+        return {
+            _eval_expr(key, functions, env): _eval_expr(value, functions, env)
+            for key, value in zip(node.keys, node.values)
+            if key is not None
+        }
+    raise _EvalUnknown()
+
+
+def _eval_binop(op: ast.operator, left: Any, right: Any) -> Any:
+    if isinstance(op, ast.Add):
+        return left + right
+    if isinstance(op, ast.Sub):
+        return left - right
+    if isinstance(op, ast.Mult):
+        return left * right
+    if isinstance(op, ast.Div):
+        return left / right
+    if isinstance(op, ast.FloorDiv):
+        return left // right
+    if isinstance(op, ast.Mod):
+        return left % right
+    if isinstance(op, ast.Pow):
+        return left**right
+    raise _EvalUnknown()
+
+
+def _compare_values(left: Any, op: ast.cmpop, right: Any) -> bool:
+    if isinstance(op, ast.Eq):
+        return _same_value(left, right)
+    if isinstance(op, ast.NotEq):
+        return not _same_value(left, right)
+    if isinstance(op, ast.Lt):
+        return left < right
+    if isinstance(op, ast.LtE):
+        return left <= right
+    if isinstance(op, ast.Gt):
+        return left > right
+    if isinstance(op, ast.GtE):
+        return left >= right
+    if isinstance(op, ast.Is):
+        return left is right
+    if isinstance(op, ast.IsNot):
+        return left is not right
+    if isinstance(op, ast.In):
+        return left in right
+    if isinstance(op, ast.NotIn):
+        return left not in right
+    raise _EvalUnknown()
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return math.isclose(float(left), float(right), rel_tol=1e-9, abs_tol=1e-9)
+    return left == right
 
 
 def _unknown_json_body_fields(tree: ast.AST, allowed_request_fields: Sequence[str]) -> list[str]:

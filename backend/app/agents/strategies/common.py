@@ -56,16 +56,41 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
         draft,
         source_context=ctx.source_context_text,
     )
-    gen: GenerationOutput = ctx.think(msgs, GenerationOutput, step_type="generation", name="生成测试")
-    violations = check_generation_contract(
-        gen.test_file_content,
-        gen.cases,
-        target_type=getattr(draft, "target_type", None),
-        target_ref=getattr(draft, "target_ref", None),
-        allowed_request_fields=_model_field_names(analysis),
-        allowed_fixtures=_fixture_names(analysis),
-    )
-    if violations:
+    gen: GenerationOutput | None = None
+    violations: list[str] = []
+    max_contract_retries = 1
+    for contract_attempt in range(max_contract_retries + 1):
+        gen = ctx.think(
+            msgs,
+            GenerationOutput,
+            step_type="generation",
+            name="生成测试" if contract_attempt == 0 else "生成测试（契约重试）",
+        )
+        violations = check_generation_contract(
+            gen.test_file_content,
+            gen.cases,
+            target_type=getattr(draft, "target_type", None),
+            target_ref=getattr(draft, "target_ref", None),
+            allowed_request_fields=_model_field_names(analysis),
+            allowed_fixtures=_fixture_names(analysis),
+            source_context=ctx.source_context_text,
+        )
+        if not violations:
+            break
+        if contract_attempt < max_contract_retries:
+            ctx.trace(
+                "generation",
+                "生成测试契约重试",
+                status="error",
+                error="；".join(violations),
+                payload={"violations": violations, "contract_attempt": contract_attempt + 1},
+            )
+            msgs = prompts.build_generate_retry_messages(
+                msgs,
+                violations=violations,
+                previous_content=gen.test_file_content,
+            )
+            continue
         reason = "；".join(violations)
         attempt.status = "error"
         attempt.error_code = ErrorCode.PIPELINE_REJECT.value
@@ -75,9 +100,10 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
             "生成测试契约拒绝",
             status="error",
             error=reason,
-            payload={"violations": violations},
+            payload={"violations": violations, "contract_attempt": contract_attempt + 1},
         )
         raise TraceError(ErrorCode.PIPELINE_REJECT, reason, details={"violations": violations})
+    assert gen is not None
     # 不信任 LLM 给的路径，强制写到策略指定的受控 target_path（白名单在 write_test_file 内）
     wout = ctx.call_tool(
         "write_test_file",

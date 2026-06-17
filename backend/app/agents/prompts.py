@@ -65,9 +65,18 @@ GEN_PREFIX = "生成一个 pytest 测试文件。"
 GEN_CONTRACT = """生成硬约束（违反会被 PIPELINE_REJECT）：
 - 每个检查必须写成 assert 或 pytest.raises；不要写裸表达式，例如 response.json()["total"] == 270.0。
 - 成功路由测试不能只断言 2xx status_code，必须断言响应 JSON 的业务字段和值。
-- 不要给测试函数添加未知参数；只能使用 pytest 内置 fixture（如 monkeypatch/tmp_path）或项目分析中列出的 fixture。
+- 边界/负数/阈值/异常路径的预期必须来自目标源码片段；源码没有 raise 证据时不要写 pytest.raises。
+- 对 `/x/{param}` 这类 path 参数路由，不要把 `/x/` 空 path 段当成 `param=""` 的 handler 业务用例。
+- 不要给测试函数添加未知参数；只能使用 pytest 内置 fixture（如 monkeypatch/tmp_path）或项目分析中列出的 fixture。没有 `client` fixture 证据时，FastAPI 路由测试应在测试内构造 `TestClient(app)`，不要把 `client` 写成函数参数。
 - 使用 unittest.mock.patch(..., new_value) 时不要额外声明 mock 参数；可优先使用 pytest 内置 monkeypatch。
 - cases[*].test_name 必须对应真实 test 函数名；参数化测试可使用 test_x[...]。"""
+
+GEN_RETRY_INSTRUCTION = """上次生成被 Contract Guard 拒绝。
+只修复 violations 指出的测试契约问题：删除或修正无源码证据的边界/异常 oracle、补强断言、修正 cases 元数据或 fixture 使用。
+如果 violation 是 `fixture 缺少项目证据：client`，不要继续声明 `client` 参数；改为导入 FastAPI app 并在测试内使用 `TestClient(app)` 构造局部 client。
+如果 violation 是 `目标绑定不匹配 plan item`，必须围绕本次聚焦任务的 target_type/target_ref 重写测试和 cases，不要切换到其它函数或路由。
+如果 violation 是 `路由响应 oracle 与目标源码行为不一致`，必须按 handler 源码和被调用函数重新计算响应 JSON 期望值；不要手写与源码条件矛盾的折扣、阈值或状态。
+不要降低有源码证据的业务断言；继续只返回要求的 GenerationOutput JSON。"""
 
 PLAN_INSTRUCTION = (
     '把目标拆成若干测试任务，返回 JSON：'
@@ -91,6 +100,7 @@ def prompt_bundle(strategy: StrategyVersionSpec) -> dict:
         "plan_instruction": PLAN_INSTRUCTION,
         "generate_prefix": GEN_PREFIX,
         "generate_contract": GEN_CONTRACT,
+        "generate_retry_instruction": GEN_RETRY_INSTRUCTION,
         "generate_schema_hint": _GEN_SCHEMA_HINT,
         "reflect_json_tail": REFLECT_JSON_TAIL,
     }
@@ -152,6 +162,22 @@ def build_reflect_messages(
         f"{REFLECT_JSON_TAIL}"
     )
     return [Message("system", build_system_prompt(strategy)), Message("user", user)]
+
+
+def build_generate_retry_messages(
+    base_messages: list[Message],
+    *,
+    violations: list[str],
+    previous_content: str,
+) -> list[Message]:
+    violation_lines = "\n".join(f"- {violation}" for violation in violations)
+    user = (
+        f"{GEN_RETRY_INSTRUCTION}\n\n"
+        f"violations:\n{violation_lines}\n\n"
+        f"上次生成的测试文件：\n```python\n{previous_content}\n```\n\n"
+        f"{GEN_PREFIX}{_GEN_SCHEMA_HINT}"
+    )
+    return [*base_messages, Message("user", user)]
 
 
 def _failure_context_block(pytest_result: RunPytestOutput, *, limit: int = 8, traceback_chars: int = 1200) -> str:
