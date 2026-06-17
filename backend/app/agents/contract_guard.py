@@ -51,6 +51,7 @@ def check_generation_contract(
     *,
     target_type: str | None = None,
     target_ref: str | None = None,
+    allowed_request_fields: Sequence[str] | None = None,
 ) -> list[str]:
     """校验生成测试本身是否有基本测试价值和目标绑定。"""
     violations: list[str] = []
@@ -69,6 +70,9 @@ def check_generation_contract(
         violations.append("生成测试没有任何测试函数")
     if _count_checks(tree) == 0:
         violations.append("生成测试没有任何断言/pytest.raises（疑似空测试）")
+    unknown_fields = _unknown_json_body_fields(tree, allowed_request_fields or [])
+    if unknown_fields:
+        violations.append("请求 JSON 字段缺少模型证据：" + ", ".join(unknown_fields))
 
     parsed_names = set(_test_names(tree))
     declared_by_name = {_field(case, "test_name"): case for case in declared_cases if _field(case, "test_name")}
@@ -119,6 +123,57 @@ def _target_matches(target_type: str | None, target_ref: str | None, target_func
     if target_type == "route":
         return target_route == ref or target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
     return True
+
+
+def _unknown_json_body_fields(tree: ast.AST, allowed_request_fields: Sequence[str]) -> list[str]:
+    allowed = {str(field).strip() for field in allowed_request_fields if str(field).strip()}
+    if not allowed:
+        return []
+    unknown: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        dict_vars = _dict_literal_assignments(fn)
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "json":
+                    continue
+                keys = _dict_literal_keys(kw.value)
+                if keys is None and isinstance(kw.value, ast.Name):
+                    keys = dict_vars.get(kw.value.id)
+                if keys is None:
+                    continue
+                unknown.update(key for key in keys if key not in allowed)
+    return sorted(unknown)
+
+
+def _dict_literal_assignments(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, set[str]]:
+    assignments: dict[str, set[str]] = {}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            keys = _dict_literal_keys(node.value)
+            if keys is None:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assignments[target.id] = keys
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            keys = _dict_literal_keys(node.value)
+            if keys is not None:
+                assignments[node.target.id] = keys
+    return assignments
+
+
+def _dict_literal_keys(node: ast.AST | None) -> set[str] | None:
+    if not isinstance(node, ast.Dict):
+        return None
+    keys: set[str] = set()
+    for key in node.keys:
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            keys.add(key.value)
+    return keys
 
 
 def _attr_chain(node) -> str:

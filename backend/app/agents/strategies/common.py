@@ -62,6 +62,7 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
         gen.cases,
         target_type=getattr(draft, "target_type", None),
         target_ref=getattr(draft, "target_ref", None),
+        allowed_request_fields=_model_field_names(analysis),
     )
     if violations:
         reason = "；".join(violations)
@@ -246,6 +247,16 @@ def _as_draft(item) -> PlanItemDraft:
         goal=item.goal,
         planned_assertions=item.planned_assertions,
     )
+
+
+def _model_field_names(analysis) -> list[str]:
+    names: list[str] = []
+    for model in getattr(analysis, "models", []) or []:
+        for field in getattr(model, "fields", []) or []:
+            name = getattr(field, "name", None)
+            if name:
+                names.append(str(name))
+    return names
 
 
 def _should_reflect(out: RunPytestOutput) -> bool:

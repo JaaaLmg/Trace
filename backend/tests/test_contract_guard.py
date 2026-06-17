@@ -122,3 +122,55 @@ def test_generation_contract_accepts_target_bound_assertion():
     )
 
     assert violations == []
+
+
+def test_generation_contract_rejects_unknown_json_request_field():
+    content = (
+        "def test_create(client):\n"
+        "    response = client.post('/prices', json={'sku': 'A', 'made_up': 1})\n"
+        "    assert response.status_code == 200\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/prices", "assertion_summary": "验证创建价格"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=["sku", "quantity"],
+    )
+
+    assert any("made_up" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_unknown_json_request_field_from_payload_variable():
+    content = (
+        "def test_create(client):\n"
+        "    payload = {'sku': 'A', 'ghost': 1}\n"
+        "    response = client.post('/prices', json=payload)\n"
+        "    assert response.status_code == 200\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/prices", "assertion_summary": "验证创建价格"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=["sku", "quantity"],
+    )
+
+    assert any("ghost" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_json_request_fields_from_model_schema():
+    content = (
+        "def test_create(client):\n"
+        "    response = client.post('/prices', json={'sku': 'A', 'quantity': 1})\n"
+        "    assert response.status_code == 200\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/prices", "assertion_summary": "验证创建价格"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=["sku", "quantity"],
+    )
+
+    assert violations == []
