@@ -106,6 +106,9 @@ def check_generation_contract(
         violations.append("真实测试函数缺少 cases 声明：" + ", ".join(missing))
     if extra:
         violations.append("cases 声明未对应真实测试函数：" + ", ".join(extra))
+    weak_route_oracles = _success_status_only_route_tests(tree, declared_by_name)
+    if weak_route_oracles:
+        violations.append("路由测试缺少业务 oracle（只有 2xx status_code 断言）：" + ", ".join(weak_route_oracles))
 
     for name in sorted(parsed_names & set(declared_by_name)):
         case = declared_by_name[name]
@@ -228,6 +231,47 @@ def _parametrize_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[
                 if isinstance(item, ast.Constant) and isinstance(item.value, str):
                     names.add(item.value)
     return names
+
+
+def _success_status_only_route_tests(tree: ast.AST, declared_by_name: dict[str, Any]) -> list[str]:
+    weak: list[str] = []
+    cases_with_route = {
+        name
+        for name, case in declared_by_name.items()
+        if str(_field(case, "target_route") or "").strip()
+    }
+    if not cases_with_route:
+        return []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name not in cases_with_route:
+            continue
+        asserts = [n for n in ast.walk(node) if isinstance(n, ast.Assert)]
+        if not asserts:
+            continue
+        if all(_is_success_status_code_assert(n.test) for n in asserts):
+            weak.append(node.name)
+    return sorted(weak)
+
+
+def _is_success_status_code_assert(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Compare) or len(node.ops) != 1 or len(node.comparators) != 1:
+        return False
+    if not _expr_uses_status_code(node.left):
+        return False
+    expected = _int_constant(node.comparators[0])
+    if expected is None or expected < 200 or expected >= 300:
+        return False
+    return isinstance(node.ops[0], (ast.Eq, ast.In))
+
+
+def _expr_uses_status_code(node: ast.AST) -> bool:
+    return isinstance(node, ast.Attribute) and node.attr == "status_code"
+
+
+def _int_constant(node: ast.AST) -> int | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    return None
 
 
 def _attr_chain(node) -> str:

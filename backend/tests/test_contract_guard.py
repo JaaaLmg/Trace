@@ -164,6 +164,7 @@ def test_generation_contract_accepts_json_request_fields_from_model_schema():
         "def test_create(client):\n"
         "    response = client.post('/prices', json={'sku': 'A', 'quantity': 1})\n"
         "    assert response.status_code == 200\n"
+        "    assert response.json()['sku'] == 'A'\n"
     )
     violations = check_generation_contract(
         content,
@@ -190,12 +191,61 @@ def test_generation_contract_rejects_unknown_fixture_argument():
 
 
 def test_generation_contract_accepts_project_fixture_argument():
-    content = "def test_create(client):\n    assert client.get('/health').status_code == 200\n"
+    content = (
+        "def test_create(client):\n"
+        "    response = client.get('/health')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['ok'] is True\n"
+    )
     violations = check_generation_contract(
         content,
         [{"test_name": "test_create", "target_route": "/health", "assertion_summary": "验证健康检查"}],
         target_type="route",
         target_ref="/health",
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_rejects_success_status_only_route_oracle():
+    content = "def test_health(client):\n    assert client.get('/health').status_code == 200\n"
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_health", "target_route": "/health", "assertion_summary": "验证健康检查"}],
+        target_type="route",
+        target_ref="/health",
+        allowed_fixtures=["client"],
+    )
+
+    assert any("业务 oracle" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_route_body_oracle():
+    content = (
+        "def test_health(client):\n"
+        "    response = client.get('/health')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['ok'] is True\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_health", "target_route": "/health", "assertion_summary": "验证健康检查"}],
+        target_type="route",
+        target_ref="/health",
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_allows_error_status_route_check():
+    content = "def test_missing(client):\n    assert client.get('/missing').status_code == 404\n"
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_missing", "target_route": "/missing", "assertion_summary": "验证缺失资源"}],
+        target_type="route",
+        target_ref="/missing",
         allowed_fixtures=["client"],
     )
 

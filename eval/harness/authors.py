@@ -28,7 +28,9 @@ def _gen_payload(content: str, cases: list[dict]) -> str:
 def _route_block(status: int) -> str:
     return (
         f"def {_ROUTE_TEST_NAME}():\n"
-        f"    assert TestClient(app).get('/price/unknown').status_code == {status}\n"
+        "    response = TestClient(app).get('/price/unknown')\n"
+        f"    assert response.status_code == {status}\n"
+        "    assert response.json()['detail'] == 'item not found'\n"
     )
 
 
