@@ -129,6 +129,7 @@ def build_reflect_messages(
         f"  - {f.nodeid} [{f.failure_type}] {f.exc_type}: {f.message}" for f in pytest_result.failures[:20]
     )
     collect = "\n".join(f"  - {c.nodeid} [{c.failure_type}] {c.message}" for c in pytest_result.collection_errors[:20])
+    failure_context = _failure_context_block(pytest_result)
     # 反斜杠不能进 f-string 的 {} 表达式（Py<3.12），相关源码块先拼好
     source_block = f"相关源码：\n{relevant_source}\n" if relevant_source else "相关源码：\ncontext_incomplete\n"
     user = (
@@ -136,8 +137,41 @@ def build_reflect_messages(
         f"{REFLECTION_CONTRACT_V1}\n\n"
         f"当前测试文件：\n```python\n{failed_content}\n```\n\n"
         f"失败用例：\n{fails or '（无）'}\n收集错误：\n{collect or '（无）'}\n\n"
+        f"失败上下文：\n{failure_context}\n\n"
         f"项目分析：\n{summarize_analysis(analysis)}\n"
         f"{source_block}\n"
         f"{REFLECT_JSON_TAIL}"
     )
     return [Message("system", build_system_prompt(strategy)), Message("user", user)]
+
+
+def _failure_context_block(pytest_result: RunPytestOutput, *, limit: int = 8, traceback_chars: int = 1200) -> str:
+    rows: list[str] = []
+    for detail in [*pytest_result.failures, *pytest_result.collection_errors][:limit]:
+        location = _failure_location(detail.file, detail.line)
+        header = f"- {detail.nodeid or '<collect>'} [{detail.failure_type}] {detail.exc_type or ''} {location}".strip()
+        rows.append(header)
+        if detail.message:
+            rows.append(f"  message: {_clip(detail.message, 300)}")
+        if detail.traceback:
+            rows.append("  traceback:")
+            rows.append(_indent(_clip(detail.traceback, traceback_chars), "    "))
+    return "\n".join(rows) if rows else "（无）"
+
+
+def _failure_location(path: str | None, line: int | None) -> str:
+    if path and line:
+        return f"@ {path}:{line}"
+    if path:
+        return f"@ {path}"
+    return ""
+
+
+def _clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...<truncated>"
+
+
+def _indent(text: str, prefix: str) -> str:
+    return "\n".join(prefix + line for line in text.splitlines())
