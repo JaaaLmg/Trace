@@ -24,9 +24,9 @@ from app.models import (
     TestReplay as ReplayModel,
     TestRun,
 )
-from app.services.evaluation import create_bug_variant, create_eval_task, create_seeded_bug
+from app.services.evaluation import create_bug_variant, create_eval_dataset, create_eval_task, create_seeded_bug
 from app.services.evaluation_seed import DEMO_DATASET_ID, DEMO_SNAPSHOT_ID, seed_demo_dataset
-from app.services.experiments import ExperimentError, _copy_clean_snapshot, run_experiment
+from app.services.experiments import ExperimentError, _copy_clean_snapshot, get_experiment_metrics, run_experiment
 from app.services.strategies import seed_strategy_versions
 from app.workers.celery_app import celery_app
 from eval.demo.bugs import BUGS
@@ -331,6 +331,16 @@ def test_experiment_run_route_enqueues_without_sync(monkeypatch, clean_db):
         assert calls == ["exp-stage4-queued"]
 
 
+def test_experiment_metrics_missing_experiment_returns_404(clean_db):
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/experiments/missing-experiment/metrics")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "experiment not found"
+
+
 def test_completed_experiment_is_not_rerun_in_place(monkeypatch, clean_db):
     _run_celery_eager(monkeypatch)
     _seed_v2_demo()
@@ -522,6 +532,82 @@ def test_experiment_metrics_use_null_cost_when_no_bug_is_captured(monkeypatch, c
     assert row["captured_per_repeat"] == [0]
     assert row["cost_per_captured_bug"] is None
     assert row["cost_per_captured_bug_status"] == "no_bug_captured"
+    assert row["metric_status"] == "evaluable_zero_capture"
+
+
+def test_experiment_blocks_seeded_bug_run_when_target_source_context_is_missing(clean_db):
+    _seed_v2_demo()
+
+    with Session(get_engine()) as session:
+        dataset = create_eval_dataset(
+            session,
+            dataset_id="dataset-missing-context",
+            name="missing-context",
+            version="v1",
+            project_snapshot_ids=[DEMO_SNAPSHOT_ID],
+        )
+        task = create_eval_task(
+            session,
+            dataset_id=dataset.id,
+            task_id="task-missing-context",
+            project_snapshot_id=DEMO_SNAPSHOT_ID,
+            target_scope={"targets": ["does_not_exist"], "source": "test"},
+            goal="Generate tests for a target that cannot be mapped.",
+            expected_capabilities=["context_gate"],
+        )
+        seeded = create_seeded_bug(
+            session,
+            eval_task_id=task.id,
+            bug_id="bug-missing-context",
+            bug_type=BUGS[0].bug_type,
+            description=BUGS[0].description,
+            expected_detection=BUGS[0].expected_detection,
+        )
+        create_bug_variant(
+            session,
+            seeded_bug_id=seeded.id,
+            variant_id="variant-missing-context",
+            variant_name="valid patch but missing target scope",
+            patch={"file": BUGS[0].file, "old": BUGS[0].old, "new": BUGS[0].new},
+            ground_truth={"target": BUGS[0].target, "target_kind": BUGS[0].kind},
+        )
+        import app.services.experiments as experiment_module
+
+        experiment_module.create_experiment(
+            session,
+            experiment_id="exp-missing-context",
+            name="missing context",
+            dataset_id=dataset.id,
+            strategy_version_ids=["sv-direct-v1"],
+            repeat_count=1,
+            llm_override={"provider": "mock", "model": "mock-1"},
+        )
+        result = run_experiment(session, "exp-missing-context")
+        assert result["status"] == "completed"
+
+        [clean] = list(
+            session.scalars(
+                select(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-missing-context")
+            )
+        )
+        run = session.get(TestRun, clean.clean_run_id)
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error_code == "context_incomplete_blocking"
+        assert clean.false_positive is False
+        assert clean.clean_metrics["validity_status"] == "invalid_test_set"
+        assert clean.clean_metrics["invalid_reason"] == "context_incomplete_blocking"
+        assert clean.clean_metrics["context_completeness"]["missing_targets"] == ["does_not_exist"]
+        assert session.scalar(select(func.count()).select_from(ReplayModel)) == 0
+        assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 0
+
+        metrics = get_experiment_metrics(session, "exp-missing-context")
+        [row] = metrics["rows"]
+        assert row["repeats"] == 0
+        assert row["captured_per_repeat"] == []
+        assert row["metric_status"] == "invalid_test_set"
+        assert row["invalid_test_set_count"] == 1
+        assert metrics["capture_matrix"]["variant-missing-context"]["direct"] is False
 
 
 def test_eval_cli_service_path_reuses_experiment_service(clean_db):

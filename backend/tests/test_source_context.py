@@ -4,12 +4,14 @@ from pathlib import Path
 
 from app.schemas.tools import AnalyzeProjectOutput, FunctionInfo, RouteInfo
 from app.services.source_context import build_source_context_bundle
+from app.tools.analyze import analyze_project
 from app.tools.base import ToolContext
+from app.schemas.tools import AnalyzeProjectInput
 
 
 def _ctx(tmp_path: Path) -> ToolContext:
     write_dir = tmp_path / "tests" / "generated"
-    write_dir.mkdir(parents=True)
+    write_dir.mkdir(parents=True, exist_ok=True)
     return ToolContext(root=tmp_path, test_write_dir=write_dir)
 
 
@@ -102,6 +104,18 @@ def test_missing_symbol_marks_context_incomplete(tmp_path):
     assert bundle.context_completeness.status == "incomplete"
     assert bundle.context_completeness.context_incomplete is True
     assert "does_not_exist" in bundle.context_completeness.missing_targets
+
+
+def test_analyze_project_symbol_scope_scans_project_then_source_context_resolves(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["target_fn"]))
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    assert any(fn.name == "target_fn" and fn.file == "shop/pricing.py" for fn in analysis.functions)
+    assert bundle.context_completeness.status == "complete"
+    assert bundle.snippets[0].path == "shop/pricing.py"
 
 
 def test_path_traversal_target_is_denied(tmp_path):

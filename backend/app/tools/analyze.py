@@ -24,7 +24,8 @@ _DEP_FILES = ["pyproject.toml", "requirements.txt", "setup.cfg", "setup.py", "Pi
 def analyze_project(ctx: ToolContext, inp: AnalyzeProjectInput) -> AnalyzeProjectOutput:
     """静态分析：AST 抽函数/模型 + FastAPI 路由内省。绝不 import 业务代码、不把整仓喂给 LLM。"""
     out = AnalyzeProjectOutput()
-    scopes = [ctx.resolve_read(s) for s in inp.target_scope] if inp.target_scope else [ctx.root]
+    scopes, warnings = _analysis_scopes(ctx, inp.target_scope)
+    out.warnings.extend(warnings)
 
     for f in _collect_py_files(scopes):
         rel = ctx.relpath(f)
@@ -47,6 +48,45 @@ def analyze_project(ctx: ToolContext, inp: AnalyzeProjectInput) -> AnalyzeProjec
         if (ctx.root / name).exists():
             out.dependency_files.append(name)
     return out
+
+
+def _analysis_scopes(ctx: ToolContext, target_scope: list[str]) -> tuple[list[Path], list[str]]:
+    if not target_scope:
+        return [ctx.root], []
+
+    scopes: list[Path] = []
+    needs_project_scan = False
+    warnings: list[str] = []
+    for raw in target_scope:
+        norm = str(raw).replace("\\", "/").strip()
+        if not norm:
+            continue
+        path_candidate = _path_scope_from_target(norm)
+        if path_candidate is None:
+            needs_project_scan = True
+            continue
+        try:
+            scopes.append(ctx.resolve_read(path_candidate))
+        except Exception as exc:
+            warnings.append(f"target_scope {norm!r} could not be resolved as a project path: {exc}")
+
+    if needs_project_scan:
+        scopes.insert(0, ctx.root)
+    deduped = list(dict.fromkeys(scopes))
+    return (deduped or [ctx.root]), warnings
+
+
+def _path_scope_from_target(norm: str) -> str | None:
+    for sep in ("::", ":"):
+        if sep in norm and norm.split(sep, 1)[0].endswith(".py"):
+            return norm.split(sep, 1)[0]
+    if norm.endswith(".py"):
+        return norm
+    if norm in {".", "./"}:
+        return "."
+    if "/" in norm and not norm.startswith("/"):
+        return norm
+    return None
 
 
 def _collect_py_files(scopes: list[Path]) -> list[Path]:

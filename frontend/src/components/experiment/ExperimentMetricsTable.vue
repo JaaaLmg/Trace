@@ -18,6 +18,23 @@ function numberText(value: number | null): string {
   }
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
 }
+
+function metricStatus(row: ExperimentMetricRow): string {
+  if (row.metric_status === "invalid_test_set") {
+    return `${t("comparison.metricStatusInvalid")} (${row.invalid_test_set_count})`;
+  }
+  if (row.metric_status === "evaluable_zero_capture") {
+    return t("comparison.metricStatusZero");
+  }
+  return t("comparison.metricStatusOk");
+}
+
+function costText(row: ExperimentMetricRow): string {
+  if (row.metric_status === "invalid_test_set") {
+    return t("comparison.metricStatusInvalid");
+  }
+  return row.cost_per_captured_bug_status === "ok" ? numberText(row.cost_per_captured_bug) : t("experiments.noBugCaptured");
+}
 </script>
 
 <template>
@@ -33,6 +50,7 @@ function numberText(value: number | null): string {
             <th>{{ t("comparison.strategy") }}</th>
             <th>{{ t("comparison.capture") }}</th>
             <th>{{ t("comparison.falsePositive") }}</th>
+            <th>{{ t("comparison.metricStatus") }}</th>
             <th>{{ t("experiments.stddev") }}</th>
             <th>{{ t("comparison.tokens") }}</th>
             <th>{{ t("comparison.toolCalls") }}</th>
@@ -48,10 +66,13 @@ function numberText(value: number | null): string {
             </td>
             <td>{{ percent(row.capture_rate_mean) }} ({{ row.captured_mean }}/{{ row.total_in_scope }})</td>
             <td>{{ percent(row.false_positive_rate) }}</td>
+            <td>
+              <span :class="['metric-status', row.metric_status]">{{ metricStatus(row) }}</span>
+            </td>
             <td>{{ numberText(row.capture_rate_std) }}</td>
             <td class="mono">{{ numberText(row.avg_tokens) }}</td>
             <td class="mono">{{ numberText(row.avg_tool_calls) }}</td>
-            <td>{{ row.cost_per_captured_bug_status === "ok" ? numberText(row.cost_per_captured_bug) : t("experiments.noBugCaptured") }}</td>
+            <td>{{ costText(row) }}</td>
             <td>
               <span class="model-cell">
                 <strong>{{ row.llm_display.provider }}</strong>
@@ -84,5 +105,27 @@ function numberText(value: number | null): string {
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
+}
+
+.metric-status {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--pass-bg);
+  color: var(--pass);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.metric-status.invalid_test_set {
+  background: var(--fail-bg);
+  color: var(--fail);
+}
+
+.metric-status.evaluable_zero_capture {
+  background: var(--running-bg);
+  color: var(--running);
 }
 </style>

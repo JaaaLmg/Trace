@@ -88,14 +88,56 @@ def test_cost_per_captured_bug_cannot_fake_zero_capture_as_zero_cost():
     }
 
     ok = ExperimentMetricRow.model_validate(
-        base | {"cost_per_captured_bug": None, "cost_per_captured_bug_status": "no_bug_captured"}
+        base
+        | {
+            "metric_status": "evaluable_zero_capture",
+            "cost_per_captured_bug": None,
+            "cost_per_captured_bug_status": "no_bug_captured",
+        }
     )
     assert ok.cost_per_captured_bug is None
+    assert ok.metric_status == "evaluable_zero_capture"
 
     with pytest.raises(ValidationError):
         ExperimentMetricRow.model_validate(
-            base | {"cost_per_captured_bug": 0, "cost_per_captured_bug_status": "ok"}
+            base
+            | {
+                "metric_status": "evaluable_zero_capture",
+                "cost_per_captured_bug": 0,
+                "cost_per_captured_bug_status": "ok",
+            }
         )
+
+
+def test_metric_row_separates_invalid_test_set_from_zero_capture():
+    row = ExperimentMetricRow.model_validate(
+        {
+            "strategy_id": "sv-invalid",
+            "strategy_name": "Invalid",
+            "repeats": 0,
+            "captured_per_repeat": [],
+            "captured_mean": 0,
+            "total_in_scope": 1,
+            "capture_rate_mean": 0,
+            "capture_rate_std": 0,
+            "false_positive_rate": 0,
+            "avg_tokens": 0,
+            "avg_tool_calls": 0,
+            "reflection_used": False,
+            "invalid_test_set_count": 1,
+            "metric_status": "invalid_test_set",
+            "cost_per_captured_bug": None,
+            "cost_per_captured_bug_status": "no_bug_captured",
+            "data_source": "mock",
+            "llm_display": LlmDisplayEvidence(
+                provider="mock",
+                model="scripted",
+                derived_from_clean_run_ids=["ecr-invalid"],
+            ).model_dump(),
+        }
+    )
+
+    assert row.metric_status == "invalid_test_set"
 
 
 def test_metric_row_rejects_repeat_and_mean_drift():

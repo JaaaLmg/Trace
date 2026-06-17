@@ -35,9 +35,13 @@ from app.models import (
 )
 from app.repositories.strategies import get_strategy_version
 from app.schemas.evaluation import LlmOverride
+from app.schemas.tools import AnalyzeProjectInput
 from app.services.evaluation import EvaluationConflictError, EvaluationError, EvaluationNotFoundError
+from app.services.source_context import build_source_context_bundle
 from app.services.test_plans import create_test_plan
 from app.services.test_runs import create_run, execute_run_sync
+from app.tools.analyze import analyze_project
+from app.tools.base import ToolContext
 from eval.harness import metrics as harness_metrics
 from eval.harness.authors import demo_author
 from eval.harness.replay import replay as replay_frozen_tests
@@ -77,6 +81,8 @@ class MetricRun:
     reflection_contract_passed: int = 0
     reflection_acceptance_total: int = 0
     reflection_accepted: int = 0
+    invalid_test_set: bool = False
+    invalid_reason: str | None = None
     variants: dict = field(default_factory=dict)
 
 
@@ -84,11 +90,11 @@ class ExperimentError(EvaluationError):
     pass
 
 
-class ExperimentNotFoundError(EvaluationNotFoundError):
+class ExperimentNotFoundError(ExperimentError, EvaluationNotFoundError):
     pass
 
 
-class ExperimentConflictError(EvaluationConflictError):
+class ExperimentConflictError(ExperimentError, EvaluationConflictError):
     pass
 
 
@@ -190,6 +196,59 @@ def _task_targets(task: EvalTask) -> list[str]:
     if isinstance(scope, list):
         return [str(target) for target in scope]
     return []
+
+
+def _context_gate(snapshot: ProjectSnapshot, targets: list[str]) -> dict:
+    root = Path(snapshot.root_path).resolve()
+    ctx = ToolContext(root=root, test_write_dir=root / "tests" / "generated")
+    analysis = analyze_project(ctx, AnalyzeProjectInput(target_scope=targets))
+    bundle = build_source_context_bundle(ctx, targets, analysis)
+    blocking = bool(targets) and bundle.context_completeness.context_incomplete
+    return {
+        "blocking": blocking,
+        "reason": "context_incomplete_blocking" if blocking else None,
+        "context_completeness": bundle.context_completeness.model_dump(),
+        "analysis_warnings": analysis.warnings,
+    }
+
+
+def _empty_final_test_set() -> FinalTestSet:
+    return FinalTestSet(
+        files={},
+        clean_passed=set(),
+        clean_failed=False,
+        n_cases=0,
+        collection_errors=0,
+        final_passed=0,
+        final_failed=0,
+        final_skipped=0,
+    )
+
+
+def _invalid_clean_metrics(run: TestRun, gate: dict) -> dict:
+    return {
+        "final_cases_total": 0,
+        "final_passed": 0,
+        "final_failed": 0,
+        "final_skipped": 0,
+        "collection_errors": 0,
+        "tool_call_count": run.tool_call_count,
+        "total_tokens": run.total_tokens,
+        "validity_status": "invalid_test_set",
+        "invalid_reason": gate["reason"] or "invalid_test_set",
+        "context_completeness": gate["context_completeness"],
+        "analysis_warnings": gate["analysis_warnings"],
+    }
+
+
+def _mark_run_invalid_context(run: TestRun, gate: dict) -> None:
+    context = gate.get("context_completeness") or {}
+    missing = ", ".join(context.get("missing_targets") or [])
+    run.status = "failed"
+    run.stage = None
+    run.finished_at = _now()
+    run.error_code = "context_incomplete_blocking"
+    run.error_message = f"target source context is incomplete: {missing or 'no source snippets'}"
 
 
 def _resolve_temperature(default: float | None, override: dict | None, repeat_index: int) -> float | None:
@@ -647,11 +706,12 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         experiment_id=experiment.id,
                         unit=unit,
                     )
+                    task_targets = _task_targets(task)
                     plan = create_test_plan(
                         session,
                         project_id=clean_snapshot.project_id,
                         name=f"{experiment.name} / {task.id} / {strategy_version_id} / rep{repeat_index}",
-                        target_scope=_task_targets(task),
+                        target_scope=task_targets,
                         goal=task.goal,
                         budget={"allow_reflection": strategy.allow_reflection, "timeout_seconds": 120},
                         output_options={"experiment_id": experiment.id, "eval_task_id": task.id},
@@ -675,6 +735,31 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                     )
                     session.refresh(run)
                     _raise_if_cancelled(session, experiment.id)
+                    gate = _context_gate(clean_snapshot, task_targets)
+                    if gate["blocking"]:
+                        _mark_run_invalid_context(run, gate)
+                        clean_id = new_id()
+                        artifact = _store_generated_test_set_artifact(
+                            session,
+                            run_id=run.id,
+                            experiment_id=experiment.id,
+                            clean_run_id=clean_id,
+                            final_set=_empty_final_test_set(),
+                        )
+                        clean_row = ExperimentCleanRun(
+                            id=clean_id,
+                            experiment_id=experiment.id,
+                            eval_task_id=task.id,
+                            strategy_version_id=strategy_version_id,
+                            repeat_index=repeat_index,
+                            clean_run_id=run.id,
+                            generated_test_set_artifact_id=artifact.id,
+                            false_positive=False,
+                            clean_metrics=_invalid_clean_metrics(run, gate),
+                        )
+                        session.add(clean_row)
+                        session.commit()
+                        continue
                     provider = ((run.strategy_snapshot or {}).get("resolved_llm") or {}).get("provider", "mock")
                     execute_run_sync(
                         session,
@@ -697,6 +782,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         "collection_errors": final_set.collection_errors,
                         "tool_call_count": run.tool_call_count,
                         "total_tokens": run.total_tokens,
+                        "validity_status": "evaluable",
                     }
                     clean_id = new_id()
                     artifact = _store_generated_test_set_artifact(
@@ -743,13 +829,24 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         # _run_replay 抛异常走外层 except，仍会让实验失败。
                         clean_metrics["clean_replay_error"] = clean_replay_row.error_message or clean_replay_row.error_code
                         clean_metrics["clean_replay_matches_generation"] = False
-                        clean_row.false_positive = True
+                        clean_metrics["validity_status"] = "invalid_test_set"
+                        clean_metrics["invalid_reason"] = "clean_replay_failed"
+                        clean_row.false_positive = False
                         clean_row.clean_metrics = clean_metrics
                         session.commit()
                         continue
 
                     clean_replay_passed = _passed_nodeids_from_pytest_summary(clean_replay_row.pytest_summary or {})
-                    clean_replay_failed = bool(clean_assertion_failures) or clean_replay_summary["collection_errors"] > 0
+                    if clean_replay_summary["collection_errors"] > 0:
+                        clean_metrics["clean_replay_matches_generation"] = False
+                        clean_metrics["validity_status"] = "invalid_test_set"
+                        clean_metrics["invalid_reason"] = "clean_replay_collection_error"
+                        clean_row.false_positive = False
+                        clean_row.clean_metrics = clean_metrics
+                        session.commit()
+                        continue
+
+                    clean_replay_failed = bool(clean_assertion_failures)
                     clean_row.false_positive = clean_replay_failed
                     clean_metrics["clean_replay_matches_generation"] = (
                         clean_replay_summary["passed"] == final_set.final_passed
@@ -856,8 +953,9 @@ def _metric_detail_for_clean(session: Session, clean: ExperimentCleanRun, run: T
         )
     )
     final_collection_errors = int((clean.clean_metrics or {}).get("collection_errors", 0))
+    invalid_test_set = (clean.clean_metrics or {}).get("validity_status") == "invalid_test_set"
     collection_units = 1 + len(replay_rows)
-    collection_successes = 1 if final_collection_errors == 0 else 0
+    collection_successes = 1 if final_collection_errors == 0 and not invalid_test_set else 0
     replay_duration = 0
     for replay_row in replay_rows:
         summary = replay_row.pytest_summary or {}
@@ -912,6 +1010,9 @@ def _metric_runs(session: Session, experiment_id: str) -> dict[str, list[MetricR
             }
         sid = _strategy_key(session, clean.strategy_version_id)
         detail = _metric_detail_for_clean(session, clean, run, metrics)
+        clean_metrics = clean.clean_metrics or {}
+        invalid_test_set = clean_metrics.get("validity_status") == "invalid_test_set"
+        invalid_reason = clean_metrics.get("invalid_reason")
         repeat_runs = grouped.setdefault(sid, {})
         existing = repeat_runs.get(clean.repeat_index)
         if existing is None:
@@ -922,9 +1023,9 @@ def _metric_runs(session: Session, experiment_id: str) -> dict[str, list[MetricR
                 status=run.status if run is not None else "unknown",
                 clean_passed=set(),
                 clean_failed=clean.false_positive,
-                n_cases=int((clean.clean_metrics or {}).get("final_cases_total", 0)),
-                tokens=int((clean.clean_metrics or {}).get("total_tokens", 0)),
-                tool_calls=int((clean.clean_metrics or {}).get("tool_call_count", 0)),
+                n_cases=int(clean_metrics.get("final_cases_total", 0)),
+                tokens=int(clean_metrics.get("total_tokens", 0)),
+                tool_calls=int(clean_metrics.get("tool_call_count", 0)),
                 reflection_used=detail["reflection_used"],
                 duration_ms=detail["duration_ms"],
                 collection_units=detail["collection_units"],
@@ -933,14 +1034,16 @@ def _metric_runs(session: Session, experiment_id: str) -> dict[str, list[MetricR
                 reflection_contract_passed=detail["reflection_contract_passed"],
                 reflection_acceptance_total=detail["reflection_acceptance_total"],
                 reflection_accepted=detail["reflection_accepted"],
+                invalid_test_set=invalid_test_set,
+                invalid_reason=str(invalid_reason) if invalid_reason else None,
                 variants=variants,
             )
             continue
 
         existing.clean_failed = existing.clean_failed or clean.false_positive
-        existing.n_cases += int((clean.clean_metrics or {}).get("final_cases_total", 0))
-        existing.tokens += int((clean.clean_metrics or {}).get("total_tokens", 0))
-        existing.tool_calls += int((clean.clean_metrics or {}).get("tool_call_count", 0))
+        existing.n_cases += int(clean_metrics.get("final_cases_total", 0))
+        existing.tokens += int(clean_metrics.get("total_tokens", 0))
+        existing.tool_calls += int(clean_metrics.get("tool_call_count", 0))
         existing.reflection_used = existing.reflection_used or detail["reflection_used"]
         existing.duration_ms += detail["duration_ms"]
         existing.collection_units += detail["collection_units"]
@@ -949,6 +1052,8 @@ def _metric_runs(session: Session, experiment_id: str) -> dict[str, list[MetricR
         existing.reflection_contract_passed += detail["reflection_contract_passed"]
         existing.reflection_acceptance_total += detail["reflection_acceptance_total"]
         existing.reflection_accepted += detail["reflection_accepted"]
+        existing.invalid_test_set = existing.invalid_test_set or invalid_test_set
+        existing.invalid_reason = existing.invalid_reason or (str(invalid_reason) if invalid_reason else None)
         existing.variants.update(variants)
         run_status = run.status if run is not None else "unknown"
         if existing.status == "completed" and run_status != "completed":
@@ -1031,9 +1136,40 @@ def _data_source(experiment: Experiment, rows: list[dict]) -> dict:
     }
 
 
+def _fallback_report_quality(clean: ExperimentCleanRun) -> dict:
+    clean_metrics = clean.clean_metrics or {}
+    context = clean_metrics.get("context_completeness")
+    if not isinstance(context, dict):
+        context = {
+            "status": "incomplete",
+            "context_incomplete": True,
+            "snippets": [],
+            "missing_targets": [],
+            "risk_notes": ["source context was not collected"],
+        }
+    return {
+        "test_inventory": [],
+        "target_mappings": [],
+        "assertion_summaries": [],
+        "failure_classifications": [],
+        "reflection_evidence": {
+            "used": False,
+            "contract_checked": False,
+            "contract_passed": None,
+            "violation_reasons": [],
+            "accepted_attempt_id": None,
+            "rejected_attempt_ids": [],
+        },
+        "context_completeness": context,
+    }
+
+
 def _clean_run_payload(session: Session, clean: ExperimentCleanRun) -> dict:
     run = session.get(TestRun, clean.clean_run_id)
     report = session.scalar(select(TestReport).where(TestReport.run_id == clean.clean_run_id))
+    report_quality = ((report.metrics or {}).get("report_quality", {}) if report is not None else {})
+    if not report_quality:
+        report_quality = _fallback_report_quality(clean)
     return {
         "id": clean.id,
         "experiment_id": clean.experiment_id,
@@ -1047,7 +1183,7 @@ def _clean_run_payload(session: Session, clean: ExperimentCleanRun) -> dict:
         "clean_metrics": clean.clean_metrics,
         "runtime_snapshot": (run.runtime_snapshot or {}) if run is not None else {},
         "strategy_snapshot": (run.strategy_snapshot or {}) if run is not None else {},
-        "report_quality": ((report.metrics or {}).get("report_quality", {}) if report is not None else {}),
+        "report_quality": report_quality,
     }
 
 

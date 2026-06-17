@@ -14,6 +14,8 @@ ReplayMode = Literal["frozen_test_set"]
 ReplayStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 WorkflowType = Literal["direct", "plan_execute", "react_reflection"]
 CostPerCapturedBugStatus = Literal["ok", "no_bug_captured"]
+MetricStatus = Literal["ok", "invalid_test_set", "evaluable_zero_capture"]
+CleanRunValidityStatus = Literal["evaluable", "invalid_test_set"]
 ResolutionStep = Literal["strategy_version_defaults", "experiment_llm_override", "repeat_derivation"]
 CaptureRule = Literal["clean_passed_variant_assertion_failure_same_nodeid"]
 ArtifactKind = Literal[
@@ -322,12 +324,18 @@ class CleanRunMetricsContract(ContractModel):
     clean_replay: dict[str, Any] = Field(default_factory=dict)
     clean_replay_assertion_failure_nodeids: list[str] = Field(default_factory=list)
     clean_replay_matches_generation: bool | None = None
+    validity_status: CleanRunValidityStatus = "evaluable"
+    invalid_reason: str | None = None
+    context_completeness: ContextCompletenessEvidence | None = None
+    analysis_warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _case_counts_are_consistent(self) -> CleanRunMetricsContract:
         counted = self.final_passed + self.final_failed + self.final_skipped
         if counted != self.final_cases_total:
             raise ValueError("final case counts must add up to final_cases_total")
+        if self.validity_status == "invalid_test_set" and not self.invalid_reason:
+            raise ValueError("invalid test sets must include invalid_reason")
         return self
 
 
@@ -450,6 +458,8 @@ class ExperimentMetricRow(ContractModel):
     reflection_used: bool
     reflection_contract_pass_rate: float | None = Field(default=None, ge=0, le=1)
     reflection_acceptance_rate: float | None = Field(default=None, ge=0, le=1)
+    invalid_test_set_count: int = Field(default=0, ge=0)
+    metric_status: MetricStatus = "ok"
     cost_per_captured_bug: float | None = Field(default=None, ge=0)
     cost_per_captured_bug_status: CostPerCapturedBugStatus
     data_source: DataSourceKind
@@ -476,6 +486,14 @@ class ExperimentMetricRow(ContractModel):
         if abs(self.capture_rate_mean - expected_rate) > 1e-9:
             raise ValueError("capture_rate_mean must equal captured_mean / total_in_scope")
         total_captured = sum(self.captured_per_repeat)
+        if self.invalid_test_set_count and self.repeats == 0:
+            if self.metric_status != "invalid_test_set":
+                raise ValueError("all-invalid metric rows must use invalid_test_set status")
+        elif total_captured == 0:
+            if self.metric_status != "evaluable_zero_capture":
+                raise ValueError("evaluable zero capture rows must use evaluable_zero_capture status")
+        elif self.metric_status != "ok":
+            raise ValueError("captured metric rows must use ok status")
         if total_captured == 0:
             if self.cost_per_captured_bug is not None:
                 raise ValueError("0 captured bugs must use null cost_per_captured_bug")

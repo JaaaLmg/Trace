@@ -14,27 +14,34 @@ def _captured_count(clean_run) -> int:
 def aggregate(runs_by_strategy: dict, total_in_scope: int) -> list[dict]:
     rows = []
     for sid, runs in runs_by_strategy.items():
-        caps = [_captured_count(r) for r in runs]
+        invalid_test_sets = sum(1 for r in runs if getattr(r, "invalid_test_set", False))
+        evaluable_runs = [r for r in runs if not getattr(r, "invalid_test_set", False)]
+        metric_status = "invalid_test_set" if runs and not evaluable_runs else "ok"
+        caps = [_captured_count(r) for r in evaluable_runs]
         rates = [(c / total_in_scope if total_in_scope else 0.0) for c in caps]
-        tokens = [r.tokens for r in runs]
-        tool_calls = [r.tool_calls for r in runs]
-        n = len(runs) or 1
+        tokens = [r.tokens for r in evaluable_runs]
+        tool_calls = [r.tool_calls for r in evaluable_runs]
+        n = len(evaluable_runs) or 1
         total_captured = sum(caps)
         total_tokens = sum(tokens)
+        if metric_status == "ok" and total_captured == 0:
+            metric_status = "evaluable_zero_capture"
         rows.append(
             {
                 "strategy_id": sid,
                 "strategy_name": runs[0].strategy_name if runs else sid,
-                "repeats": len(runs),
+                "repeats": len(evaluable_runs),
                 "captured_per_repeat": caps,
                 "captured_mean": statistics.mean(caps) if caps else 0.0,
                 "total_in_scope": total_in_scope,
                 "capture_rate_mean": statistics.mean(rates) if rates else 0.0,
                 "capture_rate_std": statistics.pstdev(rates) if rates else 0.0,
-                "false_positive_rate": sum(1 for r in runs if r.clean_failed) / n,
+                "false_positive_rate": sum(1 for r in evaluable_runs if r.clean_failed) / n,
                 "avg_tokens": statistics.mean(tokens) if tokens else 0.0,
                 "avg_tool_calls": statistics.mean(tool_calls) if tool_calls else 0.0,
-                "reflection_used": any(r.reflection_used for r in runs),
+                "reflection_used": any(r.reflection_used for r in evaluable_runs),
+                "invalid_test_set_count": invalid_test_sets,
+                "metric_status": metric_status,
                 # 0 捕获时不要用 0 伪装成本（§11.1）
                 "cost_per_captured_bug": (total_tokens / total_captured) if total_captured else None,
             }

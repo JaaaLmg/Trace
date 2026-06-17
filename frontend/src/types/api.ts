@@ -497,6 +497,10 @@ export interface CleanRunMetricsContract {
   collection_errors: number;
   tool_call_count: number;
   total_tokens: number;
+  validity_status?: "evaluable" | "invalid_test_set";
+  invalid_reason?: string | null;
+  context_completeness?: ContextCompletenessEvidence | null;
+  analysis_warnings?: string[];
 }
 
 export interface PytestSummaryContract {
@@ -548,6 +552,8 @@ export interface LlmDisplayEvidence {
 }
 
 export interface ExperimentMetricRow extends ComparisonRow {
+  invalid_test_set_count: number;
+  metric_status: "ok" | "invalid_test_set" | "evaluable_zero_capture";
   cost_per_captured_bug_status: "ok" | "no_bug_captured";
   data_source: ExperimentDataSourceKind;
   llm_display: LlmDisplayEvidence;

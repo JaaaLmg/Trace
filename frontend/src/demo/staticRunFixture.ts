@@ -660,6 +660,8 @@ export const demoExperimentMetrics: ExperimentMetricsResponse = {
   },
   rows: demoComparison.rows.map((row) => ({
     ...row,
+    invalid_test_set_count: 0,
+    metric_status: row.captured_per_repeat.reduce((sum, captured) => sum + captured, 0) > 0 ? "ok" : "evaluable_zero_capture",
     cost_per_captured_bug_status: row.cost_per_captured_bug === null ? "no_bug_captured" : "ok",
     data_source: "mock",
     llm_display: {
