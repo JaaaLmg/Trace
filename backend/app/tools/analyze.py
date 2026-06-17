@@ -10,6 +10,7 @@ from app.schemas.tools import (
     FileInfo,
     FixtureInfo,
     FunctionInfo,
+    ModelFieldInfo,
     ModelInfo,
     RouteInfo,
     TestFunctionInfo,
@@ -131,7 +132,7 @@ def _extract_source(rel: str, tree: ast.AST, out: AnalyzeProjectOutput) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             _add_fn(out, rel, node, seen_fn)
         elif isinstance(node, ast.ClassDef) and _is_pydantic_model(node):
-            out.models.append(ModelInfo(name=node.name, file=rel))
+            out.models.append(ModelInfo(name=node.name, file=rel, fields=_model_fields(node)))
 
     # 全树扫路由：handler 可能在任意 router 上
     for node in ast.walk(tree):
@@ -234,6 +235,35 @@ def _is_pydantic_model(node: ast.ClassDef) -> bool:
         if isinstance(base, ast.Attribute) and base.attr == "BaseModel":
             return True
     return False
+
+
+def _model_fields(node: ast.ClassDef) -> list[ModelFieldInfo]:
+    fields: list[ModelFieldInfo] = []
+    for item in node.body:
+        if not isinstance(item, ast.AnnAssign) or not isinstance(item.target, ast.Name):
+            continue
+        name = item.target.id
+        if name.startswith("_"):
+            continue
+        try:
+            type_name = ast.unparse(item.annotation)
+        except Exception:
+            type_name = "Any"
+        default = None
+        if item.value is not None:
+            try:
+                default = ast.unparse(item.value)
+            except Exception:
+                default = "..."
+        fields.append(
+            ModelFieldInfo(
+                name=name,
+                type=type_name,
+                required=item.value is None,
+                default=default,
+            )
+        )
+    return fields
 
 
 def _extract_tests(rel: str, tree: ast.AST) -> ExistingTestInfo:

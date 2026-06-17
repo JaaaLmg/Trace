@@ -66,9 +66,17 @@ class FunctionInfo(BaseModel):
     file: str
 
 
+class ModelFieldInfo(BaseModel):
+    name: str
+    type: str = "Any"
+    required: bool = True
+    default: Optional[str] = None
+
+
 class ModelInfo(BaseModel):
     name: str
     file: str
+    fields: list[ModelFieldInfo] = Field(default_factory=list)
 
 
 class TestFunctionInfo(BaseModel):

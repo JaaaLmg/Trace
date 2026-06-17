@@ -138,6 +138,57 @@ def test_analyze_project_extracts_pytest_fixtures_from_conftest(tmp_path):
     assert fixture.dependencies == ["app"]
 
 
+def test_analyze_project_extracts_pydantic_model_fields(tmp_path):
+    (tmp_path / "api.py").write_text(
+        "from pydantic import BaseModel, Field\n"
+        "\n"
+        "class PriceRequest(BaseModel):\n"
+        "    sku: str\n"
+        "    quantity: int = 1\n"
+        "    coupon: str | None = Field(default=None)\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["."]))
+
+    assert len(analysis.models) == 1
+    model = analysis.models[0]
+    assert model.name == "PriceRequest"
+    fields = {field.name: field for field in model.fields}
+    assert fields["sku"].type == "str"
+    assert fields["sku"].required is True
+    assert fields["quantity"].type == "int"
+    assert fields["quantity"].required is False
+    assert fields["quantity"].default == "1"
+    assert fields["coupon"].type == "str | None"
+    assert fields["coupon"].required is False
+
+
+def test_source_context_includes_pydantic_model_evidence(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "api.py").write_text(
+        "from pydantic import BaseModel\n"
+        "\n"
+        "class PriceRequest(BaseModel):\n"
+        "    sku: str\n"
+        "    quantity: int = 1\n"
+        "\n"
+        "def quote_price(req: PriceRequest):\n"
+        "    return req.quantity * 10\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["quote_price"]))
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["quote_price"], analysis)
+
+    assert bundle.context_completeness.status == "complete"
+    refs = {snippet.target_ref for snippet in bundle.snippets}
+    assert "quote_price" in refs
+    assert "model:PriceRequest" in refs
+    assert "class PriceRequest" in bundle.source_context_text
+    assert "quantity: int = 1" in bundle.source_context_text
+
+
 def test_source_context_includes_fixture_and_existing_test_evidence(tmp_path):
     (tmp_path / "shop").mkdir()
     (tmp_path / "tests").mkdir()

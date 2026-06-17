@@ -283,6 +283,8 @@ def _append_support_context(
 def _support_targets(ctx: ToolContext, analysis: AnalyzeProjectOutput) -> list[_Target]:
     generated_tests_dir = ctx.relpath(ctx.test_write_dir)
     targets: list[_Target] = []
+    for model in analysis.models:
+        targets.append(_Target(raw=f"model:{model.name}", rel_path=model.file, symbol=model.name))
     for fixture in analysis.fixtures:
         if _is_generated_test_path(fixture.file, generated_tests_dir):
             continue
