@@ -62,17 +62,26 @@ def capture_matrix(runs_by_strategy: dict, bugs) -> dict:
 
 def comparison_table_md(rows: list[dict]) -> str:
     lines = [
-        "| 策略 | 捕获率(均值±std) | 假阳性率 | 反思 | 平均 token | 平均工具调用 | cost/captured |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 策略 | 状态 | 捕获率(均值±std) | 假阳性率 | 反思 | 平均 token | 平均工具调用 | cost/captured |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in rows:
         cap = f"{r['capture_rate_mean']:.2f} ± {r['capture_rate_std']:.2f}（{r['captured_mean']:.1f}/{r['total_in_scope']}）"
         cost = "no_bug_captured" if r["cost_per_captured_bug"] is None else f"{r['cost_per_captured_bug']:.1f}"
+        status = _metric_status_label(r.get("metric_status"))
         lines.append(
-            f"| {r['strategy_name']} | {cap} | {r['false_positive_rate']:.2f} | "
+            f"| {r['strategy_name']} | {status} | {cap} | {r['false_positive_rate']:.2f} | "
             f"{'是' if r['reflection_used'] else '否'} | {r['avg_tokens']:.0f} | {r['avg_tool_calls']:.1f} | {cost} |"
         )
     return "\n".join(lines)
+
+
+def _metric_status_label(status: str | None) -> str:
+    if status == "invalid_test_set":
+        return "不可评价"
+    if status == "evaluable_zero_capture":
+        return "可评价 0 捕获"
+    return "可评价"
 
 
 def capture_matrix_md(matrix: dict, bugs, runs_by_strategy: dict) -> str:

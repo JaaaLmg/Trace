@@ -2,6 +2,7 @@ from app.core.ids import new_id
 from app.db.session import get_engine
 from app.models.project import Project, ProjectSnapshot
 from app.models.strategy import StrategyVersion
+from app.models.trace import TraceStep as TraceStepModel
 from app.recorders.sqlalchemy_recorder import SQLAlchemyRunRecorder
 from app.schemas.records import (
     GeneratedTestCaseRecord,
@@ -217,3 +218,33 @@ def test_sqlalchemy_recorder_does_not_overwrite_cancelled_run(clean_db):
         assert stored is not None
         assert stored.status == "cancelled"
         assert stored.pytest_summary == {"passed": 1}
+
+
+def test_sqlalchemy_recorder_clips_trace_step_short_columns(clean_db):
+    engine = get_engine()
+
+    with Session(engine) as session:
+        _, snapshot_id, strategy_id, plan_id = _seed_fk_prereqs(session)
+        recorder = SQLAlchemyRunRecorder(session)
+        run = TestRunRecord(test_plan_id=plan_id, project_snapshot_id=snapshot_id, strategy_version_id=strategy_id)
+        recorder.save_run(run)
+        long_text = "x" * 1000
+
+        recorder.add_trace_step(
+            TraceStep(
+                run_id=run.id,
+                step_index=1,
+                step_type="generation",
+                name=long_text,
+                status="error",
+                error=long_text,
+                payload={"full_error": long_text},
+            )
+        )
+
+        stored = session.query(TraceStepModel).filter_by(run_id=run.id).one()
+        assert len(stored.name) <= 255
+        assert len(stored.error) <= 255
+        assert stored.name.endswith("...<truncated>")
+        assert stored.error.endswith("...<truncated>")
+        assert stored.payload == {"full_error": long_text}

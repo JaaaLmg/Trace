@@ -70,7 +70,13 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
         attempt.status = "error"
         attempt.error_code = ErrorCode.PIPELINE_REJECT.value
         ctx.recorder.save_attempt(attempt)
-        ctx.trace("generation", "生成测试契约拒绝：" + reason, status="error", error=reason)
+        ctx.trace(
+            "generation",
+            "生成测试契约拒绝",
+            status="error",
+            error=reason,
+            payload={"violations": violations},
+        )
         raise TraceError(ErrorCode.PIPELINE_REJECT, reason, details={"violations": violations})
     # 不信任 LLM 给的路径，强制写到策略指定的受控 target_path（白名单在 write_test_file 内）
     wout = ctx.call_tool(

@@ -154,8 +154,17 @@ def _target_matches(target_type: str | None, target_ref: str | None, target_func
     if target_type == "function":
         return target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
     if target_type == "route":
-        return target_route == ref or target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
+        route_ref = _route_path_without_method(ref)
+        route_target = _route_path_without_method(target_route)
+        return route_target == route_ref or target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
     return True
+
+
+def _route_path_without_method(value: str) -> str:
+    parts = value.strip().split(maxsplit=1)
+    if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
+        return parts[1].strip()
+    return value.strip()
 
 
 def _unknown_json_body_fields(tree: ast.AST, allowed_request_fields: Sequence[str]) -> list[str]:

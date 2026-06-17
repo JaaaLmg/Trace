@@ -31,6 +31,7 @@ def test_full_eval_story(tmp_path):
 
     # 对比表 + 捕获矩阵渲染出来；wrong-status 被 plan/react 抓到、被 direct 漏掉
     assert "捕获率" in result["table_md"]
+    assert "状态" in result["table_md"]
     assert "wrong-status" in result["matrix_md"]
     m = result["capture_matrix"]
     assert m["wrong-status"]["sv-plan-v1"] is True
@@ -65,6 +66,18 @@ def test_aggregate_repeat_stats():
     zero = [_mk("z", 0, [], False, 50, ids)]
     [zrow] = metrics.aggregate({"z": zero}, total_in_scope=6)
     assert zrow["cost_per_captured_bug"] is None
+
+
+def test_comparison_table_marks_invalid_test_set():
+    ids = [f"b{i}" for i in range(2)]
+    invalid = _mk("invalid", 0, [], False, 0, ids)
+    invalid.invalid_test_set = True
+    rows = metrics.aggregate({"invalid": [invalid]}, total_in_scope=2)
+
+    table = metrics.comparison_table_md(rows)
+
+    assert "不可评价" in table
+    assert "| invalid | 不可评价 |" in table
 
 
 def test_format_run_error_keeps_smoke_failure_actionable():

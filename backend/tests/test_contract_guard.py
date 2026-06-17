@@ -277,6 +277,24 @@ def test_generation_contract_accepts_route_body_oracle():
     assert violations == []
 
 
+def test_generation_contract_accepts_route_target_with_method_prefix():
+    content = (
+        "def test_price(client):\n"
+        "    response = client.get('/price/apple')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['item'] == 'apple'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_price", "target_route": "/price/{item}", "assertion_summary": "验证价格查询"}],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_allows_error_status_route_check():
     content = "def test_missing(client):\n    assert client.get('/missing').status_code == 404\n"
     violations = check_generation_contract(

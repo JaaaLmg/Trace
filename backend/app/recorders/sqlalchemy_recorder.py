@@ -38,6 +38,12 @@ def _parse_dt(value: str | None):
     return datetime.fromisoformat(value)
 
 
+def _clip(value: str | None, limit: int) -> str | None:
+    if value is None or len(value) <= limit:
+        return value
+    return value[: max(0, limit - 14)] + "...<truncated>"
+
+
 class SQLAlchemyRunRecorder(RunRecorder):
     def __init__(self, session: Session, *, auto_commit: bool = True) -> None:
         # recorder 是 A/B 之间最关键的适配层：
@@ -90,10 +96,10 @@ class SQLAlchemyRunRecorder(RunRecorder):
             RunEventModel(
                 id=new_id(),
                 run_id=event.run_id,
-                stage=event.stage,
-                event_type=event.event_type,
-                status_before=event.status_before,
-                status_after=event.status_after,
+                stage=_clip(event.stage, 32),
+                event_type=_clip(event.event_type, 64),
+                status_before=_clip(event.status_before, 32),
+                status_after=_clip(event.status_after, 32),
                 message=event.message,
             )
         )
@@ -107,16 +113,16 @@ class SQLAlchemyRunRecorder(RunRecorder):
                 run_id=step.run_id,
                 attempt_id=step.attempt_id,
                 step_index=step.step_index,
-                step_type=step.step_type,
-                name=step.name,
+                step_type=_clip(step.step_type, 32),
+                name=_clip(step.name, 255) or "",
                 input_summary=step.input_summary,
                 output_summary=step.output_summary,
-                tool_name=step.tool_name,
+                tool_name=_clip(step.tool_name, 128),
                 payload=step.payload,
                 tokens=step.tokens,
                 duration_ms=step.duration_ms,
-                status=step.status,
-                error=step.error,
+                status=_clip(step.status, 16) or "ok",
+                error=_clip(step.error, 255),
             )
         )
         self._flush()

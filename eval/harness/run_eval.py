@@ -238,6 +238,8 @@ def main() -> None:
         print(result["matrix_md"])
         return
 
+    experiment_info = result.get("experiment") or {}
+
     if args.real:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         json_path, md_path = out_dir / "comparison_real.json", out_dir / "comparison_real.md"
@@ -247,6 +249,7 @@ def main() -> None:
             f"# TRACE 策略评测对比（真实模型 {model}）",
             "",
             f"> provider={provider}　model={model}　temperature={args.temperature}　reasoning_effort={args.reasoning_effort}　repeats={args.repeats}　生成于 {stamp}",
+            f"> experiment_id={experiment_info.get('id', 'unknown')}",
             f"> 数据来自 `eval/harness/run_eval.py --real`：3 策略 × {args.repeats} 重复，干净代码生成 → 6 个 bug 变体重放。",
             "> 与 MockLLM 的 comparison.md 并存：本表是真实测量，捕获/假阳性/反思/token 皆来自真模型，逐次可能不同。",
             "",
@@ -261,10 +264,10 @@ def main() -> None:
             "",
         ]
 
-    json_path.write_text(
-        json.dumps({"rows": result["rows"], "capture_matrix": result["capture_matrix"]}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    payload = {"rows": result["rows"], "capture_matrix": result["capture_matrix"]}
+    if experiment_info:
+        payload["experiment"] = experiment_info
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md = header + ["## 策略对比", "", result["table_md"], "", "## 逐 bug 捕获矩阵", "", result["matrix_md"], ""]
     md_path.write_text("\n".join(md), encoding="utf-8")
     print(result["table_md"])
