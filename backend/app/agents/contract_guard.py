@@ -8,6 +8,24 @@ from typing import Any, Sequence
 
 _SKIP_NAMES = {"skip", "skipif", "xfail"}
 _BROAD_EXC = {"Exception", "BaseException"}
+_PYTEST_BUILTIN_FIXTURES = {
+    "cache",
+    "capsys",
+    "capsysbinary",
+    "capfd",
+    "capfdbinary",
+    "doctest_namespace",
+    "monkeypatch",
+    "pytestconfig",
+    "record_property",
+    "record_testsuite_property",
+    "record_xml_attribute",
+    "recwarn",
+    "tmp_path",
+    "tmp_path_factory",
+    "tmpdir",
+    "tmpdir_factory",
+}
 
 
 def check_reflection_contract(old_content: str, new_content: str) -> list[str]:
@@ -52,6 +70,7 @@ def check_generation_contract(
     target_type: str | None = None,
     target_ref: str | None = None,
     allowed_request_fields: Sequence[str] | None = None,
+    allowed_fixtures: Sequence[str] | None = None,
 ) -> list[str]:
     """校验生成测试本身是否有基本测试价值和目标绑定。"""
     violations: list[str] = []
@@ -73,6 +92,9 @@ def check_generation_contract(
     unknown_fields = _unknown_json_body_fields(tree, allowed_request_fields or [])
     if unknown_fields:
         violations.append("请求 JSON 字段缺少模型证据：" + ", ".join(unknown_fields))
+    unknown_fixtures = _unknown_test_fixtures(tree, allowed_fixtures) if allowed_fixtures is not None else []
+    if unknown_fixtures:
+        violations.append("测试函数 fixture 缺少项目证据：" + ", ".join(unknown_fixtures))
 
     parsed_names = set(_test_names(tree))
     declared_by_name = {_field(case, "test_name"): case for case in declared_cases if _field(case, "test_name")}
@@ -174,6 +196,38 @@ def _dict_literal_keys(node: ast.AST | None) -> set[str] | None:
         if isinstance(key, ast.Constant) and isinstance(key.value, str):
             keys.add(key.value)
     return keys
+
+
+def _unknown_test_fixtures(tree: ast.AST, allowed_fixtures: Sequence[str]) -> list[str]:
+    allowed = _PYTEST_BUILTIN_FIXTURES | {str(name).strip() for name in allowed_fixtures if str(name).strip()}
+    unknown: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not node.name.startswith("test"):
+            continue
+        parametrize_args = _parametrize_arg_names(node)
+        for arg in node.args.args + node.args.kwonlyargs:
+            name = arg.arg
+            if name in {"self", "cls"} or name in parametrize_args:
+                continue
+            if name not in allowed:
+                unknown.add(name)
+    return sorted(unknown)
+
+
+def _parametrize_arg_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    names: set[str] = set()
+    for dec in node.decorator_list:
+        call = dec if isinstance(dec, ast.Call) else None
+        if call is None or _last(call.func) != "parametrize" or not call.args:
+            continue
+        first = call.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            names.update(part.strip() for part in first.value.split(",") if part.strip())
+        elif isinstance(first, (ast.List, ast.Tuple)):
+            for item in first.elts:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    names.add(item.value)
+    return names
 
 
 def _attr_chain(node) -> str:

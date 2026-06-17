@@ -174,3 +174,47 @@ def test_generation_contract_accepts_json_request_fields_from_model_schema():
     )
 
     assert violations == []
+
+
+def test_generation_contract_rejects_unknown_fixture_argument():
+    content = "def test_create(client):\n    assert client.get('/health').status_code == 200\n"
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/health", "assertion_summary": "验证健康检查"}],
+        target_type="route",
+        target_ref="/health",
+        allowed_fixtures=[],
+    )
+
+    assert any("client" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_project_fixture_argument():
+    content = "def test_create(client):\n    assert client.get('/health').status_code == 200\n"
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/health", "assertion_summary": "验证健康检查"}],
+        target_type="route",
+        target_ref="/health",
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_accepts_builtin_and_parametrize_arguments():
+    content = (
+        "import pytest\n"
+        "@pytest.mark.parametrize('value,expected', [(1, 2)])\n"
+        "def test_calc(tmp_path, value, expected):\n"
+        "    assert value + 1 == expected\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_calc", "target_function": "calc", "assertion_summary": "验证参数化计算"}],
+        target_type="function",
+        target_ref="calc",
+        allowed_fixtures=[],
+    )
+
+    assert violations == []

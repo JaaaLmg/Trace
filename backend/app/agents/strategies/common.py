@@ -63,6 +63,7 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
         target_type=getattr(draft, "target_type", None),
         target_ref=getattr(draft, "target_ref", None),
         allowed_request_fields=_model_field_names(analysis),
+        allowed_fixtures=_fixture_names(analysis),
     )
     if violations:
         reason = "；".join(violations)
@@ -256,6 +257,15 @@ def _model_field_names(analysis) -> list[str]:
             name = getattr(field, "name", None)
             if name:
                 names.append(str(name))
+    return names
+
+
+def _fixture_names(analysis) -> list[str]:
+    names: list[str] = []
+    for fixture in getattr(analysis, "fixtures", []) or []:
+        name = getattr(fixture, "name", None)
+        if name:
+            names.append(str(name))
     return names
 
 
