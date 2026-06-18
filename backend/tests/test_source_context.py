@@ -778,11 +778,25 @@ def test_ast_grep_fallback_resolves_unindexed_function_after_structural_match(tm
     assert bundle.context_completeness.status == "complete"
     assert bundle.snippets[0].source_path == "shop/pricing.py"
     assert bundle.snippets[0].symbol == "target_fn"
-    assert bundle.snippets[0].retrieval_source == "ast_grep"
+    assert bundle.snippets[0].retrieval_source == "lsp"
     assert "def target_fn" in bundle.source_context_text
     assert bundle.snippets[1].source_kind == "dependency"
     assert bundle.snippets[1].symbol == "helper"
     assert "def helper" in bundle.source_context_text
+
+
+def test_lsp_fallback_resolves_unindexed_function_before_ast_grep(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], AnalyzeProjectOutput())
+
+    target = bundle.snippets[0]
+    assert target.retrieval_source == "lsp"
+    traces = {trace.trace_id: trace for trace in bundle.context_completeness.retrieval_trace}
+    assert target.retrieval_trace_id in traces
+    assert traces[target.retrieval_trace_id].retrieval_source == "lsp"
+    assert traces[target.retrieval_trace_id].status == "resolved"
 
 
 def test_direct_dependency_budget_keeps_target_and_marks_partial(tmp_path):
@@ -823,6 +837,9 @@ def test_rg_fallback_unconfirmed_match_stays_incomplete(tmp_path):
     ast_traces = [trace for trace in bundle.context_completeness.retrieval_trace if trace.retrieval_source == "ast_grep"]
     assert ast_traces
     assert ast_traces[0].status == "missing"
+    lsp_traces = [trace for trace in bundle.context_completeness.retrieval_trace if trace.retrieval_source == "lsp"]
+    assert lsp_traces
+    assert lsp_traces[0].status == "missing"
     rg_traces = [
         trace
         for trace in bundle.context_completeness.retrieval_trace

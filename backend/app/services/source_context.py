@@ -12,12 +12,15 @@ from app.schemas.tools import (
     AstGrepMatch,
     AstGrepSearchInput,
     FailureDetail,
+    LspDefinitionInput,
+    LspDefinitionMatch,
     ReadFileInput,
     RgSearchInput,
     RgSearchMatch,
 )
 from app.tools.base import ToolContext
 from app.tools.fs_tools import read_file
+from app.tools.lsp import lsp_definition
 from app.tools.search import ast_grep_search, rg_search
 
 
@@ -340,6 +343,12 @@ def _resolve_targets(
             targets.append(target)
             continue
 
+        lsp_target, lsp_trace = _resolve_one_with_lsp(ctx, str(raw))
+        retrieval_trace.extend(lsp_trace)
+        if lsp_target is not None:
+            targets.append(lsp_target)
+            continue
+
         ast_target, ast_trace = _resolve_one_with_ast_grep(ctx, str(raw))
         retrieval_trace.extend(ast_trace)
         if ast_target is not None:
@@ -401,6 +410,54 @@ def _resolve_one(ctx: ToolContext, raw: str, analysis: AnalyzeProjectOutput | No
         )
 
     return None
+
+
+def _resolve_one_with_lsp(ctx: ToolContext, raw: str) -> tuple[_Target | None, list[SourceContextRetrievalTrace]]:
+    query = _lsp_query_for_target(raw)
+    if not query:
+        return None, []
+    try:
+        out = lsp_definition(ctx, LspDefinitionInput(query=query, path=".", glob="*.py", max_matches=8))
+    except Exception as exc:
+        return None, [
+            _trace(
+                target=raw,
+                source_kind="target_source",
+                retrieval_source="lsp",
+                status="error",
+                confidence=0.0,
+                risk_notes=[f"lsp definition failed: {type(exc).__name__}"],
+            )
+        ]
+
+    if out.definitions:
+        match = _rank_lsp_matches(ctx, out.definitions)[0]
+        if not match.symbol:
+            return None, [_lsp_candidate_trace(raw, match, "lsp definition did not include a symbol")]
+        return (
+            _Target(
+                raw=raw,
+                rel_path=match.source_path,
+                symbol=match.symbol,
+                source_kind="target_source",
+                retrieval_source="lsp",
+                confidence=match.confidence,
+            ),
+            [],
+        )
+
+    status = "missing" if out.status == "missing" else "error"
+    note = "; ".join(out.warnings) if out.warnings else f"lsp definition status: {out.status}"
+    return None, [
+        _trace(
+            target=raw,
+            source_kind="target_source",
+            retrieval_source="lsp",
+            status=status,
+            confidence=0.0,
+            risk_notes=[note],
+        )
+    ]
 
 
 def _resolve_one_with_ast_grep(ctx: ToolContext, raw: str) -> tuple[_Target | None, list[SourceContextRetrievalTrace]]:
@@ -572,6 +629,36 @@ def _rank_ast_grep_matches(ctx: ToolContext, matches: list[AstGrepMatch]) -> lis
     )
 
 
+def _rank_lsp_matches(ctx: ToolContext, matches: list[LspDefinitionMatch]) -> list[LspDefinitionMatch]:
+    generated_tests_dir = ctx.relpath(ctx.test_write_dir)
+    return sorted(
+        matches,
+        key=lambda match: (
+            _is_generated_test_path(match.source_path, generated_tests_dir),
+            _is_probable_test_path(match.source_path),
+            match.source_path,
+            match.line_range.get("start", 1),
+        ),
+    )
+
+
+def _lsp_candidate_trace(raw: str, match: LspDefinitionMatch, note: str) -> SourceContextRetrievalTrace:
+    return _trace(
+        trace_id=match.trace_id,
+        target=raw,
+        source_kind="target_source",
+        retrieval_source="lsp",
+        status="missing",
+        source_path=match.source_path,
+        symbol=match.symbol,
+        start_line=match.line_range["start"],
+        end_line=match.line_range["end"],
+        confidence=match.confidence,
+        content_hash=match.content_hash,
+        risk_notes=[note],
+    )
+
+
 def _ast_grep_candidate_trace(raw: str, match: AstGrepMatch, note: str) -> SourceContextRetrievalTrace:
     return _trace(
         trace_id=match.trace_id,
@@ -595,6 +682,22 @@ def _rg_query_for_target(value: str) -> str | None:
         return route_path
     symbol = _symbol_query_for_target(value)
     return symbol or None
+
+
+def _lsp_query_for_target(value: str) -> str:
+    norm = value.strip()
+    if norm.startswith("route:"):
+        norm = norm.removeprefix("route:").strip()
+    if _looks_like_route_target(norm):
+        return ""
+    if "::" in norm and norm.split("::", 1)[0].endswith(".py"):
+        norm = norm.split("::", 1)[1]
+    elif ":" in norm and norm.split(":", 1)[0].endswith(".py"):
+        norm = norm.split(":", 1)[1]
+    parts = [part for part in norm.split(".") if part]
+    if len(parts) == 2 and parts[0][:1].isupper():
+        return norm
+    return parts[-1] if parts else ""
 
 
 def _symbol_query_for_target(value: str) -> str:
