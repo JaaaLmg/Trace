@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from app.core.errors import TraceError
 from app.schemas.tools import AstGrepSearchInput
+import app.tools.search as search_tools
 from app.tools import ast_grep_search, default_registry
 from app.tools.base import ToolContext
 
@@ -68,6 +72,67 @@ def test_ast_grep_search_returns_structured_route_evidence(tmp_path):
     assert match.symbol == "get_item"
     assert match.line_range == {"start": 4, "end": 6}
     assert match.metadata == {"method": "GET", "path": "/items/{item_id}"}
+
+
+def test_ast_grep_search_uses_binary_when_available(tmp_path, monkeypatch):
+    (tmp_path / "app").mkdir()
+    source = tmp_path / "app" / "pricing.py"
+    source.write_text(
+        "def apply_discount(total):\n"
+        "    return round(total * 0.9, 2)\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[:3] == ["ast-grep", "--json", "-p"]
+        assert str(tmp_path / "app") == cmd[-1]
+        payload = [
+            {
+                "file": str(source),
+                "range": {"start": {"line": 1}, "end": {"line": 2}},
+                "text": source.read_text(encoding="utf-8"),
+            }
+        ]
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(search_tools.shutil, "which", lambda name: name if name == "ast-grep" else None)
+    monkeypatch.setattr(search_tools.subprocess, "run", fake_run)
+
+    out = ast_grep_search(_ctx(tmp_path), AstGrepSearchInput(query="apply_discount", kind="function", path="app"))
+
+    assert out.engine == "ast_grep"
+    assert not out.warnings
+    assert len(out.matches) == 1
+    match = out.matches[0]
+    assert match.engine == "ast_grep"
+    assert match.source_path == "app/pricing.py"
+    assert match.line_range == {"start": 1, "end": 2}
+    assert match.symbol == "apply_discount"
+    assert match.node_kind == "function"
+    assert match.confidence > 0.8
+
+
+def test_ast_grep_search_falls_back_when_binary_fails(tmp_path, monkeypatch):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "pricing.py").write_text(
+        "def apply_discount(total):\n"
+        "    return total\n",
+        encoding="utf-8",
+    )
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=2, stdout="", stderr="bad pattern")
+
+    monkeypatch.setattr(search_tools.shutil, "which", lambda name: name if name == "sg" else None)
+    monkeypatch.setattr(search_tools.subprocess, "run", fake_run)
+
+    out = ast_grep_search(_ctx(tmp_path), AstGrepSearchInput(query="apply_discount", kind="function", path="app"))
+
+    assert out.engine == "python_ast_fallback"
+    assert out.matches[0].engine == "python_ast_fallback"
+    assert out.matches[0].symbol == "apply_discount"
+    assert out.warnings
+    assert "ast-grep binary search failed" in out.warnings[0]
 
 
 def test_ast_grep_search_rejects_path_escape(tmp_path):

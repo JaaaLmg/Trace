@@ -37,6 +37,23 @@ def rg_search(ctx: ToolContext, inp: RgSearchInput) -> RgSearchOutput:
 
 def ast_grep_search(ctx: ToolContext, inp: AstGrepSearchInput) -> AstGrepSearchOutput:
     base = ctx.resolve_read(inp.path)
+    warnings: list[str] = []
+    binary = shutil.which("ast-grep") or shutil.which("sg")
+    if binary:
+        try:
+            out = _search_with_ast_grep_binary(ctx, base, inp, binary)
+            if out.matches:
+                return out
+            warnings.extend(out.warnings)
+            warnings.append("ast-grep binary returned no validated matches, used python AST fallback")
+        except Exception as exc:
+            warnings.append(f"ast-grep binary search failed, used python AST fallback: {type(exc).__name__}: {exc}")
+    out = _search_with_python_ast(ctx, base, inp)
+    out.warnings = warnings + out.warnings
+    return out
+
+
+def _search_with_python_ast(ctx: ToolContext, base: Path, inp: AstGrepSearchInput) -> AstGrepSearchOutput:
     matches: list[AstGrepMatch] = []
     warnings: list[str] = []
     truncated = False
@@ -74,6 +91,185 @@ def ast_grep_search(ctx: ToolContext, inp: AstGrepSearchInput) -> AstGrepSearchO
         engine="python_ast_fallback",
         warnings=warnings,
     )
+
+
+def _search_with_ast_grep_binary(
+    ctx: ToolContext,
+    base: Path,
+    inp: AstGrepSearchInput,
+    binary: str,
+) -> AstGrepSearchOutput:
+    pattern = _ast_grep_pattern(inp)
+    cmd = [binary, "--json", "-p", pattern, str(base)]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=8,
+        check=False,
+    )
+    if proc.returncode not in {0, 1}:
+        raise RuntimeError((proc.stderr or proc.stdout or "ast-grep failed").strip())
+
+    matches: list[AstGrepMatch] = []
+    warnings: list[str] = []
+    seen: set[tuple[str, int, int, str | None, str]] = set()
+    for event in _parse_ast_grep_json(proc.stdout):
+        match = _match_from_ast_grep_event(ctx, base, event, inp, warnings)
+        if match is None:
+            continue
+        key = (
+            match.source_path,
+            match.line_range.get("start", 0),
+            match.line_range.get("end", 0),
+            match.symbol,
+            match.node_kind,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(match)
+        if len(matches) >= inp.max_matches:
+            return AstGrepSearchOutput(
+                query=inp.query,
+                kind=inp.kind,
+                matches=matches,
+                truncated=True,
+                engine="ast_grep",
+                warnings=warnings,
+            )
+
+    return AstGrepSearchOutput(
+        query=inp.query,
+        kind=inp.kind,
+        matches=matches,
+        truncated=False,
+        engine="ast_grep",
+        warnings=warnings,
+    )
+
+
+def _ast_grep_pattern(inp: AstGrepSearchInput) -> str:
+    if inp.kind == "class":
+        return f"class {inp.query}:\n    $$$BODY"
+    if inp.kind == "route":
+        method, path = _route_query(inp.query, inp.method)
+        method_part = method.lower() if method else "$METHOD"
+        path_part = repr(path) if path else "$PATH"
+        return f"@$$ROUTER.{method_part}({path_part})\ndef $$$FUNC($$$ARGS):\n    $$$BODY"
+    return f"def {inp.query}($$$ARGS):\n    $$$BODY"
+
+
+def _parse_ast_grep_json(stdout: str) -> list[dict]:
+    raw = stdout.strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        events: list[dict] = []
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if isinstance(event, dict):
+                events.append(event)
+        return events
+    if isinstance(parsed, list):
+        return [event for event in parsed if isinstance(event, dict)]
+    if isinstance(parsed, dict):
+        for key in ("matches", "data", "items"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return [event for event in value if isinstance(event, dict)]
+        return [parsed]
+    return []
+
+
+def _match_from_ast_grep_event(
+    ctx: ToolContext,
+    base: Path,
+    event: dict,
+    inp: AstGrepSearchInput,
+    warnings: list[str],
+) -> AstGrepMatch | None:
+    path = _ast_grep_event_path(ctx, base, event)
+    if path is None:
+        return None
+    rel = ctx.relpath(path)
+    if inp.glob and not (fnmatch.fnmatch(path.name, inp.glob) or fnmatch.fnmatch(rel, inp.glob)):
+        return None
+    start, end = _ast_grep_event_range(event)
+    text = path.read_bytes()[: inp.max_file_bytes].decode("utf-8", errors="replace")
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        warnings.append(f"{rel}: SyntaxError while validating ast-grep match: {exc.msg}")
+        return None
+    lines = text.splitlines()
+    for node in ast.walk(tree):
+        match = _structured_match(ctx, path, lines, node, inp)
+        if match is None or not _line_ranges_overlap(match.line_range, start, end):
+            continue
+        return match.model_copy(update={"engine": "ast_grep", "confidence": max(match.confidence, 0.9)})
+    return None
+
+
+def _ast_grep_event_path(ctx: ToolContext, base: Path, event: dict) -> Path | None:
+    raw = event.get("file") or event.get("path") or event.get("filePath") or event.get("filepath")
+    if isinstance(raw, dict):
+        raw = raw.get("text") or raw.get("path")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    candidate = Path(raw)
+    candidates = [candidate] if candidate.is_absolute() else [ctx.root / candidate, base / candidate]
+    for item in candidates:
+        try:
+            resolved = item.resolve()
+        except OSError:
+            continue
+        if not resolved.exists():
+            continue
+        if resolved == ctx.root or ctx.root in resolved.parents:
+            return resolved
+    return None
+
+
+def _ast_grep_event_range(event: dict) -> tuple[int | None, int | None]:
+    range_obj = event.get("range") if isinstance(event.get("range"), dict) else {}
+    start_obj = range_obj.get("start") if isinstance(range_obj.get("start"), dict) else event.get("start")
+    end_obj = range_obj.get("end") if isinstance(range_obj.get("end"), dict) else event.get("end")
+    start = _line_from_obj(start_obj) or _line_from_obj(event.get("line")) or _line_from_obj(event.get("line_number"))
+    end = _line_from_obj(end_obj) or start
+    if start is not None and start < 1:
+        start += 1
+    if end is not None and end < 1:
+        end += 1
+    return start, end
+
+
+def _line_from_obj(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, dict):
+        raw = value.get("line")
+        if raw is None:
+            raw = value.get("lineNumber")
+        if raw is None:
+            raw = value.get("row")
+        return raw if isinstance(raw, int) else None
+    return None
+
+
+def _line_ranges_overlap(line_range: dict[str, int], start: int | None, end: int | None) -> bool:
+    if start is None:
+        return True
+    candidate_start = int(line_range.get("start", 1))
+    candidate_end = int(line_range.get("end", candidate_start))
+    event_end = end or start
+    return candidate_start <= event_end and candidate_end >= start
 
 
 def _search_with_rg(ctx: ToolContext, base: Path, inp: RgSearchInput) -> RgSearchOutput:
