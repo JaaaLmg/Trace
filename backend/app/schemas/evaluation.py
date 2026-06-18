@@ -18,7 +18,15 @@ MetricStatus = Literal["ok", "invalid_test_set", "evaluable_zero_capture"]
 CleanRunValidityStatus = Literal["evaluable", "invalid_test_set"]
 ResolutionStep = Literal["strategy_version_defaults", "experiment_llm_override", "repeat_derivation"]
 CaptureRule = Literal["clean_passed_variant_assertion_failure_same_nodeid"]
-SourceContextKind = Literal["target_source", "model_schema", "fixture", "existing_test", "failure_context", "fallback_file"]
+SourceContextKind = Literal[
+    "target_source",
+    "dependency",
+    "model_schema",
+    "fixture",
+    "existing_test",
+    "failure_context",
+    "fallback_file",
+]
 RetrievalSourceKind = Literal[
     "analysis_ast",
     "framework_scanner",

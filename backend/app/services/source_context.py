@@ -23,11 +23,12 @@ from app.tools.search import ast_grep_search, rg_search
 
 _SOURCE_KIND_PRIORITY = {
     "target_source": 0,
-    "model_schema": 1,
-    "fixture": 2,
-    "existing_test": 3,
-    "failure_context": 4,
-    "fallback_file": 5,
+    "dependency": 1,
+    "model_schema": 2,
+    "fixture": 3,
+    "existing_test": 4,
+    "failure_context": 5,
+    "fallback_file": 6,
 }
 
 
@@ -67,6 +68,7 @@ def build_source_context_bundle(
     max_total_bytes: int = 48000,
     max_snippets: int = 12,
     max_support_snippets: int = 4,
+    max_dependency_snippets: int = 3,
     failure_details: Sequence[FailureDetail] | None = None,
     max_failure_contexts: int = 4,
     max_failure_context_chars: int = 1600,
@@ -230,8 +232,24 @@ def build_source_context_bundle(
         )
         header = f"## {out.path}:{start_line}-{end_line} ({target_ref})"
         pieces.append(f"{header}\n```python\n{segment}\n```")
+        if target.source_kind == "target_source" and target.symbol and max_dependency_snippets > 0:
+            total_bytes = _append_direct_dependencies(
+                out.path,
+                out.content,
+                target,
+                snippets,
+                pieces,
+                seen,
+                total_bytes,
+                max_total_bytes=max_total_bytes,
+                max_dependency_snippets=max_dependency_snippets,
+                risk_notes=risk_notes,
+                retrieval_trace=retrieval_trace,
+            )
 
-    target_snippet_count = len(snippets)
+    primary_snippet_count = sum(
+        1 for snippet in snippets if snippet.source_kind in {"target_source", "fallback_file"}
+    )
 
     if analysis is not None and max_support_snippets > 0:
         total_bytes = _append_support_context(
@@ -263,7 +281,7 @@ def build_source_context_bundle(
         )
 
     support_incomplete = _support_context_incomplete(retrieval_trace)
-    if target_snippet_count == 0:
+    if primary_snippet_count == 0:
         status = "incomplete"
         risk_notes.append("no source snippet could be read")
     elif missing_targets:
@@ -718,6 +736,164 @@ def _slice_symbol(content: str, symbol: str) -> tuple[int, int, str] | None:
     return None
 
 
+def _append_direct_dependencies(
+    source_path: str,
+    content: str,
+    target: _Target,
+    snippets: list[SourceContextSnippet],
+    pieces: list[str],
+    seen: set[tuple[str, str | None]],
+    total_bytes: int,
+    *,
+    max_total_bytes: int,
+    max_dependency_snippets: int,
+    risk_notes: list[str],
+    retrieval_trace: list[SourceContextRetrievalTrace],
+) -> int:
+    dependencies = _direct_same_file_dependencies(content, target.symbol or "")
+    if not dependencies:
+        return total_bytes
+    if len(dependencies) > max_dependency_snippets:
+        risk_notes.append("direct dependency context truncated by max_dependency_snippets")
+        for dep in dependencies[max_dependency_snippets:]:
+            retrieval_trace.append(
+                _trace(
+                    target=f"dependency:{target.raw}->{dep.name}",
+                    source_kind="dependency",
+                    retrieval_source="ast_grep",
+                    status="truncated",
+                    source_path=source_path,
+                    symbol=dep.name,
+                    start_line=dep.start_line,
+                    end_line=dep.end_line,
+                    confidence=0.75,
+                    risk_notes=["direct dependency context truncated by max_dependency_snippets"],
+                )
+            )
+
+    for dep in dependencies[:max_dependency_snippets]:
+        key = (source_path, dep.name)
+        if key in seen:
+            continue
+        seen.add(key)
+        segment_bytes = len(dep.segment.encode("utf-8"))
+        if total_bytes + segment_bytes > max_total_bytes:
+            risk_notes.append("direct dependency context truncated by max_total_bytes")
+            retrieval_trace.append(
+                _trace(
+                    target=f"dependency:{target.raw}->{dep.name}",
+                    source_kind="dependency",
+                    retrieval_source="ast_grep",
+                    status="truncated",
+                    source_path=source_path,
+                    symbol=dep.name,
+                    start_line=dep.start_line,
+                    end_line=dep.end_line,
+                    confidence=0.75,
+                    risk_notes=["direct dependency context truncated by max_total_bytes"],
+                )
+            )
+            break
+        total_bytes += segment_bytes
+        content_hash = hashlib.sha256(dep.segment.encode("utf-8")).hexdigest()
+        dep_target = f"dependency:{target.raw}->{dep.name}"
+        trace_id = _trace_id(
+            dep_target,
+            "dependency",
+            "ast_grep",
+            source_path,
+            dep.name,
+            dep.start_line,
+            dep.end_line,
+            content_hash,
+        )
+        snippets.append(
+            SourceContextSnippet(
+                path=source_path,
+                source_path=source_path,
+                target_ref=f"dependency:{dep.name}",
+                target=dep_target,
+                symbol=dep.name,
+                source_kind="dependency",
+                retrieval_source="ast_grep",
+                confidence=0.85,
+                start_line=dep.start_line,
+                end_line=dep.end_line,
+                content_hash=content_hash,
+                bytes=segment_bytes,
+                retrieval_trace_id=trace_id,
+            )
+        )
+        retrieval_trace.append(
+            _trace(
+                trace_id=trace_id,
+                target=dep_target,
+                source_kind="dependency",
+                retrieval_source="ast_grep",
+                status="resolved",
+                source_path=source_path,
+                symbol=dep.name,
+                start_line=dep.start_line,
+                end_line=dep.end_line,
+                confidence=0.85,
+                content_hash=content_hash,
+            )
+        )
+        header = f"## {source_path}:{dep.start_line}-{dep.end_line} (dependency:{dep.name})"
+        pieces.append(f"{header}\n```python\n{dep.segment}\n```")
+    return total_bytes
+
+
+@dataclass(frozen=True)
+class _DependencySlice:
+    name: str
+    start_line: int
+    end_line: int
+    segment: str
+
+
+def _direct_same_file_dependencies(content: str, target_symbol: str) -> list[_DependencySlice]:
+    if not target_symbol:
+        return []
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+    lines = content.splitlines()
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    target_node = functions.get(target_symbol.rsplit(".", 1)[-1])
+    if target_node is None:
+        return []
+    called: list[str] = []
+    seen: set[str] = set()
+    for node in ast.walk(target_node):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        name = node.func.id
+        if name == target_node.name or name not in functions or name in seen:
+            continue
+        seen.add(name)
+        called.append(name)
+
+    dependencies: list[_DependencySlice] = []
+    for name in called:
+        dep = functions[name]
+        start = getattr(dep, "lineno", None)
+        end = getattr(dep, "end_lineno", None)
+        if not start or not end:
+            continue
+        decorators = getattr(dep, "decorator_list", [])
+        if decorators:
+            start = min(start, min(decorator.lineno for decorator in decorators))
+        segment = "\n".join(lines[start - 1 : end])
+        dependencies.append(_DependencySlice(name=name, start_line=start, end_line=end, segment=segment))
+    return dependencies
+
+
 def _append_support_context(
     ctx: ToolContext,
     analysis: AnalyzeProjectOutput,
@@ -1088,7 +1264,7 @@ def _sort_targets(targets: list[_Target]) -> list[_Target]:
 
 
 def _support_context_incomplete(retrieval_trace: list[SourceContextRetrievalTrace]) -> bool:
-    support_kinds = {"model_schema", "fixture", "existing_test", "failure_context"}
+    support_kinds = {"dependency", "model_schema", "fixture", "existing_test", "failure_context"}
     return any(trace.source_kind in support_kinds and trace.status != "resolved" for trace in retrieval_trace)
 
 

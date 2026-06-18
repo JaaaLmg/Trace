@@ -48,14 +48,19 @@ def test_slices_target_function_not_whole_file(tmp_path):
     bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
 
     assert bundle.context_completeness.status == "complete"
-    assert len(bundle.snippets) == 1
+    assert len(bundle.snippets) == 2
     snip = bundle.snippets[0]
-    # 只切目标函数：起始行落在 def target_fn 上，不是文件第 1 行。
+    # 目标函数仍是独立切片：起始行落在 def target_fn 上，不是文件第 1 行。
     assert snip.target_ref == "target_fn"
     assert snip.start_line == 8
     assert snip.end_line == 10
     assert "def target_fn" in bundle.source_context_text
-    assert "def helper" not in bundle.source_context_text
+    assert "import math" not in bundle.source_context_text
+    helper = bundle.snippets[1]
+    assert helper.source_kind == "dependency"
+    assert helper.target_ref == "dependency:helper"
+    assert helper.symbol == "helper"
+    assert "def helper" in bundle.source_context_text
 
 
 def test_slices_route_handler_with_decorator(tmp_path):
@@ -265,8 +270,8 @@ def test_source_context_includes_failure_context_evidence(tmp_path):
     )
 
     assert bundle.context_completeness.status == "complete"
-    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "failure_context"]
-    failure = bundle.snippets[1]
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "dependency", "failure_context"]
+    failure = bundle.snippets[2]
     assert failure.path == "tests/generated/test_generated.py"
     assert failure.target_ref == "tests/generated/test_generated.py::test_target_fn_failure"
     assert failure.retrieval_source == "pytest_result"
@@ -369,7 +374,29 @@ def test_ast_grep_fallback_resolves_unindexed_function_after_structural_match(tm
     assert bundle.snippets[0].symbol == "target_fn"
     assert bundle.snippets[0].retrieval_source == "ast_grep"
     assert "def target_fn" in bundle.source_context_text
+    assert bundle.snippets[1].source_kind == "dependency"
+    assert bundle.snippets[1].symbol == "helper"
+    assert "def helper" in bundle.source_context_text
+
+
+def test_direct_dependency_budget_keeps_target_and_marks_partial(tmp_path):
+    (tmp_path / "calc.py").write_text(_SAMPLE, encoding="utf-8")
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(a, b)", file="calc.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis, max_total_bytes=90)
+
+    assert bundle.snippets[0].target_ref == "target_fn"
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source"]
+    assert "def target_fn" in bundle.source_context_text
     assert "def helper" not in bundle.source_context_text
+    assert bundle.context_completeness.status == "partial"
+    dependency_trace = next(
+        trace for trace in bundle.context_completeness.retrieval_trace if trace.source_kind == "dependency"
+    )
+    assert dependency_trace.status == "truncated"
+    assert any("direct dependency context truncated by max_total_bytes" in note for note in bundle.context_completeness.risk_notes)
 
 
 def test_rg_fallback_unconfirmed_match_stays_incomplete(tmp_path):
