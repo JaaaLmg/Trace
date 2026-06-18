@@ -604,6 +604,64 @@ def test_generation_contract_accepts_route_oracle_with_query_string_matching_sou
     assert violations == []
 
 
+def test_generation_contract_rejects_route_error_oracle_that_contradicts_handler_source():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_price_missing_item(monkeypatch):\n"
+        "    monkeypatch.setattr('shop.api._PRICES', {})\n"
+        "    client = TestClient(app)\n"
+        "    response = client.get('/price/ghost')\n"
+        "    assert response.status_code == 500\n"
+        "    assert response.json()['detail'] == 'item not found'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_missing_item",
+                "target_route": "/price/{item}",
+                "assertion_summary": "缺失商品返回错误",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["monkeypatch"],
+        source_context=PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT,
+    )
+
+    assert any("路由响应 oracle" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_route_error_oracle_matching_handler_source():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_price_missing_item(monkeypatch):\n"
+        "    monkeypatch.setattr('shop.api._PRICES', {})\n"
+        "    client = TestClient(app)\n"
+        "    response = client.get('/price/ghost')\n"
+        "    assert response.status_code == 404\n"
+        "    assert response.json()['detail'] == 'item not found'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_missing_item",
+                "target_route": "/price/{item}",
+                "assertion_summary": "缺失商品按源码返回 404",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["monkeypatch"],
+        source_context=PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_rejects_boundary_raises_without_source_raise():
     content = (
         "import pytest\n"

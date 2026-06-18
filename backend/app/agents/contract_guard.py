@@ -275,7 +275,10 @@ class _EvalUnknown(Exception):
 
 
 class _EvalRaised(Exception):
-    pass
+    def __init__(self, *, status_code: int | None = None, detail: Any = None) -> None:
+        super().__init__()
+        self.status_code = status_code
+        self.detail = detail
 
 
 _NO_RETURN = object()
@@ -520,7 +523,12 @@ def _eval_route_response_call(
         if route_params is None or handler_name not in functions:
             continue
         kwargs = {**route_params, **query_params}
-        body = _eval_source_function(functions[handler_name], [], kwargs, functions, global_env)
+        try:
+            body = _eval_source_function(functions[handler_name], [], kwargs, functions, global_env)
+        except _EvalRaised as exc:
+            if exc.status_code is None:
+                raise
+            return _RouteResponse(status_code=exc.status_code, json_body={"detail": exc.detail})
         return _RouteResponse(status_code=200, json_body=body)
     raise _EvalUnknown()
 
@@ -724,7 +732,7 @@ def _exec_statements(
         if isinstance(stmt, ast.Return):
             return _eval_expr(stmt.value, functions, env)
         if isinstance(stmt, ast.Raise):
-            raise _EvalRaised()
+            raise _eval_raise(stmt, functions, env)
         if isinstance(stmt, ast.If):
             branch = stmt.body if _eval_expr(stmt.test, functions, env) else stmt.orelse
             result = _exec_statements(branch, functions, dict(env))
@@ -744,6 +752,45 @@ def _exec_statements(
             continue
         raise _EvalUnknown()
     return _NO_RETURN
+
+
+def _eval_raise(
+    stmt: ast.Raise,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+) -> _EvalRaised:
+    exc = stmt.exc
+    if not isinstance(exc, ast.Call) or _last(exc.func) != "HTTPException":
+        return _EvalRaised()
+
+    status_code: int | None = None
+    detail: Any = None
+    if exc.args:
+        try:
+            raw_status = _eval_expr(exc.args[0], functions, env)
+        except (_EvalUnknown, _EvalRaised):
+            raw_status = None
+        if isinstance(raw_status, int):
+            status_code = raw_status
+    if len(exc.args) > 1:
+        try:
+            detail = _eval_expr(exc.args[1], functions, env)
+        except (_EvalUnknown, _EvalRaised):
+            detail = None
+    for kw in exc.keywords:
+        if kw.arg == "status_code":
+            try:
+                raw_status = _eval_expr(kw.value, functions, env)
+            except (_EvalUnknown, _EvalRaised):
+                raw_status = None
+            if isinstance(raw_status, int):
+                status_code = raw_status
+        elif kw.arg == "detail":
+            try:
+                detail = _eval_expr(kw.value, functions, env)
+            except (_EvalUnknown, _EvalRaised):
+                detail = None
+    return _EvalRaised(status_code=status_code, detail=detail)
 
 
 def _eval_expr(
