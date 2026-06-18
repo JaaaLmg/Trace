@@ -687,6 +687,90 @@ def test_generation_contract_rejects_boundary_raises_without_source_raise():
     assert any("没有可见 raise 证据" in violation for violation in violations)
 
 
+VALIDATE_QUANTITY_SOURCE_CONTEXT = """## shop/pricing.py:11-14 (validate_quantity)
+```python
+def validate_quantity(quantity):
+    if quantity <= 0:
+        raise ValueError(f"quantity must be positive: {quantity}")
+    return quantity
+```"""
+
+
+def test_generation_contract_rejects_exception_type_oracle_that_contradicts_source_context():
+    content = (
+        "import pytest\n"
+        "from shop.pricing import validate_quantity\n\n"
+        "def test_validate_quantity_zero():\n"
+        "    with pytest.raises(TypeError):\n"
+        "        validate_quantity(0)\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_validate_quantity_zero",
+                "target_function": "validate_quantity",
+                "assertion_summary": "数量为 0 时抛出类型错误",
+            }
+        ],
+        target_type="function",
+        target_ref="validate_quantity",
+        source_context=VALIDATE_QUANTITY_SOURCE_CONTEXT,
+    )
+
+    assert any("异常类型" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_exception_match_oracle_that_contradicts_source_context():
+    content = (
+        "import pytest\n"
+        "from shop.pricing import validate_quantity\n\n"
+        "def test_validate_quantity_zero_message():\n"
+        "    with pytest.raises(ValueError, match='negative amount'):\n"
+        "        validate_quantity(0)\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_validate_quantity_zero_message",
+                "target_function": "validate_quantity",
+                "assertion_summary": "数量为 0 时说明是负数金额",
+            }
+        ],
+        target_type="function",
+        target_ref="validate_quantity",
+        source_context=VALIDATE_QUANTITY_SOURCE_CONTEXT,
+    )
+
+    assert any("异常消息" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_exception_oracle_matching_source_context():
+    content = (
+        "import pytest\n"
+        "from shop.pricing import validate_quantity\n\n"
+        "def test_validate_quantity_zero_message():\n"
+        "    with pytest.raises(ValueError, match='quantity must be positive: 0'):\n"
+        "        validate_quantity(0)\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_validate_quantity_zero_message",
+                "target_function": "validate_quantity",
+                "assertion_summary": "数量为 0 时按源码抛出 ValueError",
+            }
+        ],
+        target_type="function",
+        target_ref="validate_quantity",
+        source_context=VALIDATE_QUANTITY_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_rejects_rounding_oracle_that_contradicts_source_context():
     content = (
         "from shop.pricing import apply_discount\n\n"

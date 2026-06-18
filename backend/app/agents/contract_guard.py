@@ -275,8 +275,17 @@ class _EvalUnknown(Exception):
 
 
 class _EvalRaised(Exception):
-    def __init__(self, *, status_code: int | None = None, detail: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        exc_type: str | None = None,
+        message: Any = None,
+        status_code: int | None = None,
+        detail: Any = None,
+    ) -> None:
         super().__init__()
+        self.exc_type = exc_type
+        self.message = None if message is None else str(message)
         self.status_code = status_code
         self.detail = detail
 
@@ -316,8 +325,10 @@ def _source_backed_oracle_violations(
                     ok = _try_eval_assert(stmt.test, functions, env)
                     if ok is False:
                         violations.append(f"{fn.name} 的 oracle 与目标源码行为不一致")
-                elif _is_pytest_raises_with_source_call(stmt, functions, env):
-                    violations.append(f"{fn.name} 预期异常但目标源码没有可见 raise 证据")
+                elif isinstance(stmt, ast.With):
+                    pytest_raises_violation = _pytest_raises_source_violation(stmt, functions, env)
+                    if pytest_raises_violation:
+                        violations.append(f"{fn.name} {pytest_raises_violation}")
     return sorted(set(violations))
 
 
@@ -647,31 +658,90 @@ def _try_eval_assert(
     return bool(value)
 
 
-def _is_pytest_raises_with_source_call(
+def _pytest_raises_source_violation(
     stmt: ast.stmt,
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
     env: dict[str, Any],
-) -> bool:
+) -> str | None:
     if not isinstance(stmt, ast.With):
-        return False
-    has_pytest_raises = any(
-        isinstance(item.context_expr, ast.Call) and _last(item.context_expr.func) == "raises"
-        for item in stmt.items
+        return None
+    raises_call = next(
+        (
+            item.context_expr
+            for item in stmt.items
+            if isinstance(item.context_expr, ast.Call) and _last(item.context_expr.func) == "raises"
+        ),
+        None,
     )
-    if not has_pytest_raises:
-        return False
+    if raises_call is None:
+        return None
+    expected_exceptions = _pytest_raises_expected_exceptions(raises_call)
+    expected_match = _pytest_raises_match_pattern(raises_call, functions, env)
     for inner in stmt.body:
         for call in [node for node in ast.walk(inner) if isinstance(node, ast.Call)]:
             if _last(call.func) not in functions:
                 continue
             try:
                 _eval_expr(call, functions, env)
-            except _EvalRaised:
-                return False
+            except _EvalRaised as exc:
+                if (
+                    expected_exceptions
+                    and exc.exc_type
+                    and not _exception_type_matches(expected_exceptions, exc.exc_type)
+                ):
+                    return "预期异常类型与目标源码不一致"
+                if expected_match and exc.message is not None:
+                    try:
+                        if re.search(expected_match, exc.message) is None:
+                            return "预期异常消息与目标源码不一致"
+                    except re.error:
+                        return None
+                return None
             except _EvalUnknown:
                 continue
-            return True
-    return False
+            return "预期异常但目标源码没有可见 raise 证据"
+    return None
+
+
+def _pytest_raises_expected_exceptions(call: ast.Call) -> set[str]:
+    if not call.args:
+        return set()
+    return _exception_names(call.args[0])
+
+
+def _exception_names(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Tuple):
+        names: set[str] = set()
+        for item in node.elts:
+            names.update(_exception_names(item))
+        return names
+    name = _attr_chain(node)
+    if not name:
+        return set()
+    return {name, name.rsplit(".", 1)[-1]}
+
+
+def _pytest_raises_match_pattern(
+    call: ast.Call,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    env: dict[str, Any],
+) -> str | None:
+    for kw in call.keywords:
+        if kw.arg != "match":
+            continue
+        try:
+            pattern = _eval_expr(kw.value, functions, env)
+        except (_EvalUnknown, _EvalRaised):
+            return None
+        return pattern if isinstance(pattern, str) else None
+    return None
+
+
+def _exception_type_matches(expected: set[str], actual: str) -> bool:
+    actual_names = {actual, actual.rsplit(".", 1)[-1]}
+    if expected & actual_names:
+        return True
+    return bool(expected & {"Exception", "BaseException"})
 
 
 def _expr_uses_source_value(
@@ -760,8 +830,19 @@ def _eval_raise(
     env: dict[str, Any],
 ) -> _EvalRaised:
     exc = stmt.exc
-    if not isinstance(exc, ast.Call) or _last(exc.func) != "HTTPException":
+    if isinstance(exc, ast.Name):
+        return _EvalRaised(exc_type=exc.id, message="")
+    if not isinstance(exc, ast.Call):
         return _EvalRaised()
+    exc_type = _last(exc.func)
+    if exc_type != "HTTPException":
+        message: Any = ""
+        if exc.args:
+            try:
+                message = _eval_expr(exc.args[0], functions, env)
+            except (_EvalUnknown, _EvalRaised):
+                message = None
+        return _EvalRaised(exc_type=exc_type or None, message=message)
 
     status_code: int | None = None
     detail: Any = None
@@ -790,7 +871,7 @@ def _eval_raise(
                 detail = _eval_expr(kw.value, functions, env)
             except (_EvalUnknown, _EvalRaised):
                 detail = None
-    return _EvalRaised(status_code=status_code, detail=detail)
+    return _EvalRaised(exc_type="HTTPException", message=detail, status_code=status_code, detail=detail)
 
 
 def _eval_expr(
