@@ -234,6 +234,7 @@ def build_source_context_bundle(
         pieces.append(f"{header}\n```python\n{segment}\n```")
         if target.source_kind == "target_source" and target.symbol and max_dependency_snippets > 0:
             total_bytes = _append_direct_dependencies(
+                ctx,
                 out.path,
                 out.content,
                 target,
@@ -241,6 +242,7 @@ def build_source_context_bundle(
                 pieces,
                 seen,
                 total_bytes,
+                max_file_bytes=max_file_bytes,
                 max_total_bytes=max_total_bytes,
                 max_dependency_snippets=max_dependency_snippets,
                 risk_notes=risk_notes,
@@ -737,6 +739,7 @@ def _slice_symbol(content: str, symbol: str) -> tuple[int, int, str] | None:
 
 
 def _append_direct_dependencies(
+    ctx: ToolContext,
     source_path: str,
     content: str,
     target: _Target,
@@ -745,12 +748,33 @@ def _append_direct_dependencies(
     seen: set[tuple[str, str | None]],
     total_bytes: int,
     *,
+    max_file_bytes: int,
     max_total_bytes: int,
     max_dependency_snippets: int,
     risk_notes: list[str],
     retrieval_trace: list[SourceContextRetrievalTrace],
 ) -> int:
-    dependencies = _direct_same_file_dependencies(content, target.symbol or "")
+    dependencies, misses = _direct_dependencies(
+        ctx,
+        source_path,
+        content,
+        target.symbol or "",
+        max_file_bytes=max_file_bytes,
+    )
+    for miss in misses:
+        risk_notes.append(miss.risk_note)
+        retrieval_trace.append(
+            _trace(
+                target=f"dependency:{target.raw}->{miss.name}",
+                source_kind="dependency",
+                retrieval_source=miss.retrieval_source,
+                status=miss.status,
+                source_path=miss.source_path,
+                symbol=miss.name,
+                confidence=miss.confidence,
+                risk_notes=[miss.risk_note],
+            )
+        )
     if not dependencies:
         return total_bytes
     if len(dependencies) > max_dependency_snippets:
@@ -760,19 +784,19 @@ def _append_direct_dependencies(
                 _trace(
                     target=f"dependency:{target.raw}->{dep.name}",
                     source_kind="dependency",
-                    retrieval_source="ast_grep",
+                    retrieval_source=dep.retrieval_source,
                     status="truncated",
-                    source_path=source_path,
+                    source_path=dep.source_path,
                     symbol=dep.name,
                     start_line=dep.start_line,
                     end_line=dep.end_line,
-                    confidence=0.75,
+                    confidence=dep.confidence,
                     risk_notes=["direct dependency context truncated by max_dependency_snippets"],
                 )
             )
 
     for dep in dependencies[:max_dependency_snippets]:
-        key = (source_path, dep.name)
+        key = (dep.source_path, dep.name)
         if key in seen:
             continue
         seen.add(key)
@@ -783,13 +807,13 @@ def _append_direct_dependencies(
                 _trace(
                     target=f"dependency:{target.raw}->{dep.name}",
                     source_kind="dependency",
-                    retrieval_source="ast_grep",
+                    retrieval_source=dep.retrieval_source,
                     status="truncated",
-                    source_path=source_path,
+                    source_path=dep.source_path,
                     symbol=dep.name,
                     start_line=dep.start_line,
                     end_line=dep.end_line,
-                    confidence=0.75,
+                    confidence=dep.confidence,
                     risk_notes=["direct dependency context truncated by max_total_bytes"],
                 )
             )
@@ -800,8 +824,8 @@ def _append_direct_dependencies(
         trace_id = _trace_id(
             dep_target,
             "dependency",
-            "ast_grep",
-            source_path,
+            dep.retrieval_source,
+            dep.source_path,
             dep.name,
             dep.start_line,
             dep.end_line,
@@ -809,14 +833,14 @@ def _append_direct_dependencies(
         )
         snippets.append(
             SourceContextSnippet(
-                path=source_path,
-                source_path=source_path,
+                path=dep.source_path,
+                source_path=dep.source_path,
                 target_ref=f"dependency:{dep.name}",
                 target=dep_target,
                 symbol=dep.name,
                 source_kind="dependency",
-                retrieval_source="ast_grep",
-                confidence=0.85,
+                retrieval_source=dep.retrieval_source,
+                confidence=dep.confidence,
                 start_line=dep.start_line,
                 end_line=dep.end_line,
                 content_hash=content_hash,
@@ -829,36 +853,62 @@ def _append_direct_dependencies(
                 trace_id=trace_id,
                 target=dep_target,
                 source_kind="dependency",
-                retrieval_source="ast_grep",
+                retrieval_source=dep.retrieval_source,
                 status="resolved",
-                source_path=source_path,
+                source_path=dep.source_path,
                 symbol=dep.name,
                 start_line=dep.start_line,
                 end_line=dep.end_line,
-                confidence=0.85,
+                confidence=dep.confidence,
                 content_hash=content_hash,
             )
         )
-        header = f"## {source_path}:{dep.start_line}-{dep.end_line} (dependency:{dep.name})"
+        header = f"## {dep.source_path}:{dep.start_line}-{dep.end_line} (dependency:{dep.name})"
         pieces.append(f"{header}\n```python\n{dep.segment}\n```")
     return total_bytes
 
 
 @dataclass(frozen=True)
 class _DependencySlice:
+    source_path: str
     name: str
     start_line: int
     end_line: int
     segment: str
+    retrieval_source: str
+    confidence: float
 
 
-def _direct_same_file_dependencies(content: str, target_symbol: str) -> list[_DependencySlice]:
+@dataclass(frozen=True)
+class _DependencyMiss:
+    source_path: str | None
+    name: str
+    retrieval_source: str
+    status: str
+    confidence: float
+    risk_note: str
+
+
+@dataclass(frozen=True)
+class _ImportedDependencyTarget:
+    rel_path: str
+    symbol: str
+
+
+def _direct_dependencies(
+    ctx: ToolContext,
+    source_path: str,
+    content: str,
+    target_symbol: str,
+    *,
+    max_file_bytes: int,
+) -> tuple[list[_DependencySlice], list[_DependencyMiss]]:
     if not target_symbol:
-        return []
+        return [], []
     try:
         tree = ast.parse(content)
     except SyntaxError:
-        return []
+        return [], []
     lines = content.splitlines()
     functions = {
         node.name: node
@@ -867,31 +917,166 @@ def _direct_same_file_dependencies(content: str, target_symbol: str) -> list[_De
     }
     target_node = functions.get(target_symbol.rsplit(".", 1)[-1])
     if target_node is None:
-        return []
+        return [], []
+    imported = _direct_from_import_targets(tree, source_path)
     called: list[str] = []
     seen: set[str] = set()
     for node in ast.walk(target_node):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
             continue
         name = node.func.id
-        if name == target_node.name or name not in functions or name in seen:
+        if name == target_node.name or name in seen:
             continue
         seen.add(name)
         called.append(name)
 
     dependencies: list[_DependencySlice] = []
+    misses: list[_DependencyMiss] = []
     for name in called:
-        dep = functions[name]
-        start = getattr(dep, "lineno", None)
-        end = getattr(dep, "end_lineno", None)
-        if not start or not end:
+        if name in functions:
+            dependency = _dependency_slice_from_node(
+                source_path,
+                functions[name],
+                lines,
+                retrieval_source="ast_grep",
+                confidence=0.85,
+            )
+            if dependency is not None:
+                dependencies.append(dependency)
             continue
-        decorators = getattr(dep, "decorator_list", [])
-        if decorators:
-            start = min(start, min(decorator.lineno for decorator in decorators))
-        segment = "\n".join(lines[start - 1 : end])
-        dependencies.append(_DependencySlice(name=name, start_line=start, end_line=end, segment=segment))
-    return dependencies
+        import_target = imported.get(name)
+        if import_target is None:
+            continue
+        if not _import_target_is_project_local(ctx, import_target.rel_path):
+            continue
+        try:
+            out = read_file(ctx, ReadFileInput(path=import_target.rel_path, max_bytes=max_file_bytes))
+        except Exception:
+            misses.append(
+                _DependencyMiss(
+                    source_path=import_target.rel_path,
+                    name=import_target.symbol,
+                    retrieval_source="analysis_ast",
+                    status="error",
+                    confidence=0.0,
+                    risk_note="cross-file direct dependency source could not be read",
+                )
+            )
+            continue
+        try:
+            imported_tree = ast.parse(out.content)
+        except SyntaxError:
+            misses.append(
+                _DependencyMiss(
+                    source_path=out.path,
+                    name=import_target.symbol,
+                    retrieval_source="analysis_ast",
+                    status="error",
+                    confidence=0.0,
+                    risk_note="cross-file direct dependency source could not be parsed",
+                )
+            )
+            continue
+        imported_functions = {
+            node.name: node
+            for node in imported_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        imported_node = imported_functions.get(import_target.symbol)
+        if imported_node is None:
+            misses.append(
+                _DependencyMiss(
+                    source_path=out.path,
+                    name=import_target.symbol,
+                    retrieval_source="analysis_ast",
+                    status="missing",
+                    confidence=0.0,
+                    risk_note="cross-file direct dependency symbol could not be sliced",
+                )
+            )
+            continue
+        dependency = _dependency_slice_from_node(
+            out.path,
+            imported_node,
+            out.content.splitlines(),
+            retrieval_source="analysis_ast",
+            confidence=0.8,
+        )
+        if dependency is not None:
+            dependencies.append(dependency)
+    return dependencies, misses
+
+
+def _dependency_slice_from_node(
+    source_path: str,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    lines: list[str],
+    *,
+    retrieval_source: str,
+    confidence: float,
+) -> _DependencySlice | None:
+    start = getattr(node, "lineno", None)
+    end = getattr(node, "end_lineno", None)
+    if not start or not end:
+        return None
+    decorators = getattr(node, "decorator_list", [])
+    if decorators:
+        start = min(start, min(decorator.lineno for decorator in decorators))
+    segment = "\n".join(lines[start - 1 : end])
+    return _DependencySlice(
+        source_path=source_path,
+        name=node.name,
+        start_line=start,
+        end_line=end,
+        segment=segment,
+        retrieval_source=retrieval_source,
+        confidence=confidence,
+    )
+
+
+def _direct_from_import_targets(tree: ast.AST, source_path: str) -> dict[str, _ImportedDependencyTarget]:
+    targets: dict[str, _ImportedDependencyTarget] = {}
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        rel_path = _resolve_import_module_path(source_path, node.module, node.level)
+        if rel_path is None:
+            continue
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            local_name = alias.asname or alias.name
+            targets[local_name] = _ImportedDependencyTarget(rel_path=rel_path, symbol=alias.name)
+    return targets
+
+
+def _resolve_import_module_path(source_path: str, module: str | None, level: int) -> str | None:
+    module_parts = [part for part in (module or "").split(".") if part]
+    if level <= 0:
+        parts = module_parts
+    else:
+        parent_parts = list(Path(source_path).parent.parts)
+        ascend = level - 1
+        if ascend > len(parent_parts):
+            return None
+        parts = parent_parts[: len(parent_parts) - ascend] + module_parts
+    if not parts:
+        return None
+    return _safe_source_path(Path(*parts).with_suffix(".py").as_posix())
+
+
+def _import_target_is_project_local(ctx: ToolContext, rel_path: str) -> bool:
+    safe = _safe_source_path(rel_path)
+    if safe is None:
+        return False
+    parts = Path(safe).parts
+    if not parts:
+        return False
+    top = (ctx.root / parts[0]).resolve()
+    root = ctx.root.resolve()
+    if root not in top.parents and top != root:
+        return False
+    return top.exists()
 
 
 def _append_support_context(
