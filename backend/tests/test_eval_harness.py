@@ -3,7 +3,12 @@
 # 聚合用合成数据快测，证明 3 次重复的均值/标准差/假阳性/成本口径，无需起子进程。
 from __future__ import annotations
 
+import pytest
+
+from eval.demo.bugs import BUGS
+from eval.harness import dataset
 from eval.harness import metrics
+from eval.harness.probes import ProbeCheckError, check_variant_probe
 from eval.harness.run_eval import _format_run_error, run_full_eval
 from eval.harness.runner import CleanRun
 
@@ -37,6 +42,51 @@ def test_full_eval_story(tmp_path):
     assert m["wrong-status"]["sv-plan-v1"] is True
     assert m["wrong-status"]["sv-react-v1"] is True
     assert m["wrong-status"]["sv-direct-v1"] is False
+    for runs in result["runs_by_strategy"].values():
+        for run in runs:
+            for variant in run.variants.values():
+                probe_check = variant["probe_check"]
+                assert probe_check["status"] == "passed"
+                assert probe_check["clean_actual"] == probe_check["clean_expected"]
+                assert probe_check["buggy_actual"] == probe_check["buggy_expected"]
+
+
+def test_probe_check_rejects_equal_clean_and_buggy_value(tmp_path):
+    bug = BUGS[0]
+    variant_root = dataset.materialize_variant(bug, tmp_path / "variant")
+
+    with pytest.raises(ProbeCheckError, match="clean_value and buggy_value must differ"):
+        check_variant_probe(
+            clean_root=dataset.CLEAN_ROOT,
+            variant_root=variant_root,
+            ground_truth={
+                "target_kind": bug.kind,
+                "probe": bug.probe,
+                "clean_value": bug.clean_value,
+                "buggy_value": bug.clean_value,
+                "patch_artifact": {"patch": {"file": bug.file}},
+            },
+            variant_id=bug.id,
+        )
+
+
+def test_probe_check_rejects_non_literal_function_probe(tmp_path):
+    bug = BUGS[0]
+    variant_root = dataset.materialize_variant(bug, tmp_path / "variant")
+
+    with pytest.raises(ProbeCheckError, match="arguments must be constants"):
+        check_variant_probe(
+            clean_root=dataset.CLEAN_ROOT,
+            variant_root=variant_root,
+            ground_truth={
+                "target_kind": bug.kind,
+                "probe": "apply_discount(total, True)",
+                "clean_value": bug.clean_value,
+                "buggy_value": bug.buggy_value,
+                "patch_artifact": {"patch": {"file": bug.file}},
+            },
+            variant_id=bug.id,
+        )
 
 
 def _mk(sid, rep, captured_ids, clean_failed, tokens, all_ids):

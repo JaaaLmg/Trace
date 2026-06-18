@@ -44,6 +44,7 @@ from app.tools.analyze import analyze_project
 from app.tools.base import ToolContext
 from eval.harness import metrics as harness_metrics
 from eval.harness.authors import demo_author
+from eval.harness.probes import ProbeCheckError, check_variant_probe
 from eval.harness.replay import replay as replay_frozen_tests
 
 TRACE_ROOT = Path(__file__).resolve().parents[3]
@@ -558,6 +559,18 @@ def _apply_inline_patch(root: Path, variant: BugVariant) -> None:
     target.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def _check_variant_probe(*, clean_root: Path, variant_root: Path, variant: BugVariant) -> dict | None:
+    try:
+        return check_variant_probe(
+            clean_root=clean_root,
+            variant_root=variant_root,
+            ground_truth=variant.ground_truth or {},
+            variant_id=variant.id,
+        )
+    except ProbeCheckError as exc:
+        raise ExperimentError(str(exc)) from exc
+
+
 def _pytest_summary_from_replay(out) -> dict:
     return {
         "collected": out.collected,
@@ -629,10 +642,18 @@ def _run_replay(
             target_snapshot,
             EXPERIMENT_WORK_ROOT / experiment_segment / clean_segment / f"replay-{replay_segment}",
         )
+        probe_check = None
         if variant is not None:
             _apply_inline_patch(replay_root, variant)
+            probe_check = _check_variant_probe(
+                clean_root=Path(target_snapshot.root_path),
+                variant_root=replay_root,
+                variant=variant,
+            )
         out = replay_frozen_tests(replay_root, files, timeout_seconds=timeout_seconds)
         summary = _pytest_summary_from_replay(out)
+        if probe_check is not None:
+            summary["probe_check"] = probe_check
         assertion_failures = [
             case.nodeid
             for case in out.case_results
@@ -915,6 +936,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                                     "variant_assertion_failure_nodeids": sorted(assertion_failures),
                                     "capturing_nodeids": sorted(capturing),
                                     "clean_replay_id": clean_replay_row.id,
+                                    "probe_check": (replay_row.pytest_summary or {}).get("probe_check"),
                                 },
                             )
                         )

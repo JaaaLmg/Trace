@@ -14,6 +14,7 @@ from app.tools.base import ToolContext
 
 from eval.harness import dataset
 from eval.harness.final_set import final_test_set
+from eval.harness.probes import check_variant_probe
 from eval.harness.replay import replay
 
 GOAL = "为 shop 模块生成 pytest 测试，覆盖定价函数与价格查询路由"
@@ -80,6 +81,18 @@ def evaluate_variants(clean: CleanRun, bugs, workdir: Path) -> None:
     """对每个 in-scope 变体重放干净测试集，判定是否捕获，写回 clean.variants。"""
     for bug in bugs:
         var_root = dataset.materialize_variant(bug, Path(workdir) / f"variant_{bug.id}")
+        probe_check = check_variant_probe(
+            clean_root=dataset.CLEAN_ROOT,
+            variant_root=var_root,
+            ground_truth={
+                "target_kind": bug.kind,
+                "probe": bug.probe,
+                "clean_value": bug.clean_value,
+                "buggy_value": bug.buggy_value,
+                "patch_artifact": {"patch": {"file": bug.file}},
+            },
+            variant_id=bug.id,
+        )
         out = replay(var_root, clean.files)
         # 捕获判定（系统设计 §11.1）：同一测试在干净通过、在变体上 assertion failure。
         # 失败相关性由实验设计保证：变体只改一处，测试内容不变 → 行为差异必由该 patch 引起。
@@ -93,6 +106,7 @@ def evaluate_variants(clean: CleanRun, bugs, workdir: Path) -> None:
             "capturing_tests": capturing,
             "bug_type": bug.bug_type,
             "target": bug.target,
+            "probe_check": probe_check,
         }
 
 

@@ -13,6 +13,7 @@ from app.agents.final_attempts import final_attempts_from_records
 from app.db.session import get_engine
 from app.main import create_app
 from app.models import (
+    BugVariant,
     Experiment,
     ExperimentCleanRun,
     ExperimentReplayRun,
@@ -132,6 +133,10 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
         assert clean_replay["duration_ms"] >= 0
     for replay_result in metrics["experiment_replay_runs"]:
         assert replay_result["replay_metrics"]["clean_replay_id"]
+        probe_check = replay_result["replay_metrics"]["probe_check"]
+        assert probe_check["status"] == "passed"
+        assert probe_check["clean_actual"] == probe_check["clean_expected"]
+        assert probe_check["buggy_actual"] == probe_check["buggy_expected"]
 
     with Session(get_engine()) as session:
         assert session.scalar(select(func.count()).select_from(ExperimentCleanRun)) == 3
@@ -220,6 +225,7 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
                 assert replay_result is not None
                 assert replay_result.captured_bug is captured
                 assert set(replay_result.replay_metrics["capturing_nodeids"]) == capturing
+                assert replay_result.replay_metrics["probe_check"]["status"] == "passed"
 
         for row in metrics["rows"]:
             per_repeat = audited_captures[row["strategy_id"]]
@@ -259,6 +265,44 @@ def test_experiment_fails_if_generated_test_set_artifact_hash_changes(monkeypatc
         assert experiment.status == "failed"
         assert experiment.error_code == "ExperimentError"
         assert "generated test set artifact hash mismatch" in (experiment.error_message or "")
+
+
+def test_experiment_fails_when_variant_probe_does_not_match_ground_truth(clean_db):
+    _seed_v2_demo()
+
+    with Session(get_engine()) as session:
+        variant = session.get(BugVariant, "variant-cmp-flip-discount")
+        assert variant is not None
+        ground_truth = dict(variant.ground_truth or {})
+        ground_truth["buggy_value"] = ground_truth["clean_value"]
+        variant.ground_truth = ground_truth
+        session.commit()
+
+        import app.services.experiments as experiment_module
+
+        experiment_module.create_experiment(
+            session,
+            experiment_id="exp-bad-probe",
+            name="bad probe",
+            dataset_id=DEMO_DATASET_ID,
+            strategy_version_ids=["sv-direct-v1"],
+            repeat_count=1,
+            llm_override={"provider": "mock", "model": "mock-1"},
+        )
+        with pytest.raises(ExperimentError, match="probe clean_value and buggy_value must differ"):
+            run_experiment(session, "exp-bad-probe")
+
+        experiment = session.get(Experiment, "exp-bad-probe")
+        assert experiment is not None
+        assert experiment.status == "failed"
+        assert experiment.error_code == "ExperimentError"
+        assert "variant-cmp-flip-discount" in (experiment.error_message or "")
+        replay = session.scalar(
+            select(ReplayModel).where(ReplayModel.bug_variant_id == "variant-cmp-flip-discount")
+        )
+        assert replay is not None
+        assert replay.status == "failed"
+        assert replay.error_code == "ExperimentError"
 
 
 def test_experiment_fails_when_clean_run_provider_call_fails(monkeypatch, clean_db):
@@ -462,7 +506,13 @@ def _add_second_demo_task() -> None:
                 variant_id=f"variant-{bug.id}-extra",
                 variant_name=f"{bug.id} duplicate canonical patch",
                 patch={"file": bug.file, "old": bug.old, "new": bug.new},
-                ground_truth={"target": bug.target, "target_kind": bug.kind},
+                ground_truth={
+                    "target": bug.target,
+                    "target_kind": bug.kind,
+                    "probe": bug.probe,
+                    "clean_value": bug.clean_value,
+                    "buggy_value": bug.buggy_value,
+                },
             )
 
 
