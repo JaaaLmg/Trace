@@ -809,6 +809,34 @@ def _exec_statements(
             if result is not _NO_RETURN:
                 return result
             continue
+        if isinstance(stmt, ast.Try):
+            if stmt.finalbody:
+                raise _EvalUnknown()
+            try:
+                result = _exec_statements(stmt.body, functions, env)
+            except _EvalRaised as exc:
+                handled = False
+                for handler in stmt.handlers:
+                    if not _except_handler_matches(handler, exc):
+                        continue
+                    handled = True
+                    handler_env = dict(env)
+                    if handler.name:
+                        handler_env[handler.name] = exc
+                    result = _exec_statements(handler.body, functions, handler_env)
+                    if result is not _NO_RETURN:
+                        return result
+                    break
+                if not handled:
+                    raise
+            else:
+                if result is not _NO_RETURN:
+                    return result
+                if stmt.orelse:
+                    result = _exec_statements(stmt.orelse, functions, env)
+                    if result is not _NO_RETURN:
+                        return result
+            continue
         if isinstance(stmt, ast.Assign):
             value = _eval_expr(stmt.value, functions, env)
             for target in stmt.targets:
@@ -818,10 +846,24 @@ def _exec_statements(
         if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
             env[stmt.target.id] = _eval_expr(stmt.value, functions, env)
             continue
-        if isinstance(stmt, (ast.Expr, ast.Pass)):
+        if isinstance(stmt, ast.Expr):
+            if isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str):
+                continue
+            _eval_expr(stmt.value, functions, env)
+            continue
+        if isinstance(stmt, ast.Pass):
             continue
         raise _EvalUnknown()
     return _NO_RETURN
+
+
+def _except_handler_matches(handler: ast.ExceptHandler, exc: _EvalRaised) -> bool:
+    if handler.type is None:
+        return True
+    expected = _exception_names(handler.type)
+    if not expected or not exc.exc_type:
+        return False
+    return _exception_type_matches(expected, exc.exc_type)
 
 
 def _eval_raise(

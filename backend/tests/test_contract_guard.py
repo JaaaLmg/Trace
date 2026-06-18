@@ -771,6 +771,121 @@ def test_generation_contract_accepts_exception_oracle_matching_source_context():
     assert violations == []
 
 
+TRY_VALIDATE_QUANTITY_SOURCE_CONTEXT = VALIDATE_QUANTITY_SOURCE_CONTEXT + """
+## shop/pricing.py:16-25 (normalize_quantity)
+```python
+def normalize_quantity(quantity):
+    try:
+        validate_quantity(quantity)
+    except ValueError:
+        raise ValueError(f"invalid quantity: {quantity}")
+    return quantity
+
+def fallback_quantity(quantity):
+    try:
+        validate_quantity(quantity)
+    except ValueError:
+        return 1
+    return quantity
+```"""
+
+
+def test_generation_contract_rejects_try_except_exception_oracle_that_contradicts_source_context():
+    content = (
+        "import pytest\n"
+        "from shop.pricing import normalize_quantity\n\n"
+        "def test_normalize_quantity_zero_message():\n"
+        "    with pytest.raises(ValueError, match='quantity must be positive'):\n"
+        "        normalize_quantity(0)\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_normalize_quantity_zero_message",
+                "target_function": "normalize_quantity",
+                "assertion_summary": "数量为 0 时保留底层错误消息",
+            }
+        ],
+        target_type="function",
+        target_ref="normalize_quantity",
+        source_context=TRY_VALIDATE_QUANTITY_SOURCE_CONTEXT,
+    )
+
+    assert any("异常消息" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_try_except_return_oracle_that_contradicts_source_context():
+    content = (
+        "from shop.pricing import fallback_quantity\n\n"
+        "def test_fallback_quantity_zero():\n"
+        "    assert fallback_quantity(0) == 0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_fallback_quantity_zero",
+                "target_function": "fallback_quantity",
+                "assertion_summary": "数量为 0 时返回原值",
+            }
+        ],
+        target_type="function",
+        target_ref="fallback_quantity",
+        source_context=TRY_VALIDATE_QUANTITY_SOURCE_CONTEXT,
+    )
+
+    assert any("源码行为" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_try_except_exception_oracle_matching_source_context():
+    content = (
+        "import pytest\n"
+        "from shop.pricing import normalize_quantity\n\n"
+        "def test_normalize_quantity_zero_message():\n"
+        "    with pytest.raises(ValueError, match='invalid quantity: 0'):\n"
+        "        normalize_quantity(0)\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_normalize_quantity_zero_message",
+                "target_function": "normalize_quantity",
+                "assertion_summary": "数量为 0 时按源码转换错误消息",
+            }
+        ],
+        target_type="function",
+        target_ref="normalize_quantity",
+        source_context=TRY_VALIDATE_QUANTITY_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_accepts_try_except_return_oracle_matching_source_context():
+    content = (
+        "from shop.pricing import fallback_quantity\n\n"
+        "def test_fallback_quantity_zero():\n"
+        "    assert fallback_quantity(0) == 1\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_fallback_quantity_zero",
+                "target_function": "fallback_quantity",
+                "assertion_summary": "数量为 0 时按源码 fallback 到 1",
+            }
+        ],
+        target_type="function",
+        target_ref="fallback_quantity",
+        source_context=TRY_VALIDATE_QUANTITY_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_rejects_rounding_oracle_that_contradicts_source_context():
     content = (
         "from shop.pricing import apply_discount\n\n"

@@ -125,6 +125,304 @@ def test_slices_relative_import_alias_dependency(tmp_path):
     assert bundle.snippets[1].symbol == "normalize_price"
 
 
+def test_slices_module_alias_attribute_dependency(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "helpers.py").write_text(
+        "def normalize_price(total):\n"
+        "    return round(total, 2)\n"
+        "\n"
+        "\n"
+        "def unrelated_helper():\n"
+        "    return 'unused'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "shop" / "pricing.py").write_text(
+        "import shop.helpers as helpers\n"
+        "\n"
+        "\n"
+        "def target_fn(total):\n"
+        "    return helpers.normalize_price(total) + 1\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(total)", file="shop/pricing.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    assert bundle.context_completeness.status == "complete"
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "dependency"]
+    dependency = bundle.snippets[1]
+    assert dependency.path == "shop/helpers.py"
+    assert dependency.symbol == "normalize_price"
+    assert dependency.target_ref == "dependency:normalize_price"
+    assert "def normalize_price" in bundle.source_context_text
+    assert "def unrelated_helper" not in bundle.source_context_text
+
+
+def test_slices_from_package_module_attribute_dependency(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "helpers.py").write_text(
+        "def normalize_price(total):\n"
+        "    return round(total, 2)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "shop" / "pricing.py").write_text(
+        "from shop import helpers\n"
+        "\n"
+        "\n"
+        "def target_fn(total):\n"
+        "    return helpers.normalize_price(total) + 1\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(total)", file="shop/pricing.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    assert bundle.context_completeness.status == "complete"
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "dependency"]
+    assert bundle.snippets[1].path == "shop/helpers.py"
+    assert bundle.snippets[1].symbol == "normalize_price"
+
+
+def test_slices_multihop_same_file_dependency(tmp_path):
+    (tmp_path / "calc.py").write_text(
+        "def cents(total):\n"
+        "    return round(total * 100)\n"
+        "\n"
+        "\n"
+        "def helper(total):\n"
+        "    return cents(total) + 1\n"
+        "\n"
+        "\n"
+        "def target_fn(total):\n"
+        "    return helper(total)\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(total)", file="calc.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    assert bundle.context_completeness.status == "complete"
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "dependency", "dependency"]
+    assert [snippet.symbol for snippet in bundle.snippets] == ["target_fn", "helper", "cents"]
+    assert "def cents" in bundle.source_context_text
+
+
+def test_multihop_dependency_depth_can_be_limited(tmp_path):
+    (tmp_path / "calc.py").write_text(
+        "def cents(total):\n"
+        "    return round(total * 100)\n"
+        "\n"
+        "\n"
+        "def helper(total):\n"
+        "    return cents(total) + 1\n"
+        "\n"
+        "\n"
+        "def target_fn(total):\n"
+        "    return helper(total)\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(total)", file="calc.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis, max_dependency_depth=1)
+
+    assert bundle.context_completeness.status == "complete"
+    assert [snippet.symbol for snippet in bundle.snippets] == ["target_fn", "helper"]
+    assert "def cents" not in bundle.source_context_text
+
+
+def test_multihop_dependency_snippet_budget_marks_partial(tmp_path):
+    (tmp_path / "calc.py").write_text(
+        "def cents(total):\n"
+        "    return round(total * 100)\n"
+        "\n"
+        "\n"
+        "def helper(total):\n"
+        "    return cents(total) + 1\n"
+        "\n"
+        "\n"
+        "def target_fn(total):\n"
+        "    return helper(total)\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(total)", file="calc.py")]
+    )
+
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["target_fn"],
+        analysis,
+        max_dependency_snippets=1,
+    )
+
+    assert [snippet.symbol for snippet in bundle.snippets] == ["target_fn", "helper"]
+    assert "def cents" not in bundle.source_context_text
+    assert bundle.context_completeness.status == "partial"
+    trace = next(
+        trace
+        for trace in bundle.context_completeness.retrieval_trace
+        if trace.source_kind == "dependency" and trace.symbol == "cents"
+    )
+    assert trace.status == "truncated"
+
+
+def test_multihop_dependency_cycle_does_not_duplicate_target(tmp_path):
+    (tmp_path / "calc.py").write_text(
+        "def helper(total):\n"
+        "    return target_fn(total) + 1\n"
+        "\n"
+        "\n"
+        "def target_fn(total):\n"
+        "    if total <= 0:\n"
+        "        return 0\n"
+        "    return helper(total)\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(total)", file="calc.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    assert bundle.context_completeness.status == "complete"
+    assert [snippet.symbol for snippet in bundle.snippets] == ["target_fn", "helper"]
+    assert bundle.source_context_text.count("def target_fn") == 1
+
+
+def test_missing_second_hop_dependency_marks_partial(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "helpers.py").write_text(
+        "from shop.money import cents\n"
+        "\n"
+        "\n"
+        "def normalize_price(total):\n"
+        "    return cents(total) / 100\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "shop" / "pricing.py").write_text(
+        "from shop.helpers import normalize_price\n"
+        "\n"
+        "\n"
+        "def target_fn(total):\n"
+        "    return normalize_price(total) + 1\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(total)", file="shop/pricing.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    assert [snippet.symbol for snippet in bundle.snippets] == ["target_fn", "normalize_price"]
+    assert bundle.context_completeness.status == "partial"
+    trace = next(
+        trace
+        for trace in bundle.context_completeness.retrieval_trace
+        if trace.source_kind == "dependency" and trace.symbol == "cents"
+    )
+    assert trace.status == "error"
+    assert trace.source_path == "shop/money.py"
+
+
+def test_slices_self_method_dependency(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(
+        "class PriceCalculator:\n"
+        "    def normalize(self, total):\n"
+        "        return round(total, 2)\n"
+        "\n"
+        "    def total(self, subtotal):\n"
+        "        return self.normalize(subtotal)\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["shop/pricing.py::PriceCalculator.total"])
+
+    assert bundle.context_completeness.status == "complete"
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "dependency"]
+    assert bundle.snippets[1].symbol == "PriceCalculator.normalize"
+    assert bundle.snippets[1].target_ref == "dependency:PriceCalculator.normalize"
+    assert "def normalize" in bundle.source_context_text
+
+
+def test_slices_class_name_method_dependency(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(
+        "class PriceCalculator:\n"
+        "    @staticmethod\n"
+        "    def normalize(total):\n"
+        "        return round(total, 2)\n"
+        "\n"
+        "    def total(self, subtotal):\n"
+        "        return PriceCalculator.normalize(subtotal)\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["shop/pricing.py::PriceCalculator.total"])
+
+    assert bundle.context_completeness.status == "complete"
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "dependency"]
+    assert bundle.snippets[1].symbol == "PriceCalculator.normalize"
+    assert "@staticmethod" in bundle.source_context_text
+
+
+def test_multihop_self_method_dependency(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(
+        "class PriceCalculator:\n"
+        "    def cents(self, total):\n"
+        "        return round(total * 100)\n"
+        "\n"
+        "    def normalize(self, total):\n"
+        "        return self.cents(total) / 100\n"
+        "\n"
+        "    def total(self, subtotal):\n"
+        "        return self.normalize(subtotal)\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["shop/pricing.py::PriceCalculator.total"])
+
+    assert [snippet.symbol for snippet in bundle.snippets] == [
+        "PriceCalculator.total",
+        "PriceCalculator.normalize",
+        "PriceCalculator.cents",
+    ]
+
+
+def test_missing_module_attribute_dependency_marks_partial(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(
+        "import shop.helpers as helpers\n"
+        "\n"
+        "\n"
+        "def target_fn(total):\n"
+        "    return helpers.normalize_price(total) + 1\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(total)", file="shop/pricing.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source"]
+    assert bundle.context_completeness.status == "partial"
+    trace = next(trace for trace in bundle.context_completeness.retrieval_trace if trace.source_kind == "dependency")
+    assert trace.status == "error"
+    assert trace.source_path == "shop/helpers.py"
+    assert trace.symbol == "normalize_price"
+    assert any("cross-file direct dependency source could not be read" in note for note in bundle.context_completeness.risk_notes)
+
+
 def test_missing_cross_file_direct_import_dependency_marks_partial(tmp_path):
     (tmp_path / "shop").mkdir()
     (tmp_path / "shop" / "pricing.py").write_text(
