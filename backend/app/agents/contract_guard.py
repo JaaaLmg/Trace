@@ -465,7 +465,19 @@ def _class_field_names(node: ast.ClassDef) -> set[str]:
     for item in node.body:
         if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and not item.target.id.startswith("_"):
             fields.add(item.target.id)
+            fields.update(_pydantic_field_aliases(item.value))
     return fields
+
+
+def _pydantic_field_aliases(node: ast.AST | None) -> set[str]:
+    if not isinstance(node, ast.Call) or _last(node.func) != "Field":
+        return set()
+    aliases: set[str] = set()
+    for kw in node.keywords:
+        if kw.arg in {"alias", "serialization_alias"} and isinstance(kw.value, ast.Constant):
+            if isinstance(kw.value.value, str) and kw.value.value:
+                aliases.add(kw.value.value)
+    return aliases
 
 
 def _route_path_from_decorator(call: ast.Call) -> str | None:

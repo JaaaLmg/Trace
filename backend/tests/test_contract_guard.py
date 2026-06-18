@@ -421,6 +421,76 @@ def test_generation_contract_accepts_response_json_field_from_response_model():
     assert violations == []
 
 
+ALIAS_ROUTE_RESPONSE_MODEL_SOURCE_CONTEXT = """## shop/api.py:1-18 (get_alias_item)
+```python
+from pydantic import BaseModel, Field
+
+class AliasResponse(BaseModel):
+    item_id: str = Field(alias="itemId")
+    public_name: str = Field(serialization_alias="publicName")
+
+@app.get("/alias/{item}", response_model=AliasResponse)
+def get_alias_item(item: str):
+    return {"item_id": item, "public_name": "Apple"}
+```"""
+
+
+def test_generation_contract_accepts_response_json_field_alias_from_response_model():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_alias_item_fields():\n"
+        "    client = TestClient(app)\n"
+        "    response = client.get('/alias/apple')\n"
+        "    data = response.json()\n"
+        "    assert response.status_code == 200\n"
+        "    assert data['itemId'] == 'apple'\n"
+        "    assert data['publicName'] == 'Apple'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_alias_item_fields",
+                "target_route": "/alias/{item}",
+                "assertion_summary": "验证响应模型别名字段",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /alias/{item}",
+        source_context=ALIAS_ROUTE_RESPONSE_MODEL_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_rejects_response_json_field_not_name_or_alias():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_alias_item_discount():\n"
+        "    client = TestClient(app)\n"
+        "    response = client.get('/alias/apple')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['discount'] == 1.0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_alias_item_discount",
+                "target_route": "/alias/{item}",
+                "assertion_summary": "验证不存在的响应字段",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /alias/{item}",
+        source_context=ALIAS_ROUTE_RESPONSE_MODEL_SOURCE_CONTEXT,
+    )
+
+    assert any("响应字段缺少模型证据" in violation for violation in violations)
+
+
 ITEMS_ROUTE_RESPONSE_MODEL_SOURCE_CONTEXT = """## shop/api.py:1-18 (list_items)
 ```python
 from pydantic import BaseModel
