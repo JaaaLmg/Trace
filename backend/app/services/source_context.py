@@ -288,6 +288,7 @@ def build_source_context_bundle(
         )
 
     support_incomplete = _support_context_incomplete(retrieval_trace)
+    risk_notes.extend(_lsp_fallback_risk_notes(retrieval_trace))
     if primary_snippet_count == 0:
         status = "incomplete"
         risk_notes.append("no source snippet could be read")
@@ -1757,6 +1758,21 @@ def _sort_targets(targets: list[_Target]) -> list[_Target]:
 def _support_context_incomplete(retrieval_trace: list[SourceContextRetrievalTrace]) -> bool:
     support_kinds = {"dependency", "model_schema", "fixture", "existing_test", "failure_context"}
     return any(trace.source_kind in support_kinds and trace.status != "resolved" for trace in retrieval_trace)
+
+
+def _lsp_fallback_risk_notes(retrieval_trace: list[SourceContextRetrievalTrace]) -> list[str]:
+    notes: list[str] = []
+    seen: set[str] = set()
+    for trace in retrieval_trace:
+        if trace.source_kind != "target_source" or trace.retrieval_source != "lsp" or trace.status == "resolved":
+            continue
+        reason = "; ".join(trace.risk_notes) if trace.risk_notes else f"status={trace.status}"
+        note = f"lsp definition {trace.status} for {trace.target}; fell back to ast_grep/rg ({reason})"
+        if note in seen:
+            continue
+        seen.add(note)
+        notes.append(note)
+    return notes
 
 
 def _trace_id(*parts: object) -> str:

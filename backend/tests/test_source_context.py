@@ -8,11 +8,13 @@ from app.schemas.tools import (
     FailureDetail,
     FixtureInfo,
     FunctionInfo,
+    LspDefinitionOutput,
     ModelFieldInfo,
     ModelInfo,
     RouteInfo,
     TestFunctionInfo as ExistingTestFunctionInfo,
 )
+from app.services import source_context as source_context_module
 from app.services.source_context import build_source_context_bundle
 from app.tools.analyze import analyze_project
 from app.tools.base import ToolContext
@@ -797,6 +799,27 @@ def test_lsp_fallback_resolves_unindexed_function_before_ast_grep(tmp_path):
     assert target.retrieval_trace_id in traces
     assert traces[target.retrieval_trace_id].retrieval_source == "lsp"
     assert traces[target.retrieval_trace_id].status == "resolved"
+
+
+def test_lsp_missing_then_ast_grep_success_adds_risk_note(tmp_path, monkeypatch):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+
+    def fake_lsp_definition(ctx, inp):
+        return LspDefinitionOutput(
+            query=inp.query,
+            status="missing",
+            engine="python_ast_fallback",
+            warnings=["pyright-langserver unavailable; used python AST fallback"],
+        )
+
+    monkeypatch.setattr(source_context_module, "lsp_definition", fake_lsp_definition)
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], AnalyzeProjectOutput())
+
+    assert bundle.context_completeness.status == "complete"
+    assert bundle.snippets[0].retrieval_source == "ast_grep"
+    assert any("lsp definition missing" in note for note in bundle.context_completeness.risk_notes)
 
 
 def test_direct_dependency_budget_keeps_target_and_marks_partial(tmp_path):
