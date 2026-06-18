@@ -14,24 +14,26 @@ from app.schemas.tools import (
     FailureDetail,
     LspDefinitionInput,
     LspDefinitionMatch,
+    LspReferencesInput,
     ReadFileInput,
     RgSearchInput,
     RgSearchMatch,
 )
 from app.tools.base import ToolContext
 from app.tools.fs_tools import read_file
-from app.tools.lsp import lsp_definition
+from app.tools.lsp import lsp_definition, lsp_references
 from app.tools.search import ast_grep_search, rg_search
 
 
 _SOURCE_KIND_PRIORITY = {
     "target_source": 0,
     "dependency": 1,
-    "model_schema": 2,
-    "fixture": 3,
-    "existing_test": 4,
-    "failure_context": 5,
-    "fallback_file": 6,
+    "reference": 2,
+    "model_schema": 3,
+    "fixture": 4,
+    "existing_test": 5,
+    "failure_context": 6,
+    "fallback_file": 7,
 }
 
 
@@ -73,6 +75,7 @@ def build_source_context_bundle(
     max_support_snippets: int = 4,
     max_dependency_snippets: int = 3,
     max_dependency_depth: int = 2,
+    max_reference_snippets: int = 2,
     failure_details: Sequence[FailureDetail] | None = None,
     max_failure_contexts: int = 4,
     max_failure_context_chars: int = 1600,
@@ -250,6 +253,19 @@ def build_source_context_bundle(
                 max_total_bytes=max_total_bytes,
                 max_dependency_snippets=max_dependency_snippets,
                 max_dependency_depth=max_dependency_depth,
+                risk_notes=risk_notes,
+                retrieval_trace=retrieval_trace,
+            )
+        if target.source_kind == "target_source" and target.symbol and max_reference_snippets > 0:
+            total_bytes = _append_lsp_references(
+                ctx,
+                target,
+                snippets,
+                pieces,
+                seen,
+                total_bytes,
+                max_total_bytes=max_total_bytes,
+                max_reference_snippets=max_reference_snippets,
                 risk_notes=risk_notes,
                 retrieval_trace=retrieval_trace,
             )
@@ -973,6 +989,137 @@ def _append_direct_dependencies(
         )
         header = f"## {dep.source_path}:{dep.start_line}-{dep.end_line} (dependency:{dep.name})"
         pieces.append(f"{header}\n```python\n{dep.segment}\n```")
+    return total_bytes
+
+
+def _append_lsp_references(
+    ctx: ToolContext,
+    target: _Target,
+    snippets: list[SourceContextSnippet],
+    pieces: list[str],
+    seen: set[tuple[str, str | None]],
+    total_bytes: int,
+    *,
+    max_total_bytes: int,
+    max_reference_snippets: int,
+    risk_notes: list[str],
+    retrieval_trace: list[SourceContextRetrievalTrace],
+) -> int:
+    if not target.symbol:
+        return total_bytes
+    try:
+        out = lsp_references(
+            ctx,
+            LspReferencesInput(
+                query=target.symbol,
+                path=".",
+                glob="*.py",
+                max_matches=max_reference_snippets + 1,
+            ),
+        )
+    except Exception as exc:
+        risk_notes.append(f"reference context unavailable for {target.raw}: {type(exc).__name__}")
+        return total_bytes
+
+    references = [
+        reference
+        for reference in out.references
+        if reference.source_path != target.rel_path
+        and not _is_generated_test_path(reference.source_path, ctx.relpath(ctx.test_write_dir))
+    ]
+    if not references:
+        return total_bytes
+
+    if len(references) > max_reference_snippets:
+        risk_notes.append("reference context truncated by max_reference_snippets")
+        for reference in references[max_reference_snippets:]:
+            retrieval_trace.append(
+                _trace(
+                    target=f"reference:{target.raw}->{reference.source_path}:{reference.line_range.get('start', 1)}",
+                    source_kind="reference",
+                    retrieval_source="lsp",
+                    status="truncated",
+                    source_path=reference.source_path,
+                    symbol=reference.symbol,
+                    start_line=reference.line_range.get("start", 1),
+                    end_line=reference.line_range.get("end", reference.line_range.get("start", 1)),
+                    confidence=reference.confidence,
+                    risk_notes=["reference context truncated by max_reference_snippets"],
+                )
+            )
+
+    for reference in references[:max_reference_snippets]:
+        start_line = reference.line_range.get("start", 1)
+        end_line = reference.line_range.get("end", start_line)
+        key = (reference.source_path, f"reference:{reference.symbol}:{start_line}:{end_line}")
+        if key in seen:
+            continue
+        seen.add(key)
+        segment = reference.matched_text
+        segment_bytes = len(segment.encode("utf-8"))
+        reference_target = f"reference:{target.raw}->{reference.source_path}:{start_line}"
+        if total_bytes + segment_bytes > max_total_bytes:
+            risk_notes.append("reference context truncated by max_total_bytes")
+            retrieval_trace.append(
+                _trace(
+                    target=reference_target,
+                    source_kind="reference",
+                    retrieval_source="lsp",
+                    status="truncated",
+                    source_path=reference.source_path,
+                    symbol=reference.symbol,
+                    start_line=start_line,
+                    end_line=end_line,
+                    confidence=reference.confidence,
+                    risk_notes=["reference context truncated by max_total_bytes"],
+                )
+            )
+            break
+        total_bytes += segment_bytes
+        trace_id = _trace_id(
+            reference_target,
+            "reference",
+            "lsp",
+            reference.source_path,
+            reference.symbol or "",
+            start_line,
+            end_line,
+            reference.content_hash,
+        )
+        snippets.append(
+            SourceContextSnippet(
+                path=reference.source_path,
+                source_path=reference.source_path,
+                target_ref=f"reference:{target.symbol}",
+                target=reference_target,
+                symbol=reference.symbol,
+                source_kind="reference",
+                retrieval_source="lsp",
+                confidence=reference.confidence,
+                start_line=start_line,
+                end_line=end_line,
+                content_hash=reference.content_hash,
+                bytes=segment_bytes,
+                retrieval_trace_id=trace_id,
+            )
+        )
+        retrieval_trace.append(
+            _trace(
+                trace_id=trace_id,
+                target=reference_target,
+                source_kind="reference",
+                retrieval_source="lsp",
+                status="resolved",
+                source_path=reference.source_path,
+                symbol=reference.symbol,
+                start_line=start_line,
+                end_line=end_line,
+                confidence=reference.confidence,
+                content_hash=reference.content_hash,
+            )
+        )
+        header = f"## {reference.source_path}:{start_line}-{end_line} (reference:{target.symbol})"
+        pieces.append(f"{header}\n```python\n{segment}\n```")
     return total_bytes
 
 
@@ -1756,7 +1903,7 @@ def _sort_targets(targets: list[_Target]) -> list[_Target]:
 
 
 def _support_context_incomplete(retrieval_trace: list[SourceContextRetrievalTrace]) -> bool:
-    support_kinds = {"dependency", "model_schema", "fixture", "existing_test", "failure_context"}
+    support_kinds = {"dependency", "reference", "model_schema", "fixture", "existing_test", "failure_context"}
     return any(trace.source_kind in support_kinds and trace.status != "resolved" for trace in retrieval_trace)
 
 

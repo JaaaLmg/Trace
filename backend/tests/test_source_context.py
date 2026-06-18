@@ -645,6 +645,68 @@ def test_source_context_includes_fixture_and_existing_test_evidence(tmp_path):
     assert "def test_existing_pricing_case" in bundle.source_context_text
 
 
+def test_source_context_includes_lsp_reference_evidence(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+    (tmp_path / "tests" / "test_pricing.py").write_text(
+        "from shop.pricing import target_fn\n"
+        "\n"
+        "def test_existing_pricing_case():\n"
+        "    assert target_fn(2, 3) == 7\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(a, b)", file="shop/pricing.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    assert bundle.context_completeness.status == "complete"
+    reference = next(snippet for snippet in bundle.snippets if snippet.source_kind == "reference")
+    assert reference.path == "tests/test_pricing.py"
+    assert reference.target_ref == "reference:target_fn"
+    assert reference.retrieval_source == "lsp"
+    assert reference.start_line == 4
+    assert "target_fn(2, 3)" in bundle.source_context_text
+    trace = next(trace for trace in bundle.context_completeness.retrieval_trace if trace.source_kind == "reference")
+    assert trace.status == "resolved"
+    assert trace.source_path == "tests/test_pricing.py"
+    assert trace.line_range == {"start": 4, "end": 4}
+
+
+def test_lsp_reference_budget_marks_partial(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+    (tmp_path / "tests" / "test_pricing.py").write_text(
+        "from shop.pricing import target_fn\n"
+        "\n"
+        "def test_one():\n"
+        "    assert target_fn(1, 2) == 3\n"
+        "\n"
+        "def test_two():\n"
+        "    assert target_fn(2, 3) == 7\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(a, b)", file="shop/pricing.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis, max_reference_snippets=1)
+
+    references = [snippet for snippet in bundle.snippets if snippet.source_kind == "reference"]
+    assert len(references) == 1
+    assert bundle.context_completeness.status == "partial"
+    truncated = [
+        trace
+        for trace in bundle.context_completeness.retrieval_trace
+        if trace.source_kind == "reference" and trace.status == "truncated"
+    ]
+    assert truncated
+    assert any("reference context truncated by max_reference_snippets" in note for note in bundle.context_completeness.risk_notes)
+
+
 def test_source_context_includes_failure_context_evidence(tmp_path):
     (tmp_path / "shop").mkdir()
     (tmp_path / "tests" / "generated").mkdir(parents=True)

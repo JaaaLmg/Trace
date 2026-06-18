@@ -21,6 +21,7 @@ CaptureRule = Literal["clean_passed_variant_assertion_failure_same_nodeid"]
 SourceContextKind = Literal[
     "target_source",
     "dependency",
+    "reference",
     "model_schema",
     "fixture",
     "existing_test",
