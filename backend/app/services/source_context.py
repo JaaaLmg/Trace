@@ -5,7 +5,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.schemas.evaluation import ContextCompletenessEvidence, SourceContextSnippet
+from app.schemas.evaluation import ContextCompletenessEvidence, SourceContextRetrievalTrace, SourceContextSnippet
 from app.schemas.tools import AnalyzeProjectOutput, ReadFileInput
 from app.tools.base import ToolContext
 from app.tools.fs_tools import read_file
@@ -24,6 +24,18 @@ class _Target:
     raw: str
     rel_path: str
     symbol: str | None  # None = 整文件
+    source_kind: str = "target_source"
+    retrieval_source: str = "analysis_ast"
+    confidence: float = 1.0
+
+
+@dataclass(frozen=True)
+class _AnalysisMatch:
+    rel_path: str
+    symbol: str
+    source_kind: str
+    retrieval_source: str
+    confidence: float
 
 
 def build_source_context_bundle(
@@ -48,15 +60,40 @@ def build_source_context_bundle(
     total_bytes = 0
     missing_targets: list[str] = []
     risk_notes: list[str] = []
+    retrieval_trace: list[SourceContextRetrievalTrace] = []
     seen: set[tuple[str, str | None]] = set()
 
     targets, unresolved = _resolve_targets(ctx, target_scope, analysis)
     # 连「目标 -> 文件」都映射不到的，先记进缺失，别让它们在记录里凭空消失。
     missing_targets.extend(unresolved)
+    for raw in unresolved:
+        retrieval_trace.append(
+            _trace(
+                target=raw,
+                source_kind="target_source",
+                retrieval_source="analysis_ast",
+                status="missing",
+                confidence=0.0,
+                risk_notes=["target could not be resolved to project source"],
+            )
+        )
     if len(targets) > max_snippets:
         truncated = targets[max_snippets:]
         missing_targets.extend(target.raw for target in truncated)
         risk_notes.append("source context truncated by max_snippets")
+        for target in truncated:
+            retrieval_trace.append(
+                _trace(
+                    target=target.raw,
+                    source_kind=target.source_kind,
+                    retrieval_source=target.retrieval_source,
+                    status="truncated",
+                    source_path=_safe_source_path(target.rel_path),
+                    symbol=target.symbol,
+                    confidence=target.confidence,
+                    risk_notes=["source context truncated by max_snippets"],
+                )
+            )
     for target in targets[:max_snippets]:
         key = (target.rel_path, target.symbol)
         if key in seen:
@@ -66,6 +103,18 @@ def build_source_context_bundle(
             out = read_file(ctx, ReadFileInput(path=target.rel_path, max_bytes=max_file_bytes))
         except Exception:
             missing_targets.append(target.raw)
+            retrieval_trace.append(
+                _trace(
+                    target=target.raw,
+                    source_kind=target.source_kind,
+                    retrieval_source=target.retrieval_source,
+                    status="error",
+                    source_path=_safe_source_path(target.rel_path),
+                    symbol=target.symbol,
+                    confidence=0.0,
+                    risk_notes=["source file could not be read"],
+                )
+            )
             continue
 
         if target.symbol:
@@ -73,6 +122,18 @@ def build_source_context_bundle(
             if sliced is None:
                 # 文件读到了，但定位不到目标符号：算缺失，不要退化成整文件冒充命中。
                 missing_targets.append(target.raw)
+                retrieval_trace.append(
+                    _trace(
+                        target=target.raw,
+                        source_kind=target.source_kind,
+                        retrieval_source=target.retrieval_source,
+                        status="missing",
+                        source_path=out.path,
+                        symbol=target.symbol,
+                        confidence=0.0,
+                        risk_notes=["symbol could not be sliced from source file"],
+                    )
+                )
                 continue
             start_line, end_line, segment = sliced
             target_ref = target.symbol
@@ -83,16 +144,64 @@ def build_source_context_bundle(
         segment_bytes = len(segment.encode("utf-8"))
         if total_bytes + segment_bytes > max_total_bytes:
             risk_notes.append("source context truncated by max_total_bytes")
+            missing_targets.append(target.raw)
+            retrieval_trace.append(
+                _trace(
+                    target=target.raw,
+                    source_kind=target.source_kind,
+                    retrieval_source=target.retrieval_source,
+                    status="truncated",
+                    source_path=out.path,
+                    symbol=target.symbol,
+                    start_line=start_line,
+                    end_line=end_line,
+                    confidence=target.confidence,
+                    risk_notes=["source context truncated by max_total_bytes"],
+                )
+            )
             break
         total_bytes += segment_bytes
+        content_hash = hashlib.sha256(segment.encode("utf-8")).hexdigest()
+        trace_id = _trace_id(
+            target.raw,
+            target.source_kind,
+            target.retrieval_source,
+            out.path,
+            target.symbol or "",
+            start_line,
+            end_line,
+            content_hash,
+        )
         snippets.append(
             SourceContextSnippet(
                 path=out.path,
+                source_path=out.path,
                 target_ref=target_ref,
+                target=target.raw,
+                symbol=target.symbol or target_ref,
+                source_kind=target.source_kind,
+                retrieval_source=target.retrieval_source,
+                confidence=target.confidence,
                 start_line=start_line,
                 end_line=end_line,
-                content_hash=hashlib.sha256(segment.encode("utf-8")).hexdigest(),
+                content_hash=content_hash,
                 bytes=segment_bytes,
+                retrieval_trace_id=trace_id,
+            )
+        )
+        retrieval_trace.append(
+            _trace(
+                trace_id=trace_id,
+                target=target.raw,
+                source_kind=target.source_kind,
+                retrieval_source=target.retrieval_source,
+                status="resolved",
+                source_path=out.path,
+                symbol=target.symbol or target_ref,
+                start_line=start_line,
+                end_line=end_line,
+                confidence=target.confidence,
+                content_hash=content_hash,
             )
         )
         header = f"## {out.path}:{start_line}-{end_line} ({target_ref})"
@@ -112,6 +221,7 @@ def build_source_context_bundle(
             max_total_bytes=max_total_bytes,
             max_support_snippets=max_support_snippets,
             risk_notes=risk_notes,
+            retrieval_trace=retrieval_trace,
         )
 
     if target_snippet_count == 0:
@@ -127,6 +237,7 @@ def build_source_context_bundle(
         status=status,
         context_incomplete=status != "complete",
         snippets=snippets,
+        retrieval_trace=retrieval_trace,
         missing_targets=missing_targets,
         risk_notes=risk_notes,
     )
@@ -143,7 +254,18 @@ def _resolve_targets(
     if not target_scope:
         # 没给目标：退回少量默认入口文件整文件读，保持 demo 可跑。
         defaults = ["calc.py", "app.py", "main.py"]
-        return [_Target(raw=name, rel_path=name, symbol=None) for name in defaults if (ctx.root / name).exists()], []
+        return [
+            _Target(
+                raw=name,
+                rel_path=name,
+                symbol=None,
+                source_kind="fallback_file",
+                retrieval_source="default_path",
+                confidence=0.4,
+            )
+            for name in defaults
+            if (ctx.root / name).exists()
+        ], []
 
     targets: list[_Target] = []
     unresolved: list[str] = []
@@ -165,43 +287,94 @@ def _resolve_one(ctx: ToolContext, raw: str, analysis: AnalyzeProjectOutput | No
     for sep in ("::", ":"):
         if sep in norm and norm.split(sep, 1)[0].endswith(".py"):
             path_part, symbol = norm.split(sep, 1)
-            return _Target(raw=raw, rel_path=path_part, symbol=symbol or None)
+            return _Target(
+                raw=raw,
+                rel_path=path_part,
+                symbol=symbol or None,
+                source_kind="target_source",
+                retrieval_source="direct_path",
+                confidence=0.8,
+            )
 
     # 先按符号 / 路由 path 查 analyze 结果。路由目标常写成 "/items" 或 "/api/users"，
     # 不能因为包含 "/" 就误判成文件路径。
     if analysis is not None:
-        file = _file_for_symbol(analysis, norm)
-        if file is not None:
-            return _Target(raw=raw, rel_path=file, symbol=_symbol_for_target(analysis, norm))
+        match = _analysis_match(analysis, norm)
+        if match is not None:
+            return _Target(
+                raw=raw,
+                rel_path=match.rel_path,
+                symbol=match.symbol,
+                source_kind=match.source_kind,
+                retrieval_source=match.retrieval_source,
+                confidence=match.confidence,
+            )
 
     # 直接是一个文件路径：整文件。
     if norm.endswith(".py") or "/" in norm:
-        return _Target(raw=raw, rel_path=norm, symbol=None)
+        return _Target(
+            raw=raw,
+            rel_path=norm,
+            symbol=None,
+            source_kind="target_source",
+            retrieval_source="direct_path",
+            confidence=0.7,
+        )
 
     return None
 
 
-def _file_for_symbol(analysis: AnalyzeProjectOutput, symbol: str) -> str | None:
-    # 支持传 "module.func" 或裸 "func"；路由可传 handler 名或 path。
-    short = symbol.rsplit(".", 1)[-1]
+def _analysis_match(analysis: AnalyzeProjectOutput, target: str) -> _AnalysisMatch | None:
+    # 支持传 "module.func" 或裸 "func"；路由可传 handler 名、path 或 "METHOD path"。
+    short = target.rsplit(".", 1)[-1]
+    route_path = _route_path_without_method(target)
+    route_with_method = _route_with_method(target)
+    for route in analysis.routes:
+        method_path = f"{route.method} {route.path}"
+        if route.handler == short or route.path == route_path or method_path == route_with_method:
+            return _AnalysisMatch(
+                rel_path=route.file,
+                symbol=route.handler,
+                source_kind="target_source",
+                retrieval_source="framework_scanner",
+                confidence=1.0,
+            )
     for fn in analysis.functions:
         if fn.name == short:
-            return fn.file
+            return _AnalysisMatch(
+                rel_path=fn.file,
+                symbol=fn.name,
+                source_kind="target_source",
+                retrieval_source="analysis_ast",
+                confidence=1.0,
+            )
     for model in analysis.models:
         if model.name == short:
-            return model.file
-    for route in analysis.routes:
-        if route.handler == short or route.path == symbol:
-            return route.file
+            return _AnalysisMatch(
+                rel_path=model.file,
+                symbol=model.name,
+                source_kind="model_schema",
+                retrieval_source="analysis_ast",
+                confidence=1.0,
+            )
     return None
 
 
-def _symbol_for_target(analysis: AnalyzeProjectOutput, target: str) -> str:
-    short = target.rsplit(".", 1)[-1]
-    for route in analysis.routes:
-        if route.path == target:
-            return route.handler
-    return short
+def _route_path_without_method(value: str) -> str:
+    norm = value.strip()
+    if norm.startswith("route:"):
+        norm = norm.removeprefix("route:").strip()
+    parts = norm.split(maxsplit=1)
+    if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
+        return parts[1].strip()
+    return norm
+
+
+def _route_with_method(value: str) -> str:
+    norm = value.strip()
+    if norm.startswith("route:"):
+        norm = norm.removeprefix("route:").strip()
+    return norm
 
 
 def _slice_symbol(content: str, symbol: str) -> tuple[int, int, str] | None:
@@ -239,12 +412,26 @@ def _append_support_context(
     max_total_bytes: int,
     max_support_snippets: int,
     risk_notes: list[str],
+    retrieval_trace: list[SourceContextRetrievalTrace],
 ) -> int:
     support = _support_targets(ctx, analysis)
     if len(support) > max_support_snippets:
         risk_notes.append("support context truncated by max_support_snippets")
+        for target in support[max_support_snippets:]:
+            retrieval_trace.append(
+                _trace(
+                    target=target.raw,
+                    source_kind=target.source_kind,
+                    retrieval_source=target.retrieval_source,
+                    status="truncated",
+                    source_path=_safe_source_path(target.rel_path),
+                    symbol=target.symbol,
+                    confidence=target.confidence,
+                    risk_notes=["support context truncated by max_support_snippets"],
+                )
+            )
     for target in support[:max_support_snippets]:
-        key = (target.rel_path, target.raw)
+        key = (target.rel_path, target.symbol)
         if key in seen:
             continue
         seen.add(key)
@@ -252,27 +439,98 @@ def _append_support_context(
             out = read_file(ctx, ReadFileInput(path=target.rel_path, max_bytes=max_file_bytes))
         except Exception:
             risk_notes.append(f"support context unavailable: {target.raw}")
+            retrieval_trace.append(
+                _trace(
+                    target=target.raw,
+                    source_kind=target.source_kind,
+                    retrieval_source=target.retrieval_source,
+                    status="error",
+                    source_path=_safe_source_path(target.rel_path),
+                    symbol=target.symbol,
+                    confidence=0.0,
+                    risk_notes=["support source file could not be read"],
+                )
+            )
             continue
         if not target.symbol:
             continue
         sliced = _slice_symbol(out.content, target.symbol)
         if sliced is None:
             risk_notes.append(f"support context symbol unavailable: {target.raw}")
+            retrieval_trace.append(
+                _trace(
+                    target=target.raw,
+                    source_kind=target.source_kind,
+                    retrieval_source=target.retrieval_source,
+                    status="missing",
+                    source_path=out.path,
+                    symbol=target.symbol,
+                    confidence=0.0,
+                    risk_notes=["support symbol could not be sliced from source file"],
+                )
+            )
             continue
         start_line, end_line, segment = sliced
         segment_bytes = len(segment.encode("utf-8"))
         if total_bytes + segment_bytes > max_total_bytes:
             risk_notes.append("support context truncated by max_total_bytes")
+            retrieval_trace.append(
+                _trace(
+                    target=target.raw,
+                    source_kind=target.source_kind,
+                    retrieval_source=target.retrieval_source,
+                    status="truncated",
+                    source_path=out.path,
+                    symbol=target.symbol,
+                    start_line=start_line,
+                    end_line=end_line,
+                    confidence=target.confidence,
+                    risk_notes=["support context truncated by max_total_bytes"],
+                )
+            )
             break
         total_bytes += segment_bytes
+        content_hash = hashlib.sha256(segment.encode("utf-8")).hexdigest()
+        trace_id = _trace_id(
+            target.raw,
+            target.source_kind,
+            target.retrieval_source,
+            out.path,
+            target.symbol,
+            start_line,
+            end_line,
+            content_hash,
+        )
         snippets.append(
             SourceContextSnippet(
                 path=out.path,
+                source_path=out.path,
                 target_ref=target.raw,
+                target=target.raw,
+                symbol=target.symbol,
+                source_kind=target.source_kind,
+                retrieval_source=target.retrieval_source,
+                confidence=target.confidence,
                 start_line=start_line,
                 end_line=end_line,
-                content_hash=hashlib.sha256(segment.encode("utf-8")).hexdigest(),
+                content_hash=content_hash,
                 bytes=segment_bytes,
+                retrieval_trace_id=trace_id,
+            )
+        )
+        retrieval_trace.append(
+            _trace(
+                trace_id=trace_id,
+                target=target.raw,
+                source_kind=target.source_kind,
+                retrieval_source=target.retrieval_source,
+                status="resolved",
+                source_path=out.path,
+                symbol=target.symbol,
+                start_line=start_line,
+                end_line=end_line,
+                confidence=target.confidence,
+                content_hash=content_hash,
             )
         )
         header = f"## {out.path}:{start_line}-{end_line} ({target.raw})"
@@ -284,11 +542,29 @@ def _support_targets(ctx: ToolContext, analysis: AnalyzeProjectOutput) -> list[_
     generated_tests_dir = ctx.relpath(ctx.test_write_dir)
     targets: list[_Target] = []
     for model in analysis.models:
-        targets.append(_Target(raw=f"model:{model.name}", rel_path=model.file, symbol=model.name))
+        targets.append(
+            _Target(
+                raw=f"model:{model.name}",
+                rel_path=model.file,
+                symbol=model.name,
+                source_kind="model_schema",
+                retrieval_source="analysis_ast",
+                confidence=0.95,
+            )
+        )
     for fixture in analysis.fixtures:
         if _is_generated_test_path(fixture.file, generated_tests_dir):
             continue
-        targets.append(_Target(raw=f"fixture:{fixture.name}", rel_path=fixture.file, symbol=fixture.name))
+        targets.append(
+            _Target(
+                raw=f"fixture:{fixture.name}",
+                rel_path=fixture.file,
+                symbol=fixture.name,
+                source_kind="fixture",
+                retrieval_source="pytest_scanner",
+                confidence=0.95,
+            )
+        )
     for test_file in analysis.existing_tests:
         if _is_generated_test_path(test_file.path, generated_tests_dir):
             continue
@@ -298,9 +574,60 @@ def _support_targets(ctx: ToolContext, analysis: AnalyzeProjectOutput) -> list[_
                     raw=f"existing_test:{test.estimated_nodeid}",
                     rel_path=test_file.path,
                     symbol=test.name,
+                    source_kind="existing_test",
+                    retrieval_source="pytest_scanner",
+                    confidence=0.9,
                 )
             )
     return targets
+
+
+def _trace_id(*parts: object) -> str:
+    raw = "\0".join("" if part is None else str(part) for part in parts)
+    return "ctx-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _trace(
+    *,
+    target: str,
+    source_kind: str,
+    retrieval_source: str,
+    status: str,
+    confidence: float,
+    trace_id: str | None = None,
+    source_path: str | None = None,
+    symbol: str | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    content_hash: str | None = None,
+    risk_notes: list[str] | None = None,
+) -> SourceContextRetrievalTrace:
+    line_range = {"start": start_line, "end": end_line} if start_line is not None and end_line is not None else None
+    return SourceContextRetrievalTrace(
+        trace_id=trace_id
+        or _trace_id(target, source_kind, retrieval_source, source_path or "", symbol or "", status, content_hash or ""),
+        source_kind=source_kind,  # type: ignore[arg-type]
+        retrieval_source=retrieval_source,  # type: ignore[arg-type]
+        target=target,
+        source_path=_safe_source_path(source_path),
+        symbol=symbol,
+        line_range=line_range,
+        confidence=confidence,
+        content_hash=content_hash,
+        status=status,  # type: ignore[arg-type]
+        risk_notes=risk_notes or [],
+    )
+
+
+def _safe_source_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    norm = path.replace("\\", "/").strip()
+    if not norm or norm.startswith("/") or norm.startswith("//") or (len(norm) >= 2 and norm[1] == ":"):
+        return None
+    if any(part == ".." for part in norm.split("/")):
+        return None
+    return norm
 
 
 def _is_generated_test_path(path: str, generated_tests_dir: str) -> bool:

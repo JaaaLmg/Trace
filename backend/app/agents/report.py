@@ -134,13 +134,14 @@ def _build_report_quality(ctx: AgentContext, final_results, attempts) -> ReportQ
             )
         )
         target_ref = case.target_function or case.target_route or "unknown"
+        source_snippet = _source_snippet_for_case(ctx.context_completeness, case.target_function, case.target_route)
         target_mappings.append(
             TargetMappingEvidence(
                 target_type="function" if case.target_function else ("route" if case.target_route else "unknown"),
                 target_ref=target_ref,
-                source_path=(ctx.context_completeness.snippets[0].path if ctx.context_completeness and ctx.context_completeness.snippets else None),
-                symbol=case.target_function,
-                mapping_status="mapped" if target_ref != "unknown" else "unmapped",
+                source_path=(source_snippet.source_path or source_snippet.path if source_snippet else None),
+                symbol=case.target_function or (source_snippet.symbol if source_snippet else None),
+                mapping_status="mapped" if source_snippet else ("unmapped" if target_ref == "unknown" else "partial"),
             )
         )
         if case.assertion_summary:
@@ -187,6 +188,39 @@ def _build_report_quality(ctx: AgentContext, final_results, attempts) -> ReportQ
         reflection_evidence=reflection_evidence,
         context_completeness=context,
     )
+
+
+def _source_snippet_for_case(context: ContextCompletenessEvidence | None, target_function: str | None, target_route: str | None):
+    if context is None or not context.snippets:
+        return None
+    target = target_function or target_route
+    if not target:
+        return None
+    target_norm = _target_key(target)
+
+    def matches(snippet) -> bool:
+        values = {snippet.target_ref, snippet.target, snippet.symbol}
+        return target_norm in {_target_key(value) for value in values if value}
+
+    for snippet in context.snippets:
+        if snippet.source_kind == "target_source" and matches(snippet):
+            return snippet
+    for snippet in context.snippets:
+        if matches(snippet):
+            return snippet
+    return None
+
+
+def _target_key(value: str) -> str:
+    norm = value.strip()
+    if norm.startswith("route:"):
+        norm = norm.removeprefix("route:").strip()
+    parts = norm.split(maxsplit=1)
+    if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
+        norm = parts[1].strip()
+    if norm.startswith("/"):
+        return norm
+    return norm.rsplit(".", 1)[-1]
 
 
 def _render_markdown(ctx, metrics, items, final_by_item, risk_notes) -> str:

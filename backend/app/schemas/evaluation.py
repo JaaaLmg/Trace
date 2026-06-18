@@ -18,6 +18,19 @@ MetricStatus = Literal["ok", "invalid_test_set", "evaluable_zero_capture"]
 CleanRunValidityStatus = Literal["evaluable", "invalid_test_set"]
 ResolutionStep = Literal["strategy_version_defaults", "experiment_llm_override", "repeat_derivation"]
 CaptureRule = Literal["clean_passed_variant_assertion_failure_same_nodeid"]
+SourceContextKind = Literal["target_source", "model_schema", "fixture", "existing_test", "failure_context", "fallback_file"]
+RetrievalSourceKind = Literal[
+    "analysis_ast",
+    "framework_scanner",
+    "pytest_scanner",
+    "direct_path",
+    "default_path",
+    "rg",
+    "ast_grep",
+    "lsp",
+    "pytest_result",
+]
+RetrievalTraceStatus = Literal["resolved", "missing", "truncated", "error"]
 ArtifactKind = Literal[
     "generated_test_set",
     "pytest_json",
@@ -232,13 +245,52 @@ class ReflectionEvidence(ContractModel):
     rejected_attempt_ids: list[str] = Field(default_factory=list)
 
 
+class SourceContextRetrievalTrace(ContractModel):
+    trace_id: str
+    source_kind: SourceContextKind
+    retrieval_source: RetrievalSourceKind
+    target: str
+    source_path: str | None = None
+    symbol: str | None = None
+    line_range: dict[str, int] | None = None
+    confidence: float = Field(ge=0, le=1)
+    content_hash: str | None = None
+    status: RetrievalTraceStatus
+    risk_notes: list[str] = Field(default_factory=list)
+
+    @field_validator("source_path")
+    @classmethod
+    def _source_path_is_project_relative(cls, value: str | None) -> str | None:
+        if value is not None:
+            _validate_relative_project_path(value, field_name="source_path")
+        return value
+
+    @field_validator("line_range")
+    @classmethod
+    def _line_range_shape_is_valid(cls, value: dict[str, int] | None) -> dict[str, int] | None:
+        if value is None:
+            return value
+        if set(value) != {"start", "end"}:
+            raise ValueError("line_range must contain start and end")
+        if value["start"] < 1 or value["end"] < value["start"]:
+            raise ValueError("line_range must be a valid 1-based range")
+        return value
+
+
 class SourceContextSnippet(ContractModel):
     path: str
+    source_path: str | None = None
     target_ref: str
+    target: str | None = None
+    symbol: str | None = None
+    source_kind: SourceContextKind = "target_source"
+    retrieval_source: RetrievalSourceKind = "analysis_ast"
+    confidence: float = Field(default=1.0, ge=0, le=1)
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
     content_hash: str
     bytes: int = Field(ge=0)
+    retrieval_trace_id: str | None = None
     trace_step_id: str | None = None
 
     @field_validator("path")
@@ -250,6 +302,10 @@ class SourceContextSnippet(ContractModel):
     def _line_range_is_valid(self) -> SourceContextSnippet:
         if self.end_line < self.start_line:
             raise ValueError("source context end_line must be >= start_line")
+        if self.source_path is None:
+            self.source_path = self.path
+        else:
+            _validate_relative_project_path(self.source_path, field_name="source_path")
         return self
 
 
@@ -257,6 +313,7 @@ class ContextCompletenessEvidence(ContractModel):
     status: Literal["complete", "partial", "incomplete"]
     context_incomplete: bool
     snippets: list[SourceContextSnippet] = Field(default_factory=list)
+    retrieval_trace: list[SourceContextRetrievalTrace] = Field(default_factory=list)
     missing_targets: list[str] = Field(default_factory=list)
     risk_notes: list[str] = Field(default_factory=list)
 

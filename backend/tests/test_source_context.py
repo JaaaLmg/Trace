@@ -90,6 +90,7 @@ def test_route_path_target_resolves_to_handler(tmp_path):
 
     assert bundle.context_completeness.status == "complete"
     assert bundle.snippets[0].target_ref == "list_items"
+    assert bundle.snippets[0].retrieval_source == "framework_scanner"
     assert "def list_items" in bundle.source_context_text
 
 
@@ -219,6 +220,75 @@ def test_source_context_includes_fixture_and_existing_test_evidence(tmp_path):
     assert "existing_test:tests/test_pricing.py::test_existing_pricing_case" in refs
     assert "def client" in bundle.source_context_text
     assert "def test_existing_pricing_case" in bundle.source_context_text
+
+
+def test_source_context_snippets_carry_structured_retrieval_evidence(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(
+        "from pydantic import BaseModel\n"
+        "\n"
+        "class PriceRequest(BaseModel):\n"
+        "    sku: str\n"
+        "\n"
+        "def target_fn(req: PriceRequest):\n"
+        "    return req.sku.upper()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "conftest.py").write_text(
+        "import pytest\n"
+        "\n"
+        "@pytest.fixture\n"
+        "def client():\n"
+        "    return object()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_pricing.py").write_text(
+        "from shop.pricing import target_fn\n"
+        "\n"
+        "def test_existing_pricing_case(client):\n"
+        "    assert target_fn(type('Req', (), {'sku': 'a'})()) == 'A'\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["target_fn"]))
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["target_fn"], analysis)
+
+    by_ref = {snippet.target_ref: snippet for snippet in bundle.snippets}
+    target = by_ref["target_fn"]
+    assert target.source_kind == "target_source"
+    assert target.source_path == "shop/pricing.py"
+    assert target.symbol == "target_fn"
+    assert target.target == "target_fn"
+    assert target.confidence == 1.0
+    assert target.retrieval_trace_id
+
+    assert by_ref["model:PriceRequest"].source_kind == "model_schema"
+    assert by_ref["fixture:client"].source_kind == "fixture"
+    assert by_ref["existing_test:tests/test_pricing.py::test_existing_pricing_case"].source_kind == "existing_test"
+
+    traces = {trace.trace_id: trace for trace in bundle.context_completeness.retrieval_trace}
+    assert target.retrieval_trace_id in traces
+    assert traces[target.retrieval_trace_id].content_hash == target.content_hash
+    assert traces[target.retrieval_trace_id].source_path == "shop/pricing.py"
+    assert traces[target.retrieval_trace_id].line_range == {"start": target.start_line, "end": target.end_line}
+
+
+def test_missing_source_context_target_emits_retrieval_trace(tmp_path):
+    (tmp_path / "calc.py").write_text(_SAMPLE, encoding="utf-8")
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(a, b)", file="calc.py")]
+    )
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["does_not_exist"], analysis)
+
+    [trace] = bundle.context_completeness.retrieval_trace
+    assert trace.status == "missing"
+    assert trace.source_kind == "target_source"
+    assert trace.target == "does_not_exist"
+    assert trace.source_path is None
+    assert trace.confidence == 0.0
+    assert "does_not_exist" in bundle.context_completeness.missing_targets
 
 
 def test_path_traversal_target_is_denied(tmp_path):

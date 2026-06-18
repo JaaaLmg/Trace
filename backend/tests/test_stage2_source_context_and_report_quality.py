@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from app.agents.llm import MockLLM
 from app.agents import prompts
+from app.agents.report import _build_report_quality
 from app.main import create_app
+from app.schemas.evaluation import ContextCompletenessEvidence, SourceContextSnippet
 from app.services.test_runs import execute_run_sync
 from app.db.session import get_engine
 from sqlalchemy.orm import Session
@@ -80,3 +83,62 @@ def test_run_records_source_context_and_report_quality(monkeypatch, tmp_path, cl
         assert report["metrics"]["report_quality"]["context_completeness"]["context_incomplete"] is False
         assert report["metrics"]["report_quality"]["test_inventory"]
         assert report["metrics"]["report_quality"]["assertion_summaries"]
+
+
+def test_report_quality_maps_target_to_matching_source_snippet():
+    class Recorder:
+        def list_generated_files(self, run_id):
+            return [SimpleNamespace(id="file-1", path="tests/generated/test_generated.py")]
+
+        def list_generated_cases(self, run_id):
+            return [
+                SimpleNamespace(
+                    file_id="file-1",
+                    test_name="test_second",
+                    start_line=3,
+                    end_line=4,
+                    nodeid="tests/generated/test_generated.py::test_second",
+                    target_function="second",
+                    target_route=None,
+                    assertion_summary="second returns 2",
+                )
+            ]
+
+    context = ContextCompletenessEvidence(
+        status="complete",
+        context_incomplete=False,
+        snippets=[
+            SourceContextSnippet(
+                path="shop/first.py",
+                source_path="shop/first.py",
+                target_ref="first",
+                target="first",
+                symbol="first",
+                source_kind="target_source",
+                start_line=1,
+                end_line=2,
+                content_hash="hash-first",
+                bytes=20,
+            ),
+            SourceContextSnippet(
+                path="shop/second.py",
+                source_path="shop/second.py",
+                target_ref="second",
+                target="second",
+                symbol="second",
+                source_kind="target_source",
+                start_line=10,
+                end_line=11,
+                content_hash="hash-second",
+                bytes=20,
+            ),
+        ],
+    )
+    ctx = SimpleNamespace(run=SimpleNamespace(id="run-1"), recorder=Recorder(), context_completeness=context)
+
+    quality = _build_report_quality(ctx, final_results=[], attempts=[])
+
+    [mapping] = quality.target_mappings
+    assert mapping.target_ref == "second"
+    assert mapping.source_path == "shop/second.py"
+    assert mapping.symbol == "second"

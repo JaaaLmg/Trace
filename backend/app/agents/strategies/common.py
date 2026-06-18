@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Optional
 
 from app.agents import prompts
@@ -71,7 +72,7 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
             gen.cases,
             target_type=getattr(draft, "target_type", None),
             target_ref=getattr(draft, "target_ref", None),
-            allowed_request_fields=_model_field_names(analysis),
+            allowed_request_fields=_model_field_names(analysis, draft),
             allowed_fixtures=_fixture_names(analysis),
             source_context=ctx.source_context_text,
         )
@@ -282,14 +283,63 @@ def _as_draft(item) -> PlanItemDraft:
     )
 
 
-def _model_field_names(analysis) -> list[str]:
+def _model_field_names(analysis, item=None) -> list[str]:
+    selected_models = _models_for_target(analysis, item)
+    if item is not None:
+        return _field_names(selected_models)
+    return _field_names(getattr(analysis, "models", []) or [])
+
+
+def _field_names(models) -> list[str]:
     names: list[str] = []
-    for model in getattr(analysis, "models", []) or []:
+    for model in models:
         for field in getattr(model, "fields", []) or []:
             name = getattr(field, "name", None)
             if name:
                 names.append(str(name))
     return names
+
+
+def _models_for_target(analysis, item) -> list:
+    models = list(getattr(analysis, "models", []) or [])
+    if item is None:
+        return models
+    target_type = getattr(item, "target_type", None)
+    if target_type not in {"route", "function"}:
+        return models
+    fn_name = _target_function_name(analysis, target_type, getattr(item, "target_ref", None))
+    if not fn_name:
+        return []
+    signature = next((getattr(fn, "signature", "") for fn in getattr(analysis, "functions", []) or [] if fn.name == fn_name), "")
+    if not signature:
+        return []
+    return [model for model in models if _signature_mentions_model(signature, getattr(model, "name", ""))]
+
+
+def _target_function_name(analysis, target_type: str | None, target_ref: str | None) -> str | None:
+    ref = str(target_ref or "").strip()
+    if not ref:
+        return None
+    if target_type == "function":
+        return ref.rsplit(".", 1)[-1]
+    if target_type == "route":
+        route = next((_route for _route in getattr(analysis, "routes", []) or [] if _route_matches(_route, ref)), None)
+        return getattr(route, "handler", None) if route is not None else None
+    return None
+
+
+def _route_matches(route, target_ref: str) -> bool:
+    norm = target_ref.removeprefix("route:").strip()
+    parts = norm.split(maxsplit=1)
+    method = parts[0].upper() if len(parts) == 2 else None
+    path = parts[1].strip() if len(parts) == 2 else norm
+    if method and method != str(route.method).upper():
+        return False
+    return path == route.path or norm == f"{str(route.method).upper()} {route.path}" or norm.rsplit(".", 1)[-1] == route.handler
+
+
+def _signature_mentions_model(signature: str, model_name: str) -> bool:
+    return bool(model_name and re.search(rf"\b{re.escape(model_name)}\b", signature))
 
 
 def _fixture_names(analysis) -> list[str]:
