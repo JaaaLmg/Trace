@@ -1580,7 +1580,21 @@ def _append_support_context(
     risk_notes: list[str],
     retrieval_trace: list[SourceContextRetrievalTrace],
 ) -> int:
-    support = _sort_targets(_support_targets(ctx, analysis))
+    support, duplicate_support = _dedupe_support_targets(_sort_targets(_support_targets(ctx, analysis)), seen)
+    for target, kept in duplicate_support:
+        retrieval_trace.append(
+            _trace(
+                target=target.raw,
+                source_kind=target.source_kind,
+                retrieval_source=target.retrieval_source,
+                status="resolved",
+                source_path=_safe_source_path(target.rel_path),
+                symbol=target.symbol,
+                confidence=target.confidence,
+                risk_notes=[_support_dedup_note(kept)],
+            )
+        )
+
     if len(support) > max_support_snippets:
         risk_notes.append("support context truncated by max_support_snippets")
         for target in support[max_support_snippets:]:
@@ -1921,6 +1935,31 @@ def _support_targets(ctx: ToolContext, analysis: AnalyzeProjectOutput) -> list[_
                 )
             )
     return targets
+
+
+def _dedupe_support_targets(
+    targets: list[_Target],
+    seen: set[tuple[str, str | None]],
+) -> tuple[list[_Target], list[tuple[_Target, _Target | None]]]:
+    unique: list[_Target] = []
+    duplicates: list[tuple[_Target, _Target | None]] = []
+    occupied = set(seen)
+    kept_by_key: dict[tuple[str, str | None], _Target] = {}
+    for target in targets:
+        key = (target.rel_path, target.symbol)
+        if key in occupied:
+            duplicates.append((target, kept_by_key.get(key)))
+            continue
+        occupied.add(key)
+        kept_by_key[key] = target
+        unique.append(target)
+    return unique, duplicates
+
+
+def _support_dedup_note(kept: _Target | None) -> str:
+    if kept is None:
+        return "support context deduplicated by evidence key; existing snippet already covers this path/symbol"
+    return f"support context deduplicated by evidence key; kept {kept.raw}"
 
 
 def _sort_targets(targets: list[_Target]) -> list[_Target]:

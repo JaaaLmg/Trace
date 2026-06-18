@@ -1165,6 +1165,109 @@ def test_support_context_order_is_source_kind_priority(tmp_path):
     ]
 
 
+def test_support_context_deduplicates_before_support_budget(tmp_path):
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn()", file="shop/api.py")],
+        models=[
+            ModelInfo(name="PriceRequest", file="shop/api.py", fields=[ModelFieldInfo(name="sku")]),
+            ModelInfo(name="PriceRequest", file="shop/api.py", fields=[ModelFieldInfo(name="sku")]),
+        ],
+        fixtures=[FixtureInfo(name="client", file="tests/conftest.py", line=2)],
+    )
+
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "shop" / "api.py").write_text(
+        "class PriceRequest:\n"
+        "    sku: str\n"
+        "\n"
+        "def target_fn():\n"
+        "    return PriceRequest()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "conftest.py").write_text(
+        "def client():\n"
+        "    return object()\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["target_fn"],
+        analysis,
+        max_support_snippets=2,
+        max_dependency_snippets=0,
+        max_reference_snippets=0,
+    )
+
+    assert [snippet.source_kind for snippet in bundle.snippets] == [
+        "target_source",
+        "model_schema",
+        "fixture",
+    ]
+    assert not any(
+        trace.source_kind == "fixture" and trace.status == "truncated"
+        for trace in bundle.context_completeness.retrieval_trace
+    )
+    assert any(
+        trace.source_kind == "model_schema"
+        and any("support context deduplicated by evidence key" in note for note in trace.risk_notes)
+        for trace in bundle.context_completeness.retrieval_trace
+    )
+
+
+def test_support_context_deduplicates_cross_source_with_trace(tmp_path):
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn()", file="shop/api.py")],
+        fixtures=[FixtureInfo(name="client", file="tests/conftest.py", line=2)],
+        existing_tests=[
+            ExistingTestInfo(
+                path="tests/conftest.py",
+                test_functions=[
+                    ExistingTestFunctionInfo(
+                        name="client",
+                        line=1,
+                        estimated_nodeid="tests/conftest.py::client",
+                    )
+                ],
+            )
+        ],
+    )
+
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "shop" / "api.py").write_text(
+        "def target_fn():\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "conftest.py").write_text(
+        "def client():\n"
+        "    return object()\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["target_fn"],
+        analysis,
+        max_dependency_snippets=0,
+        max_reference_snippets=0,
+    )
+
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "fixture"]
+    assert bundle.source_context_text.count("def client") == 1
+    assert bundle.context_completeness.status == "complete"
+    trace = next(
+        trace
+        for trace in bundle.context_completeness.retrieval_trace
+        if trace.target == "existing_test:tests/conftest.py::client"
+    )
+    assert trace.status == "resolved"
+    assert trace.source_kind == "existing_test"
+    assert any("support context deduplicated by evidence key" in note for note in trace.risk_notes)
+
+
 def test_max_snippets_truncation_marks_partial(tmp_path):
     functions = []
     scope = []
