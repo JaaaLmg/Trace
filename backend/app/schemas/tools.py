@@ -139,6 +139,41 @@ class LspDefinitionOutput(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+# ---------- lsp_references ----------
+class LspReferencesInput(BaseModel):
+    query: str = Field(min_length=1)
+    path: str = "."
+    glob: Optional[str] = "*.py"
+    from_path: Optional[str] = None
+    line: Optional[int] = Field(default=None, ge=1)
+    column: Optional[int] = Field(default=None, ge=0)
+    include_declaration: bool = False
+    timeout_ms: int = Field(default=1500, ge=100, le=10000)
+    max_matches: int = Field(default=50, ge=1, le=500)
+    max_file_bytes: int = Field(default=256_000, ge=1)
+
+
+class LspReferenceMatch(BaseModel):
+    source_path: str
+    line_range: dict[str, int]
+    matched_text: str
+    symbol: Optional[str] = None
+    content_hash: str
+    trace_id: str
+    confidence: float = Field(ge=0, le=1)
+    retrieval_source: Literal["lsp"] = "lsp"
+    engine: Literal["pyright_lsp", "python_ast_fallback"]
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class LspReferencesOutput(BaseModel):
+    query: str
+    status: Literal["resolved", "missing", "unavailable", "error"]
+    references: list[LspReferenceMatch] = Field(default_factory=list)
+    engine: Literal["pyright_lsp", "python_ast_fallback", "unavailable"]
+    warnings: list[str] = Field(default_factory=list)
+
+
 # ---------- analyze_project ----------
 class AnalyzeProjectInput(BaseModel):
     snapshot_id: Optional[str] = None

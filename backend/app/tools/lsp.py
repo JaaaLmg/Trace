@@ -10,7 +10,14 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from app.schemas.tools import LspDefinitionInput, LspDefinitionMatch, LspDefinitionOutput
+from app.schemas.tools import (
+    LspDefinitionInput,
+    LspDefinitionMatch,
+    LspDefinitionOutput,
+    LspReferenceMatch,
+    LspReferencesInput,
+    LspReferencesOutput,
+)
 from app.tools.base import ToolContext
 
 _IGNORE = {".git", "__pycache__", ".venv", "venv", "node_modules", ".pytest_cache"}
@@ -52,6 +59,47 @@ def lsp_definition(ctx: ToolContext, inp: LspDefinitionInput) -> LspDefinitionOu
         query=inp.query,
         status="missing",
         definitions=[],
+        engine="python_ast_fallback",
+        warnings=warnings,
+    )
+
+
+def lsp_references(ctx: ToolContext, inp: LspReferencesInput) -> LspReferencesOutput:
+    base = ctx.resolve_read(inp.path)
+    warnings: list[str] = []
+    lsp_command = shutil.which("pyright-langserver")
+    if lsp_command and inp.from_path and inp.line is not None and inp.column is not None:
+        try:
+            references = _references_with_pyright_lsp(ctx, lsp_command, inp)
+            if references:
+                return LspReferencesOutput(
+                    query=inp.query,
+                    status="resolved",
+                    references=references,
+                    engine="pyright_lsp",
+                    warnings=warnings,
+                )
+            warnings.append("pyright-langserver returned no references; used python AST fallback")
+        except Exception as exc:
+            warnings.append(f"pyright-langserver references failed: {type(exc).__name__}; used python AST fallback")
+    elif lsp_command is None:
+        warnings.append("pyright-langserver unavailable; used python AST fallback")
+    else:
+        warnings.append("pyright-langserver references require from_path, line, and column; used python AST fallback")
+
+    references = _references_with_python_ast(ctx, base, inp)
+    if references:
+        return LspReferencesOutput(
+            query=inp.query,
+            status="resolved",
+            references=references,
+            engine="python_ast_fallback",
+            warnings=warnings,
+        )
+    return LspReferencesOutput(
+        query=inp.query,
+        status="missing",
+        references=[],
         engine="python_ast_fallback",
         warnings=warnings,
     )
@@ -102,6 +150,61 @@ def _definition_with_pyright_lsp(
         response = _read_lsp_response(proc, 2, timeout_seconds=deadline_seconds)
         result = response.get("result")
         return _lsp_locations_to_matches(ctx, result, inp)
+    finally:
+        try:
+            _send_lsp(proc, 3, "shutdown", None)
+            _send_lsp(proc, None, "exit", None)
+        except Exception:
+            pass
+        proc.kill()
+
+
+def _references_with_pyright_lsp(
+    ctx: ToolContext,
+    command: str,
+    inp: LspReferencesInput,
+) -> list[LspReferenceMatch]:
+    source_file = ctx.resolve_read(inp.from_path or "")
+    content = source_file.read_bytes()[: inp.max_file_bytes].decode("utf-8", errors="replace")
+    uri = source_file.as_uri()
+    proc = subprocess.Popen(
+        [command, "--stdio"],
+        cwd=ctx.root,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline_seconds = max(inp.timeout_ms / 1000, 0.1)
+        _send_lsp(proc, 1, "initialize", {"rootUri": ctx.root.as_uri(), "capabilities": {}})
+        _read_lsp_response(proc, 1, timeout_seconds=deadline_seconds)
+        _send_lsp(proc, None, "initialized", {})
+        _send_lsp(
+            proc,
+            None,
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "python",
+                    "version": 1,
+                    "text": content,
+                }
+            },
+        )
+        _send_lsp(
+            proc,
+            2,
+            "textDocument/references",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": (inp.line or 1) - 1, "character": inp.column or 0},
+                "context": {"includeDeclaration": inp.include_declaration},
+            },
+        )
+        response = _read_lsp_response(proc, 2, timeout_seconds=deadline_seconds)
+        result = response.get("result")
+        return _lsp_reference_locations_to_matches(ctx, result, inp)
     finally:
         try:
             _send_lsp(proc, 3, "shutdown", None)
@@ -199,6 +302,64 @@ def _lsp_locations_to_matches(
     return matches
 
 
+def _lsp_reference_locations_to_matches(
+    ctx: ToolContext,
+    result: object,
+    inp: LspReferencesInput,
+) -> list[LspReferenceMatch]:
+    raw_locations = result if isinstance(result, list) else [result]
+    matches: list[LspReferenceMatch] = []
+    seen: set[tuple[str, int, int, str]] = set()
+    for raw in raw_locations:
+        if not isinstance(raw, dict):
+            continue
+        uri = raw.get("uri")
+        range_obj = raw.get("range")
+        if not isinstance(uri, str) or not isinstance(range_obj, dict):
+            continue
+        path = _path_from_uri(uri)
+        if path is None:
+            continue
+        try:
+            source_path = ctx.resolve_read(ctx.relpath(path))
+        except Exception:
+            continue
+        rel = ctx.relpath(source_path)
+        if inp.glob and not (fnmatch.fnmatch(source_path.name, inp.glob) or fnmatch.fnmatch(rel, inp.glob)):
+            continue
+        text = source_path.read_bytes()[: inp.max_file_bytes].decode("utf-8", errors="replace")
+        line_start, line_end = _lsp_range_lines(range_obj)
+        match = _reference_match(
+            ctx,
+            source_path,
+            text.splitlines(),
+            line_start,
+            line_end,
+            inp.query,
+            symbol=_reference_symbol(inp.query),
+            engine="pyright_lsp",
+            confidence=0.86,
+        )
+        key = (match.source_path, match.line_range["start"], match.line_range["end"], match.symbol or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(match)
+        if len(matches) >= inp.max_matches:
+            break
+    return matches
+
+
+def _lsp_range_lines(range_obj: dict) -> tuple[int, int]:
+    start = range_obj.get("start")
+    end = range_obj.get("end")
+    start_raw = start.get("line") if isinstance(start, dict) else 0
+    end_raw = end.get("line") if isinstance(end, dict) else start_raw
+    start_line = int(start_raw if isinstance(start_raw, int) else 0) + 1
+    end_line = int(end_raw if isinstance(end_raw, int) else start_line - 1) + 1
+    return max(start_line, 1), max(end_line, start_line)
+
+
 def _path_from_uri(uri: str) -> Path | None:
     parsed = urlparse(uri)
     if parsed.scheme != "file":
@@ -243,6 +404,62 @@ def _definition_with_python_ast(
             if len(matches) >= inp.max_matches:
                 return matches
     return matches
+
+
+def _references_with_python_ast(
+    ctx: ToolContext,
+    base: Path,
+    inp: LspReferencesInput,
+) -> list[LspReferenceMatch]:
+    token = _reference_symbol(inp.query)
+    matches: list[LspReferenceMatch] = []
+    seen: set[tuple[str, int, int, str]] = set()
+    for path in _iter_files(base):
+        rel = ctx.relpath(path)
+        if inp.glob and not (fnmatch.fnmatch(path.name, inp.glob) or fnmatch.fnmatch(rel, inp.glob)):
+            continue
+        text = path.read_bytes()[: inp.max_file_bytes].decode("utf-8", errors="replace")
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = text.splitlines()
+        for node in ast.walk(tree):
+            if not _is_reference_node(node, token):
+                continue
+            start = getattr(node, "lineno", 1)
+            end = getattr(node, "end_lineno", start)
+            match = _reference_match(
+                ctx,
+                path,
+                lines,
+                start,
+                end,
+                inp.query,
+                symbol=token,
+                engine="python_ast_fallback",
+                confidence=0.62,
+            )
+            key = (match.source_path, match.line_range["start"], match.line_range["end"], match.symbol or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(match)
+            if len(matches) >= inp.max_matches:
+                return matches
+    return matches
+
+
+def _reference_symbol(query: str) -> str:
+    return query.rsplit(".", 1)[-1]
+
+
+def _is_reference_node(node: ast.AST, token: str) -> bool:
+    if isinstance(node, ast.Name):
+        return isinstance(node.ctx, ast.Load) and node.id == token
+    if isinstance(node, ast.Attribute):
+        return isinstance(node.ctx, ast.Load) and node.attr == token
+    return False
 
 
 def _node_symbol(tree: ast.AST, target: ast.AST) -> str:
@@ -298,6 +515,36 @@ def _match(
     )
 
 
+def _reference_match(
+    ctx: ToolContext,
+    path: Path,
+    lines: list[str],
+    start: int,
+    end: int,
+    query: str,
+    *,
+    symbol: str,
+    engine: str,
+    confidence: float,
+) -> LspReferenceMatch:
+    start = max(start, 1)
+    end = max(end, start)
+    segment = "\n".join(lines[start - 1 : end])
+    source_path = ctx.relpath(path)
+    content_hash = hashlib.sha256(segment.encode("utf-8")).hexdigest()
+    return LspReferenceMatch(
+        source_path=source_path,
+        line_range={"start": start, "end": end},
+        matched_text=segment,
+        symbol=symbol,
+        content_hash=content_hash,
+        trace_id=_reference_trace_id(query, source_path, symbol, start, end, content_hash),
+        confidence=confidence,
+        engine=engine,  # type: ignore[arg-type]
+        metadata={} if engine == "pyright_lsp" else {"fallback_reason": "lsp_unavailable"},
+    )
+
+
 def _iter_files(base: Path) -> list[Path]:
     if base.is_file():
         return [base]
@@ -314,3 +561,8 @@ def _iter_files(base: Path) -> list[Path]:
 def _trace_id(*parts: object) -> str:
     raw = "\0".join(str(part) for part in parts)
     return "lsp-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _reference_trace_id(*parts: object) -> str:
+    raw = "\0".join(str(part) for part in parts)
+    return "lsp-ref-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
