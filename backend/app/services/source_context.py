@@ -4,9 +4,10 @@ import ast
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 from app.schemas.evaluation import ContextCompletenessEvidence, SourceContextRetrievalTrace, SourceContextSnippet
-from app.schemas.tools import AnalyzeProjectOutput, ReadFileInput, RgSearchInput, RgSearchMatch
+from app.schemas.tools import AnalyzeProjectOutput, FailureDetail, ReadFileInput, RgSearchInput, RgSearchMatch
 from app.tools.base import ToolContext
 from app.tools.fs_tools import read_file
 from app.tools.search import rg_search
@@ -58,6 +59,9 @@ def build_source_context_bundle(
     max_total_bytes: int = 48000,
     max_snippets: int = 12,
     max_support_snippets: int = 4,
+    failure_details: Sequence[FailureDetail] | None = None,
+    max_failure_contexts: int = 4,
+    max_failure_context_chars: int = 1600,
 ) -> SourceContextBundle:
     """按目标函数/路由读取源码片段。
 
@@ -232,6 +236,20 @@ def build_source_context_bundle(
             max_file_bytes=max_file_bytes,
             max_total_bytes=max_total_bytes,
             max_support_snippets=max_support_snippets,
+            risk_notes=risk_notes,
+            retrieval_trace=retrieval_trace,
+        )
+
+    if failure_details:
+        total_bytes = _append_failure_context(
+            ctx,
+            failure_details,
+            snippets,
+            pieces,
+            total_bytes,
+            max_total_bytes=max_total_bytes,
+            max_failure_contexts=max_failure_contexts,
+            max_failure_context_chars=max_failure_context_chars,
             risk_notes=risk_notes,
             retrieval_trace=retrieval_trace,
         )
@@ -733,6 +751,181 @@ def _append_support_context(
         header = f"## {out.path}:{start_line}-{end_line} ({target.raw})"
         pieces.append(f"{header}\n```python\n{segment}\n```")
     return total_bytes
+
+
+def _append_failure_context(
+    ctx: ToolContext,
+    failure_details: Sequence[FailureDetail],
+    snippets: list[SourceContextSnippet],
+    pieces: list[str],
+    total_bytes: int,
+    *,
+    max_total_bytes: int,
+    max_failure_contexts: int,
+    max_failure_context_chars: int,
+    risk_notes: list[str],
+    retrieval_trace: list[SourceContextRetrievalTrace],
+) -> int:
+    details = list(failure_details)
+    if len(details) > max_failure_contexts:
+        risk_notes.append("failure context truncated by max_failure_contexts")
+        for detail in details[max_failure_contexts:]:
+            target = _failure_target(detail)
+            source_path = _failure_source_path(ctx, detail)
+            line = _failure_line(detail)
+            retrieval_trace.append(
+                _trace(
+                    target=target,
+                    source_kind="failure_context",
+                    retrieval_source="pytest_result",
+                    status="truncated",
+                    source_path=source_path,
+                    start_line=line,
+                    end_line=line,
+                    confidence=0.7,
+                    risk_notes=["failure context truncated by max_failure_contexts"],
+                )
+            )
+
+    for detail in details[:max_failure_contexts]:
+        target = _failure_target(detail)
+        source_path = _failure_source_path(ctx, detail)
+        line = _failure_line(detail)
+        if source_path is None:
+            risk_notes.append(f"failure context missing project-relative path: {target}")
+            retrieval_trace.append(
+                _trace(
+                    target=target,
+                    source_kind="failure_context",
+                    retrieval_source="pytest_result",
+                    status="missing",
+                    confidence=0.0,
+                    risk_notes=["failure context lacks project-relative path"],
+                )
+            )
+            continue
+
+        segment = _failure_context_segment(detail, source_path, line, max_failure_context_chars)
+        segment_bytes = len(segment.encode("utf-8"))
+        if total_bytes + segment_bytes > max_total_bytes:
+            risk_notes.append("failure context truncated by max_total_bytes")
+            retrieval_trace.append(
+                _trace(
+                    target=target,
+                    source_kind="failure_context",
+                    retrieval_source="pytest_result",
+                    status="truncated",
+                    source_path=source_path,
+                    start_line=line,
+                    end_line=line,
+                    confidence=0.7,
+                    risk_notes=["failure context truncated by max_total_bytes"],
+                )
+            )
+            break
+
+        total_bytes += segment_bytes
+        content_hash = hashlib.sha256(segment.encode("utf-8")).hexdigest()
+        trace_id = _trace_id(target, "failure_context", "pytest_result", source_path, line, content_hash)
+        snippets.append(
+            SourceContextSnippet(
+                path=source_path,
+                source_path=source_path,
+                target_ref=target,
+                target=target,
+                symbol=None,
+                source_kind="failure_context",
+                retrieval_source="pytest_result",
+                confidence=0.9,
+                start_line=line,
+                end_line=line,
+                content_hash=content_hash,
+                bytes=segment_bytes,
+                retrieval_trace_id=trace_id,
+            )
+        )
+        retrieval_trace.append(
+            _trace(
+                trace_id=trace_id,
+                target=target,
+                source_kind="failure_context",
+                retrieval_source="pytest_result",
+                status="resolved",
+                source_path=source_path,
+                start_line=line,
+                end_line=line,
+                confidence=0.9,
+                content_hash=content_hash,
+            )
+        )
+        header = f"## {source_path}:{line}-{line} (failure_context:{target})"
+        pieces.append(f"{header}\n```text\n{segment}\n```")
+    return total_bytes
+
+
+def _failure_target(detail: FailureDetail) -> str:
+    return str(detail.nodeid or detail.file or "<collect>")
+
+
+def _failure_source_path(ctx: ToolContext, detail: FailureDetail) -> str | None:
+    candidates = [detail.file, _nodeid_path(detail.nodeid)]
+    for candidate in candidates:
+        safe = _safe_source_path(candidate)
+        if safe:
+            return safe
+        if candidate:
+            absolute = Path(candidate)
+            if absolute.is_absolute():
+                try:
+                    relative = absolute.resolve().relative_to(ctx.root.resolve())
+                except ValueError:
+                    continue
+                safe = _safe_source_path(relative.as_posix())
+                if safe:
+                    return safe
+    return None
+
+
+def _nodeid_path(nodeid: str | None) -> str | None:
+    if not nodeid or nodeid.startswith("<"):
+        return None
+    return nodeid.split("::", 1)[0]
+
+
+def _failure_line(detail: FailureDetail) -> int:
+    return detail.line if detail.line and detail.line > 0 else 1
+
+
+def _failure_context_segment(
+    detail: FailureDetail,
+    source_path: str,
+    line: int,
+    max_chars: int,
+) -> str:
+    rows = [
+        f"nodeid: {_failure_target(detail)}",
+        f"location: {source_path}:{line}",
+    ]
+    if detail.failure_type:
+        rows.append(f"failure_type: {detail.failure_type}")
+    if detail.exc_type:
+        rows.append(f"exc_type: {detail.exc_type}")
+    if detail.message:
+        rows.append(f"message: {_clip_failure_text(detail.message, 400)}")
+    if detail.traceback:
+        rows.append("traceback:")
+        rows.append(_indent_failure_text(_clip_failure_text(detail.traceback, max_chars), "  "))
+    return "\n".join(rows)
+
+
+def _clip_failure_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...<truncated>"
+
+
+def _indent_failure_text(text: str, prefix: str) -> str:
+    return "\n".join(prefix + line for line in text.splitlines())
 
 
 def _support_targets(ctx: ToolContext, analysis: AnalyzeProjectOutput) -> list[_Target]:

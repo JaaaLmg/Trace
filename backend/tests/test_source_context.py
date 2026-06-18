@@ -5,6 +5,7 @@ from pathlib import Path
 from app.schemas.tools import (
     AnalyzeProjectOutput,
     ExistingTestInfo,
+    FailureDetail,
     FixtureInfo,
     FunctionInfo,
     ModelFieldInfo,
@@ -229,6 +230,54 @@ def test_source_context_includes_fixture_and_existing_test_evidence(tmp_path):
     assert "existing_test:tests/test_pricing.py::test_existing_pricing_case" in refs
     assert "def client" in bundle.source_context_text
     assert "def test_existing_pricing_case" in bundle.source_context_text
+
+
+def test_source_context_includes_failure_context_evidence(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests" / "generated").mkdir(parents=True)
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+    (tmp_path / "tests" / "generated" / "test_generated.py").write_text(
+        "from shop.pricing import target_fn\n"
+        "\n"
+        "def test_target_fn_failure():\n"
+        "    assert target_fn(2, 3) == 999\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(a, b)", file="shop/pricing.py")]
+    )
+
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["target_fn"],
+        analysis,
+        failure_details=[
+            FailureDetail(
+                nodeid="tests/generated/test_generated.py::test_target_fn_failure",
+                file="tests/generated/test_generated.py",
+                line=4,
+                exc_type="AssertionError",
+                message="assert 7 == 999",
+                traceback="E       assert 7 == 999",
+                failure_type="assertion",
+            )
+        ],
+    )
+
+    assert bundle.context_completeness.status == "complete"
+    assert [snippet.source_kind for snippet in bundle.snippets] == ["target_source", "failure_context"]
+    failure = bundle.snippets[1]
+    assert failure.path == "tests/generated/test_generated.py"
+    assert failure.target_ref == "tests/generated/test_generated.py::test_target_fn_failure"
+    assert failure.retrieval_source == "pytest_result"
+    assert failure.start_line == 4
+    assert "failure_context:tests/generated/test_generated.py::test_target_fn_failure" in bundle.source_context_text
+    assert "AssertionError" in bundle.source_context_text
+    assert "E       assert 7 == 999" in bundle.source_context_text
+    trace = next(t for t in bundle.context_completeness.retrieval_trace if t.source_kind == "failure_context")
+    assert trace.status == "resolved"
+    assert trace.source_path == "tests/generated/test_generated.py"
+    assert trace.line_range == {"start": 4, "end": 4}
 
 
 def test_source_context_snippets_carry_structured_retrieval_evidence(tmp_path):

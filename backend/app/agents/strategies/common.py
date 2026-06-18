@@ -157,6 +157,21 @@ def execute_item(ctx, analysis, plan_input: PlanInput, item, target_path, allow_
 def _reflect_once(ctx, analysis, plan_input, item, prev_file, prev_cases, out, target_path):
     ctx.set_stage("reflecting")
     a2 = make_attempt(ctx, item.id, 2, "reflection")
+    failure_bundle = build_source_context_bundle(
+        ctx.tools,
+        plan_input.target_scope,
+        analysis,
+        failure_details=[*out.failures, *out.collection_errors],
+    )
+    ctx.source_context_text = failure_bundle.source_context_text
+    ctx.context_completeness = failure_bundle.context_completeness
+    ctx.trace(
+        "observation",
+        "读取失败上下文",
+        output_summary=failure_bundle.context_completeness.status,
+        payload=failure_bundle.context_completeness.model_dump(),
+        status="ok",
+    )
     msgs = prompts.build_reflect_messages(
         ctx.strategy,
         analysis,
