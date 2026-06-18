@@ -13,6 +13,7 @@ _SKIP_NAMES = {"skip", "skipif", "xfail"}
 _BROAD_EXC = {"Exception", "BaseException"}
 _HTTP_VERBS = {"get", "post", "put", "delete", "patch", "options", "head"}
 _EXCEPTION_BASES_ENV_KEY = "__trace_contract_guard_exception_bases__"
+_RESPONSE_MODEL_LIST_CONTAINERS = {"list", "List", "Sequence"}
 _PYTEST_BUILTIN_FIXTURES = {
     "cache",
     "capsys",
@@ -379,21 +380,21 @@ def _route_response_model_field_violations(tree: ast.AST, source_context: str) -
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        response_fields: dict[str, set[str]] = {}
+        response_models: dict[str, tuple[set[str], str]] = {}
         json_aliases: dict[str, str] = {}
         success_responses: set[str] = set()
-        field_reads: list[tuple[str, str]] = []
+        field_reads: list[tuple[str, str, str]] = []
 
         for stmt in ast.walk(fn):
             if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
                 targets = list(stmt.targets) if isinstance(stmt, ast.Assign) else [stmt.target]
                 value = stmt.value
                 if isinstance(value, ast.Call):
-                    fields = _response_model_fields_for_call(value, route_models)
-                    if fields is not None:
+                    model = _response_model_fields_for_call(value, route_models)
+                    if model is not None:
                         for target in targets:
                             if isinstance(target, ast.Name):
-                                response_fields[target.id] = fields
+                                response_models[target.id] = model
                     response_name = _json_response_name(value)
                     if response_name:
                         for target in targets:
@@ -402,32 +403,29 @@ def _route_response_model_field_violations(tree: ast.AST, source_context: str) -
             if isinstance(stmt, ast.Assert):
                 success_responses.update(_success_status_response_names(stmt.test))
             for subscript in [node for node in ast.walk(stmt) if isinstance(node, ast.Subscript)]:
-                field = _constant_subscript_key(subscript)
-                if not field:
-                    continue
-                response_name = _response_name_for_json_subscript(subscript)
-                if response_name:
-                    field_reads.append((response_name, field))
-                    continue
-                if isinstance(subscript.value, ast.Name) and subscript.value.id in json_aliases:
-                    field_reads.append((json_aliases[subscript.value.id], field))
+                field_read = _response_field_read(subscript, json_aliases)
+                if field_read is not None:
+                    field_reads.append(field_read)
 
-        for response_name, field in field_reads:
-            allowed = response_fields.get(response_name)
-            if allowed is None or response_name not in success_responses:
+        for response_name, read_shape, field in field_reads:
+            model = response_models.get(response_name)
+            if model is None or response_name not in success_responses:
+                continue
+            allowed, model_shape = model
+            if read_shape != model_shape:
                 continue
             if field not in allowed:
                 violations.add(f"{fn.name} 响应字段缺少模型证据：{field}")
     return sorted(violations)
 
 
-def _route_response_model_fields(source_context: str) -> dict[tuple[str, str], set[str]]:
+def _route_response_model_fields(source_context: str) -> dict[tuple[str, str], tuple[set[str], str]]:
     chunks = re.findall(r"```(?:python)?\s*(.*?)```", source_context, flags=re.DOTALL)
     if not chunks:
         chunks = [source_context]
 
     fields_by_model: dict[str, set[str]] = {}
-    route_models: dict[tuple[str, str], set[str]] = {}
+    route_models: dict[tuple[str, str], tuple[set[str], str]] = {}
     parsed: list[ast.AST] = []
     for chunk in chunks:
         try:
@@ -448,12 +446,13 @@ def _route_response_model_fields(source_context: str) -> dict[tuple[str, str], s
                 if call is None or _last(call.func).lower() not in _HTTP_VERBS:
                     continue
                 route_path = _route_path_from_decorator(call)
-                response_model = _response_model_name(call)
+                response_model = _response_model_ref(call)
                 if route_path is None or response_model is None:
                     continue
-                fields = fields_by_model.get(response_model.rsplit(".", 1)[-1])
+                model_name, model_shape = response_model
+                fields = fields_by_model.get(model_name.rsplit(".", 1)[-1])
                 if fields:
-                    route_models[(_last(call.func).lower(), route_path)] = fields
+                    route_models[(_last(call.func).lower(), route_path)] = (fields, model_shape)
     return route_models
 
 
@@ -478,17 +477,28 @@ def _route_path_from_decorator(call: ast.Call) -> str | None:
     return None
 
 
-def _response_model_name(call: ast.Call) -> str | None:
+def _response_model_ref(call: ast.Call) -> tuple[str, str] | None:
     for kw in call.keywords:
         if kw.arg == "response_model":
-            return _attr_chain(kw.value)
+            return _response_model_ref_from_node(kw.value)
+    return None
+
+
+def _response_model_ref_from_node(node: ast.AST) -> tuple[str, str] | None:
+    model_name = _attr_chain(node)
+    if model_name:
+        return model_name, "object"
+    if isinstance(node, ast.Subscript) and _last(node.value) in _RESPONSE_MODEL_LIST_CONTAINERS:
+        item_model_name = _attr_chain(node.slice)
+        if item_model_name:
+            return item_model_name, "list"
     return None
 
 
 def _response_model_fields_for_call(
     call: ast.Call,
-    route_models: dict[tuple[str, str], set[str]],
-) -> set[str] | None:
+    route_models: dict[tuple[str, str], tuple[set[str], str]],
+) -> tuple[set[str], str] | None:
     method = _last(call.func).lower()
     if method not in _HTTP_VERBS or not call.args:
         return None
@@ -540,10 +550,39 @@ def _constant_subscript_key(node: ast.Subscript) -> str | None:
     return None
 
 
+def _constant_subscript_index(node: ast.Subscript) -> int | None:
+    key = node.slice
+    if isinstance(key, ast.Constant) and isinstance(key.value, int) and not isinstance(key.value, bool):
+        return key.value
+    return None
+
+
 def _response_name_for_json_subscript(node: ast.Subscript) -> str | None:
     value = node.value
     if isinstance(value, ast.Call):
         return _json_response_name(value)
+    return None
+
+
+def _response_field_read(
+    node: ast.Subscript,
+    json_aliases: dict[str, str],
+) -> tuple[str, str, str] | None:
+    field = _constant_subscript_key(node)
+    if not field:
+        return None
+    response_name = _response_name_for_json_subscript(node)
+    if response_name:
+        return response_name, "object", field
+    if isinstance(node.value, ast.Name) and node.value.id in json_aliases:
+        return json_aliases[node.value.id], "object", field
+    if isinstance(node.value, ast.Subscript) and _constant_subscript_index(node.value) is not None:
+        item = node.value
+        response_name = _response_name_for_json_subscript(item)
+        if response_name:
+            return response_name, "list", field
+        if isinstance(item.value, ast.Name) and item.value.id in json_aliases:
+            return json_aliases[item.value.id], "list", field
     return None
 
 
