@@ -323,6 +323,104 @@ def get_price(item: str, member: bool = False):
 ```"""
 
 
+PRICE_ROUTE_RESPONSE_MODEL_SOURCE_CONTEXT = """## shop/api.py:1-18 (get_price)
+```python
+from pydantic import BaseModel
+
+class PriceResponse(BaseModel):
+    item: str
+    total: float
+
+@app.get("/price/{item}", response_model=PriceResponse)
+def get_price(item: str):
+    return {"item": item, "total": 10.0}
+```"""
+
+
+def test_generation_contract_rejects_response_json_field_missing_from_response_model():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_price_discount_field():\n"
+        "    client = TestClient(app)\n"
+        "    response = client.get('/price/apple')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['discount'] == 1.0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_discount_field",
+                "target_route": "/price/{item}",
+                "assertion_summary": "验证折扣字段",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        source_context=PRICE_ROUTE_RESPONSE_MODEL_SOURCE_CONTEXT,
+    )
+
+    assert any("响应字段缺少模型证据" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_response_json_alias_field_missing_from_response_model():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_price_discount_field():\n"
+        "    client = TestClient(app)\n"
+        "    response = client.get('/price/apple')\n"
+        "    data = response.json()\n"
+        "    assert response.status_code == 200\n"
+        "    assert data['discount'] == 1.0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_discount_field",
+                "target_route": "/price/{item}",
+                "assertion_summary": "验证折扣字段",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        source_context=PRICE_ROUTE_RESPONSE_MODEL_SOURCE_CONTEXT,
+    )
+
+    assert any("响应字段缺少模型证据" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_response_json_field_from_response_model():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_price_total_field():\n"
+        "    client = TestClient(app)\n"
+        "    response = client.get('/price/apple')\n"
+        "    data = response.json()\n"
+        "    assert response.status_code == 200\n"
+        "    assert data['item'] == 'apple'\n"
+        "    assert data['total'] == 10.0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_total_field",
+                "target_route": "/price/{item}",
+                "assertion_summary": "验证响应模型字段",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        source_context=PRICE_ROUTE_RESPONSE_MODEL_SOURCE_CONTEXT,
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_rejects_empty_path_param_route_case():
     content = (
         "from fastapi.testclient import TestClient\n"

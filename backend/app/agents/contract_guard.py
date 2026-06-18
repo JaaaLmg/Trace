@@ -134,6 +134,9 @@ def check_generation_contract(
     source_oracle_violations = _source_backed_oracle_violations(tree, declared_by_name, source_context or "")
     if source_oracle_violations:
         violations.extend(source_oracle_violations)
+    response_model_violations = _route_response_model_field_violations(tree, source_context or "")
+    if response_model_violations:
+        violations.extend(response_model_violations)
     route_oracle_violations = _route_response_oracle_violations(tree, source_context or "")
     if route_oracle_violations:
         violations.extend(route_oracle_violations)
@@ -365,6 +368,183 @@ def _route_response_oracle_violations(tree: ast.AST, source_context: str) -> lis
                         violations.add(f"{fn.name} 的路由响应 oracle 与目标源码行为不一致")
                         break
     return sorted(violations)
+
+
+def _route_response_model_field_violations(tree: ast.AST, source_context: str) -> list[str]:
+    route_models = _route_response_model_fields(source_context)
+    if not route_models:
+        return []
+
+    violations: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        response_fields: dict[str, set[str]] = {}
+        json_aliases: dict[str, str] = {}
+        success_responses: set[str] = set()
+        field_reads: list[tuple[str, str]] = []
+
+        for stmt in ast.walk(fn):
+            if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                targets = list(stmt.targets) if isinstance(stmt, ast.Assign) else [stmt.target]
+                value = stmt.value
+                if isinstance(value, ast.Call):
+                    fields = _response_model_fields_for_call(value, route_models)
+                    if fields is not None:
+                        for target in targets:
+                            if isinstance(target, ast.Name):
+                                response_fields[target.id] = fields
+                    response_name = _json_response_name(value)
+                    if response_name:
+                        for target in targets:
+                            if isinstance(target, ast.Name):
+                                json_aliases[target.id] = response_name
+            if isinstance(stmt, ast.Assert):
+                success_responses.update(_success_status_response_names(stmt.test))
+            for subscript in [node for node in ast.walk(stmt) if isinstance(node, ast.Subscript)]:
+                field = _constant_subscript_key(subscript)
+                if not field:
+                    continue
+                response_name = _response_name_for_json_subscript(subscript)
+                if response_name:
+                    field_reads.append((response_name, field))
+                    continue
+                if isinstance(subscript.value, ast.Name) and subscript.value.id in json_aliases:
+                    field_reads.append((json_aliases[subscript.value.id], field))
+
+        for response_name, field in field_reads:
+            allowed = response_fields.get(response_name)
+            if allowed is None or response_name not in success_responses:
+                continue
+            if field not in allowed:
+                violations.add(f"{fn.name} 响应字段缺少模型证据：{field}")
+    return sorted(violations)
+
+
+def _route_response_model_fields(source_context: str) -> dict[tuple[str, str], set[str]]:
+    chunks = re.findall(r"```(?:python)?\s*(.*?)```", source_context, flags=re.DOTALL)
+    if not chunks:
+        chunks = [source_context]
+
+    fields_by_model: dict[str, set[str]] = {}
+    route_models: dict[tuple[str, str], set[str]] = {}
+    parsed: list[ast.AST] = []
+    for chunk in chunks:
+        try:
+            tree = ast.parse(chunk)
+        except SyntaxError:
+            continue
+        parsed.append(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and _is_pydantic_model_class(node):
+                fields_by_model[node.name] = _class_field_names(node)
+
+    for tree in parsed:
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for dec in node.decorator_list:
+                call = dec if isinstance(dec, ast.Call) else None
+                if call is None or _last(call.func).lower() not in _HTTP_VERBS:
+                    continue
+                route_path = _route_path_from_decorator(call)
+                response_model = _response_model_name(call)
+                if route_path is None or response_model is None:
+                    continue
+                fields = fields_by_model.get(response_model.rsplit(".", 1)[-1])
+                if fields:
+                    route_models[(_last(call.func).lower(), route_path)] = fields
+    return route_models
+
+
+def _is_pydantic_model_class(node: ast.ClassDef) -> bool:
+    return any(_last(base) == "BaseModel" for base in node.bases)
+
+
+def _class_field_names(node: ast.ClassDef) -> set[str]:
+    fields: set[str] = set()
+    for item in node.body:
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and not item.target.id.startswith("_"):
+            fields.add(item.target.id)
+    return fields
+
+
+def _route_path_from_decorator(call: ast.Call) -> str | None:
+    if call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        return call.args[0].value
+    for kw in call.keywords:
+        if kw.arg == "path" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+            return kw.value.value
+    return None
+
+
+def _response_model_name(call: ast.Call) -> str | None:
+    for kw in call.keywords:
+        if kw.arg == "response_model":
+            return _attr_chain(kw.value)
+    return None
+
+
+def _response_model_fields_for_call(
+    call: ast.Call,
+    route_models: dict[tuple[str, str], set[str]],
+) -> set[str] | None:
+    method = _last(call.func).lower()
+    if method not in _HTTP_VERBS or not call.args:
+        return None
+    path_node = call.args[0]
+    if not isinstance(path_node, ast.Constant) or not isinstance(path_node.value, str):
+        return None
+    path = urlsplit(path_node.value).path or path_node.value
+    for (route_method, template), fields in route_models.items():
+        if route_method == method and _match_route_params(template, path) is not None:
+            return fields
+    return None
+
+
+def _json_response_name(call: ast.Call) -> str | None:
+    if (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "json"
+        and isinstance(call.func.value, ast.Name)
+    ):
+        return call.func.value.id
+    return None
+
+
+def _success_status_response_names(node: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for compare in [child for child in ast.walk(node) if isinstance(child, ast.Compare)]:
+        operands = [compare.left, *compare.comparators]
+        status_names = [
+            operand.value.id
+            for operand in operands
+            if isinstance(operand, ast.Attribute)
+            and operand.attr == "status_code"
+            and isinstance(operand.value, ast.Name)
+        ]
+        success_codes = [
+            operand.value
+            for operand in operands
+            if isinstance(operand, ast.Constant) and isinstance(operand.value, int) and 200 <= operand.value < 300
+        ]
+        if status_names and success_codes:
+            names.update(status_names)
+    return names
+
+
+def _constant_subscript_key(node: ast.Subscript) -> str | None:
+    key = node.slice
+    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+        return key.value
+    return None
+
+
+def _response_name_for_json_subscript(node: ast.Subscript) -> str | None:
+    value = node.value
+    if isinstance(value, ast.Call):
+        return _json_response_name(value)
+    return None
 
 
 def _route_handlers_from_source_context(source_context: str) -> dict[str, str]:
@@ -1077,7 +1257,10 @@ def _eval_expr(
     if isinstance(node, ast.Subscript):
         value = _eval_expr(node.value, functions, env)
         key = _eval_expr(node.slice, functions, env)
-        return value[key]
+        try:
+            return value[key]
+        except (KeyError, IndexError, TypeError):
+            raise _EvalUnknown() from None
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
         for value in node.values:
