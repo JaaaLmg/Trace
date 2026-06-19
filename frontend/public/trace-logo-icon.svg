@@ -1,22 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="280" height="280" viewBox="0 0 280 280" role="img" aria-labelledby="title desc">
-  <title id="title">TRACE radar mark</title>
-  <desc id="desc">An evaluation radar mark with replay rings and a captured defect point.</desc>
+  <title id="title">TRACE archive mark</title>
+  <desc id="desc">A simple paper archive mark with a trace path and completed report node.</desc>
   <defs>
-    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0f172a" flood-opacity="0.12"/>
-    </filter>
+    <pattern id="archiveGrid" width="18" height="18" patternUnits="userSpaceOnUse">
+      <path d="M18 0H0V18" fill="none" stroke="#e5e0d8" stroke-width="1" opacity="0.42"/>
+    </pattern>
   </defs>
 
-  <g transform="translate(38 38)" filter="url(#softShadow)">
-    <rect x="0" y="0" width="204" height="204" rx="42" fill="#ffffff"/>
-    <circle cx="102" cy="102" r="67" fill="none" stroke="#0f172a" stroke-width="11"/>
-    <circle cx="102" cy="102" r="39" fill="none" stroke="#cbd5e1" stroke-width="7"/>
-    <path d="M102 32V172M32 102H172" stroke="#cbd5e1" stroke-width="6" stroke-linecap="round"/>
-    <path d="M62 142C82 161 119 163 143 140C169 115 164 71 135 52" fill="none" stroke="#14b8a6" stroke-width="10" stroke-linecap="round"/>
-    <path d="M133 53L158 48L148 72Z" fill="#14b8a6"/>
-    <circle cx="132" cy="74" r="11" fill="#38bdf8"/>
-    <circle cx="69" cy="126" r="11" fill="#38bdf8"/>
-    <circle cx="102" cy="102" r="18" fill="#fffbeb" stroke="#f59e0b" stroke-width="8"/>
-    <path d="M92 102H112M102 92V112" stroke="#f59e0b" stroke-width="6" stroke-linecap="round"/>
+  <g transform="translate(42 42)">
+    <rect x="0" y="0" width="196" height="196" rx="8" fill="#ffffff" stroke="#e5e0d8" stroke-width="2"/>
+    <rect x="12" y="12" width="172" height="172" rx="4" fill="url(#archiveGrid)" opacity="0.85"/>
+    <path d="M44 64H80C96 64 104 72 104 88V108C104 124 112 132 128 132H152" fill="none" stroke="#6f8ea8" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="44" cy="64" r="11" fill="#d7a44c" stroke="#ffffff" stroke-width="5"/>
+    <circle cx="104" cy="108" r="11" fill="#8b7aa8" stroke="#ffffff" stroke-width="5"/>
+    <circle cx="152" cy="132" r="11" fill="#7f9b83" stroke="#ffffff" stroke-width="5"/>
+    <path d="M146 132L151 137L160 126" fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M42 160H154" stroke="#e5e0d8" stroke-width="3" stroke-linecap="round"/>
+    <path d="M42 174H118" stroke="#e5e0d8" stroke-width="3" stroke-linecap="round"/>
   </g>
 </svg>
