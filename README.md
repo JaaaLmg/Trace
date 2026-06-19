@@ -2,85 +2,67 @@
   <img src="assets/logo.svg" alt="TRACE logo" width="450">
 </p>
 
-TRACE（Test-generation Reflective Agent for Comparative Evaluation）是一个面向 Python/FastAPI 后端项目的测试生成 Agent 原型。它把“模型生成 pytest 文本”推进成一条可执行、可追踪、可评测的工程闭环：
+TRACE（Test-generation Reflective Agent for Comparative Evaluation）是一个面向 Python/FastAPI 项目的测试生成、执行、追踪和评测平台。
 
-```text
-分析项目 -> 生成测试 -> 执行 pytest -> 读取结构化失败 -> 一次受约束 Reflection -> 生成报告 -> seeded bug 评测
-```
+它把“让大模型生成 pytest 测试”扩展成一条完整工程链路：分析项目、生成测试、执行 pytest、读取结构化失败、进行受约束反思、记录 trace、生成报告，并用 seeded bug 评测不同策略的效果。
 
-当前仓库已经完成：
+## 项目简介
 
-- **A 分工：Agent + 工具契约 + 评测 harness**
-- **B 分工 V1：PostgreSQL 持久化、FastAPI 管理 API、Celery + Redis 异步执行主链路**
-- **C 分工 V1：Vue 3 + TypeScript 前端，Run Console / Report / Pytest / Comparison 可视化**
+TRACE 关注三个问题：
 
-## 当前状态
+- 生成的测试是否能真实运行，而不是只停留在文本层面。
+- 测试失败后，Agent 是否能基于结构化 pytest 结果做有限、可追踪的修复。
+- 不同测试生成策略在捕获 seeded bug、误报率、工具调用和 token 成本上的差异。
 
-- M0：工具契约、路径白名单、pytest 结构化执行已完成。
-- M1：MockLLM、三策略 Agent loop、Reflection 契约、trace/report 已完成。
-- M2：demo seeded bugs、污染隔离评测 harness、策略对比表已完成。
-- 真实 LLM：普通 API run 默认从 `backend/llm.config.json` 读取模型配置，已接入官方 OpenAI Responses 与 OpenAI Chat Completions 兼容入口；provider 失败会脱敏记录并用 `LLM_PROVIDER_ERROR` 标记。
-- 当前测试：A 线测试 + B 线数据库/API/schema migration/Celery eager 执行测试已通过。
-- 评测产物：`eval/results/comparison.md`、`eval/results/comparison.json`。
-- B 线已验证一次真实异步 smoke run：`queued -> completed`，并成功落库 `run / events / attempts / pytest_results / report`。
+系统当前主要面向 Python/FastAPI + pytest 项目，提供后端 API、异步执行 worker、PostgreSQL 持久化、Redis 队列和 Vue 前端可视化。
 
-本项目以 `需求分析.md`、`系统设计.md`、`V1实施清单.md` 为技术依据。`初步构想.md` 是旧草稿，不作为当前实现依据。
+## 核心功能
 
-## 目录结构
+- 项目代码分析：通过白名单工具读取和分析目标项目。
+- 测试生成：根据策略生成 pytest 测试文件。
+- 测试执行：运行 pytest，并收集用例级结构化结果。
+- 反思修复：在约束内基于失败信息改进测试。
+- 运行追踪：记录 stage、tool call、LLM 输出、pytest 结果和 artifacts。
+- 报告生成：输出可读报告和结构化指标。
+- 策略对比：支持 Direct、Plan-and-Execute、ReAct + Reflection 等策略。
+- seeded bug 评测：在干净项目与缺陷变体之间重放同一批测试，计算捕获率和误报率。
+- Web 可视化：查看项目、运行详情、trace timeline、pytest 结果、报告和对比矩阵。
 
-```text
-TRACE/
-  backend/
-    app/
-      core/       # 错误码、ID
-      schemas/    # 工具、trace、agent、record、strategy 契约
-      tools/      # list/read/analyze/write/run_pytest + subprocess executor
-      agents/     # MockLLM、三策略、orchestrator、report、contract guard
-      api/        # FastAPI 路由
-      db/         # SQLAlchemy / 配置 / session
-      models/     # 14 张 V1 表
-      repositories/
-      services/
-    workers/    # Celery + Redis 异步执行
-    recorders/  # SQLAlchemyRunRecorder
-    alembic/      # 数据库迁移
-    scripts/      # 启动 API/worker、seed、smoke 验证
-    tests/        # 单元/集成测试
-    llm.config.example.json # 真实 LLM 配置示例；本地 llm.config.json 不提交
-  frontend/
-    src/
-      api/        # B 线 API client
-      components/ # Run Console / Trace / Report / Pytest 可视化组件
-      demo/       # 前端静态演示 fixture；不作为真实 API 状态证据
-      pages/      # Projects / Run Console / Comparison
-  eval/
-    demo/clean/   # demo 被测项目：shop 定价函数 + FastAPI 路由
-    demo/bugs.py  # 6 个 seeded bug ground truth
-    harness/      # 干净生成 + 变体重放 + 指标聚合
-    results/      # comparison.md/json
-```
+## 技术栈
+
+- Backend：FastAPI, SQLAlchemy, Alembic
+- Database：PostgreSQL
+- Queue：Celery, Redis
+- Frontend：Vue 3, TypeScript, Vite
+- Test/Eval：pytest, seeded bug evaluation
+- LLM：OpenAI Responses API 或 OpenAI Chat Completions 兼容接口
 
 ## 快速开始
 
-建议使用 Python 3.11。Windows 上如果系统 `python` 是 Microsoft Store 占位符，请直接使用实际解释器路径。
+建议使用 Python 3.11、Node.js 18+ 和 Docker。
 
-```bash
-cd TRACE
+安装 Python 依赖：
+
+```powershell
+cd D:\GitRepo\专业实训\TRACE
+conda activate trace
 pip install -r backend/requirements.txt
 ```
 
-如果要使用 B 线 V1 的数据库和异步执行，还需要本机启动：
+启动 PostgreSQL 和 Redis：
 
-- PostgreSQL
-- Redis
-
-可直接用 Docker Compose 拉起本地依赖：
-
-```bash
+```powershell
+cd D:\GitRepo\专业实训\TRACE
 docker compose up -d
 ```
 
-本仓库本地默认从根目录 `.env.local` 读取配置。可以从 `.env.example` 复制一份：
+复制本地环境配置：
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+默认配置如下：
 
 ```text
 TRACE_DB_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/trace_test
@@ -89,23 +71,27 @@ TRACE_API_HOST=127.0.0.1
 TRACE_API_PORT=8000
 ```
 
-首次初始化数据库结构：
-
-```bash
-cd backend
-python -m alembic upgrade head
-```
-
-### 配置真实 LLM
-
-后端普通 run 默认走真实 LLM。先从示例复制一份本地配置：
+初始化数据库和基础数据：
 
 ```powershell
-cd backend
+cd D:\GitRepo\专业实训\TRACE\backend
+conda activate trace
+
+python scripts/init_db.py
+python scripts/seed_strategies.py
+python scripts/seed_eval_demo.py
+```
+
+## 配置真实 LLM
+
+普通 API run 默认从 `backend/llm.config.json` 读取模型配置。可以从示例文件复制：
+
+```powershell
+cd D:\GitRepo\专业实训\TRACE\backend
 Copy-Item llm.config.example.json llm.config.json
 ```
 
-编辑 `backend/llm.config.json`：
+示例配置：
 
 ```json
 {
@@ -118,7 +104,7 @@ Copy-Item llm.config.example.json llm.config.json
 }
 ```
 
-也可以不创建 JSON 文件，直接用环境变量：
+也可以通过环境变量配置：
 
 ```powershell
 $env:TRACE_LLM_PROVIDER="openai"
@@ -127,7 +113,7 @@ $env:TRACE_LLM_API_KEY="你的 API key"
 $env:TRACE_LLM_BASE_URL="https://api.openai.com/v1"
 ```
 
-OpenAI Chat Completions 兼容端点需要显式设置 provider、base URL 和模型：
+使用 OpenAI Chat Completions 兼容接口时，显式设置兼容 provider、模型和 base URL：
 
 ```powershell
 $env:TRACE_LLM_PROVIDER="openai_chat_compat"
@@ -136,319 +122,155 @@ $env:TRACE_LLM_API_KEY="你的兼容端点 key"
 $env:TRACE_LLM_BASE_URL="https://api.example.com/v1"
 ```
 
-`llm.config.json` 已被 `.gitignore` 忽略，不要提交真实 key。文件配置优先于环境变量；如果显式设置 `TRACE_LLM_CONFIG_FILE` 但文件不存在，后端会直接报错。测试代码会通过 `backend/tests/fixtures/llm.mock.config.json` 显式走 MockLLM，避免单测误调用真实 API。
+`backend/llm.config.json` 已被 Git 忽略，不要提交真实 API key。
 
-运行测试：
+## 正式运行
 
-```bash
+正式运行需要同时启动 API、Worker 和前端。PostgreSQL 与 Redis 需要保持运行。
+
+终端 1：启动后端 API。
+
+```powershell
+cd D:\GitRepo\专业实训\TRACE\backend
+conda activate trace
+python scripts/run_api.py
+```
+
+默认地址：
+
+```text
+http://127.0.0.1:8000
+```
+
+终端 2：启动异步 Worker。
+
+```powershell
+cd D:\GitRepo\专业实训\TRACE\backend
+conda activate trace
+python scripts/run_worker.py
+```
+
+Windows 下 worker 默认使用 Celery `solo` pool，适合本地开发和演示运行。
+
+终端 3：启动前端。
+
+```powershell
+cd D:\GitRepo\专业实训\TRACE\frontend
+npm install
+npm run dev
+```
+
+默认前端地址：
+
+```text
+http://127.0.0.1:5186
+```
+
+前端 dev server 会把 `/api` 代理到 `http://127.0.0.1:8000`。如果后端端口不同，可以启动前端前指定代理目标：
+
+```powershell
+$env:VITE_TRACE_API_PROXY_TARGET="http://127.0.0.1:8001"
+npm run dev
+```
+
+如果只查看已经落库的历史结果，通常只需要 PostgreSQL、后端 API 和前端；不需要启动 Redis、Worker 或真实 LLM API。新建实验或继续执行任务时，必须启动 Redis、Worker，并保证 LLM 配置可用。
+
+## 前端使用流程
+
+1. 打开前端首页。
+2. 进入项目列表，选择已有项目或创建新项目。
+3. 创建测试计划或实验运行。
+4. 选择测试生成策略和运行参数。
+5. 启动 run，等待状态从 queued/running 进入 completed 或 failed。
+6. 查看运行详情中的 trace、pytest results、artifacts 和 report。
+7. 在对比页面查看不同策略的评测指标和 seeded bug 捕获矩阵。
+
+如果只想预览静态前端效果，可以使用 demo 数据源：
+
+```powershell
+cd D:\GitRepo\专业实训\TRACE\frontend
+$env:VITE_TRACE_DATA_SOURCE="demo"
+npm run dev
+```
+
+demo 数据只用于前端展示，不代表真实 API、数据库、pytest 或 LLM 状态。
+
+## 测试与评测
+
+运行后端测试：
+
+```powershell
+cd D:\GitRepo\专业实训\TRACE
+conda activate trace
 python -m pytest backend/tests -q --rootdir backend -p no:cacheprovider
 ```
 
-只跑 B 线相关测试：
-
-```bash
-cd backend
-python -m pytest tests/test_db_models.py tests/test_schema_migrations.py tests/test_sqlalchemy_recorder.py tests/test_report_sqlalchemy.py tests/test_api_async_run.py tests/test_api_retry_cancel.py -q --rootdir . -p no:cacheprovider
-```
-
-pytest 默认使用当前系统/用户的临时目录，避免在仓库内生成跨用户权限残留。如果需要保留临时文件方便调试，可在个人命令里显式指定自己的可写目录：
-
-```bash
-python -m pytest backend/tests -q --rootdir backend -p no:cacheprovider -o tmp_path_retention_policy=none --basetemp="${TMPDIR:-/tmp}/trace_pytest"
-```
-
-Windows PowerShell 示例：
+运行前端构建检查：
 
 ```powershell
-python -m pytest backend/tests -q --rootdir backend -p no:cacheprovider -o tmp_path_retention_policy=none --basetemp="$env:TEMP\trace_pytest"
+cd D:\GitRepo\专业实训\TRACE\frontend
+npm run build
 ```
 
-运行评测：
+在 API 和 Worker 已启动后，可以运行异步链路 smoke 验证：
 
-```bash
+```powershell
+cd D:\GitRepo\专业实训\TRACE\backend
+conda activate trace
+python scripts/smoke_async_run.py
+```
+
+运行 seeded bug 评测：
+
+```powershell
+cd D:\GitRepo\专业实训\TRACE
+conda activate trace
 python eval/harness/run_eval.py
 ```
 
-评测会生成：
+评测结果会生成到：
 
 ```text
 eval/results/comparison.md
 eval/results/comparison.json
 ```
 
-## B 线 V1：数据库与异步执行
-
-### 已落地能力
-
-- PostgreSQL 14 张 V1 表已建模并接入 Alembic 迁移；测试会对比 Alembic 建表与 ORM metadata，防止 schema 漂移。
-- `SQLAlchemyRunRecorder` 已把 Agent 运行记录落到数据库。
-- FastAPI 已提供项目、快照、计划、运行、trace、report、strategy、adoption 等接口，并为主要返回补齐显式 `response_model`。
-- `POST /api/v1/test-plans/{plan_id}/runs` 已改为 **Celery + Redis 后台执行**。
-- `retry` 会创建新的 `test_runs` 记录并重新入队，并保留原 run 的预算覆盖。
-- `cancel` 当前是 V1 软取消，worker 消费前会跳过已取消 run；若运行中途被取消，后续 recorder 回写不会把最终状态覆盖回 completed。
-
-### 启动方式
-
-在 `backend/` 目录下：
-
-```bash
-python scripts/run_api.py
-```
-
-另开一个终端：
-
-```bash
-python scripts/run_worker.py
-```
-
-Windows 下 worker 默认走 `--pool=solo`，这是为了让 Celery 在本地环境更稳定。
-
-确认当前后端读到的模型配置：
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/healthz
-```
-
-正常应看到 `llm.provider`、`llm.model` 和 `llm.base_url`。如果前端新 run 没有显示当前 `/healthz` 里的模型配置，通常是 API/worker 仍在跑旧进程；同时重启 API 和 worker 后再新建 run。旧 run 的 `strategy_snapshot` 已冻结，不会随配置变化自动更新。
-
-也可以直接用一个脚本同时拉起开发用 API 和 worker：
-
-```bash
-python scripts/spawn_dev_services.py
-```
-
-日志会写到：
+## 项目结构
 
 ```text
-backend/.tmp-logs/api.out.log
-backend/.tmp-logs/api.err.log
-backend/.tmp-logs/worker.out.log
-backend/.tmp-logs/worker.err.log
+TRACE/
+  backend/
+    app/
+      agents/       # Agent 策略、LLM 适配、报告与契约守卫
+      api/          # FastAPI 路由
+      core/         # 错误码和基础 ID
+      db/           # 数据库配置、engine、session
+      models/       # SQLAlchemy ORM 模型
+      recorders/    # 运行记录落库
+      repositories/ # 数据访问层
+      schemas/      # API、工具、trace、策略等数据契约
+      services/     # 项目、运行、实验、评测等业务服务
+      tools/        # list/read/analyze/write/run_pytest 工具
+      workers/      # Celery worker 与异步任务
+    alembic/        # 数据库迁移
+    scripts/        # 初始化、启动、seed、smoke 脚本
+    tests/          # 后端测试
+  frontend/
+    src/
+      api/          # 前端 API client
+      components/   # 运行详情、trace、pytest、报告等组件
+      demo/         # 静态演示数据
+      pages/        # 页面入口
+  eval/
+    demo/           # seeded bug 评测用 demo 项目
+    harness/        # 评测执行与指标聚合
+    results/        # 评测输出
 ```
 
-### 异步 smoke 验证
-
-在 API 和 worker 都已启动的前提下，执行：
-
-```bash
-python scripts/smoke_async_run.py
-```
-
-这个脚本会：
-
-1. 创建项目
-2. 创建 snapshot
-3. 创建 test plan
-4. 调用 `POST /runs` 入队
-5. 轮询 run 状态直到结束
-6. 读取 events 和 report，确认真实异步链路完成
-
-默认使用的联调夹具项目在：
-
-- [backend/tests/fixtures/async_demo_project/calc.py](backend/tests/fixtures/async_demo_project/calc.py)
-
-### 当前异步工作流
-
-`POST /api/v1/test-plans/{plan_id}/runs` 的处理流程如下：
-
-1. API 在 `test_runs` 中创建一条 `queued` 记录。
-2. API 追加一条 `run_enqueued` 事件。
-3. API 调用 Celery 任务 `trace.execute_run`，只把 `run_id` 和可选预算覆盖传进队列。
-4. Celery worker 从 Redis 队列 `trace_test_runs` 取出任务。
-5. worker 根据 `run_id` 回查数据库，加载 plan、snapshot、strategy、project。
-6. worker 构造 `ToolContext`、`StrategyVersionSpec`、`SQLAlchemyRunRecorder`。
-7. worker 调用 A 线已有的 `execute_run(...)`。
-8. Agent 在执行过程中持续写入：
-   - `test_runs`
-   - `run_plan_items`
-   - `run_attempts`
-   - `trace_steps`
-   - `run_events`
-   - `generated_test_files`
-   - `generated_test_cases`
-   - `pytest_case_results`
-   - `run_artifacts`
-   - `test_reports`
-9. API 侧通过 `GET /api/v1/test-runs/{run_id}` 和相关查询接口读取实时/最终结果。
-
-对应关键代码：
-
-- [backend/app/api/routes/test_runs.py](backend/app/api/routes/test_runs.py)
-- [backend/app/services/test_runs.py](backend/app/services/test_runs.py)
-- [backend/app/workers/tasks.py](backend/app/workers/tasks.py)
-- [backend/app/workers/celery_app.py](backend/app/workers/celery_app.py)
-- [backend/app/recorders/sqlalchemy_recorder.py](backend/app/recorders/sqlalchemy_recorder.py)
-
-评测脚本仍支持通过命令行参数临时选择 provider/model。确认冒烟跑通后，再跑全量真实评测：
-
-```powershell
-python eval/harness/run_eval.py --real --provider openai --model gpt-5 --repeats 3
-```
-
-## C 线 V1：前端与可视化
-
-### 已落地能力
-
-- Vue 3 + TypeScript + Vite 前端工程已接入。
-- 默认首页是 **Run Console**，围绕一次 run 展示 status/stage、trace timeline、step detail drawer、report、pytest results 和 artifacts。
-- Trace step payload 使用可折叠 JSON viewer，包含复制、深度限制和大数组截断。
-- Pytest Results 支持状态筛选、nodeid 搜索和失败行展开。
-- Report 页面用人类可读指标展示结论，不直接暴露 snake_case 字段。
-- Comparison 页面展示 `eval/results/comparison.json` 同形状的策略对比和逐 bug 捕获矩阵。
-- 前端默认使用 B 线 API 数据源；静态演示 fixture 只用于前端预览。
-
-### 启动方式
-
-在 `frontend/` 目录下：
-
-```bash
-npm install --cache ./.npm-cache
-npm run dev
-```
-
-打开：
-
-```text
-http://127.0.0.1:5173/#/projects
-```
-
-构建验证：
-
-```bash
-npm run build
-```
-
-前端 dev server 已配置 `/api` 代理，默认转发到 `http://127.0.0.1:8000`。如果后端端口不同，可以设置：
-
-```bash
-VITE_TRACE_API_PROXY_TARGET=http://127.0.0.1:8001 npm run dev
-```
-
-默认数据源是 API。若只想预览前端静态演示 fixture，可以显式切到 demo：
-
-```bash
-VITE_TRACE_DATA_SOURCE=demo npm run dev
-```
-
-### 数据源口径
-
-- 判断真实系统状态时，只看后端 API、数据库、trace steps、pytest results 和 report。
-- `frontend/src/demo/staticRunFixture.ts` 只是前端静态演示数据，不用于证明 API、token、pytest 或真实 LLM 是否正常。
-- 后端 `MockLLM` 只用于测试隔离，避免单测误调用真实 API；它不代表普通 API run 的真实能力。
-- `token`、`pytest_summary`、`report.metrics` 以后端真实 run 为准。
-
-`~/.codex/config.toml` 和 `~/.codex/auth.json` 是 Codex CLI 的个人配置；TRACE 不依赖也不读取其中的 key。
-
-## 核心能力
-
-### 工具层
-
-Agent 只能通过白名单工具访问项目：
-
-- `list_files`
-- `read_file`
-- `analyze_project`
-- `write_test_file`
-- `run_pytest`
-
-`write_test_file` 和 `run_pytest` 都做 canonical path 校验，生成测试只能写入受控目录。`run_pytest` 通过自定义 pytest 插件返回结构化结果，包括 `case_results`、`failures`、`collection_errors` 和 `failure_type`。
-
-### Agent 策略
-
-当前实现三种策略：
-
-- Direct：单任务生成并执行，不做规划，不做 Reflection。
-- Plan-and-Execute：先拆分多个测试目标，再逐个生成和执行，不做 Reflection。
-- ReAct + Reflection：单任务生成和执行，失败后允许一次受约束 Reflection。
-
-Reflection 的红线：
-
-- 不修改业务代码。
-- 不删除核心断言。
-- 不用 `pytest.skip` / `xfail` 掩盖失败。
-- 不把具体断言改成空洞断言。
-- 如果无法在不削弱断言的前提下变绿，应保留失败并标记疑似业务缺陷。
-
-系统用静态 contract guard 辅助拦截常见“为了变绿而削弱测试”的行为。
-
-### Trace 与报告
-
-运行过程会记录：
-
-- stage/status 变化；
-- 工具调用和观察；
-- LLM 结构化输出及重试日志；
-- pytest 用例级结果；
-- Reflection 结果；
-- 最终 Markdown/JSON 报告。
-
-评测和报告共享同一套 final attempt 选择逻辑，避免报告口径和重放口径分叉。
-
-## 评测方法
-
-M2 评测遵循污染隔离：
-
-1. 在干净 demo 项目上运行 Agent，生成最终测试集。
-2. 如果策略允许 Reflection，只在干净代码上进行一次修复。
-3. 保存最终测试内容。
-4. 为每个 seeded bug 物化独立变体目录。
-5. 把干净期定型的同一批测试重放到变体目录。
-6. 只有“同一 nodeid 在干净代码通过、在变体上发生 assertion failure”才算捕获。
-
-核心指标：
-
-- `seeded_bug_capture_rate`
-- `clean_false_positive_rate`
-- `cost_per_captured_bug`
-- `avg_tokens`
-- `avg_tool_calls`
-
-`eval/demo/bugs.py` 中定义了 6 个 seeded bug，覆盖比较符翻转、边界错误、漏校验、错状态码四类。
-
-## 当前评测结果
-
-数据来自 scripted MockLLM 作者：它刻意建模三种策略的典型行为，用来验证 harness 能否区分捕获、漏判、假阳性和 Reflection 修复路径。
-
-| 策略                | 捕获率      | 假阳性率 | 反思 | 平均 token | 平均工具调用 |
-| ------------------- | ----------- | -------- | ---- | ---------- | ------------ |
-| Direct v1           | 0.83（5/6） | 1.00     | 否   | 610        | 3            |
-| Plan-and-Execute v1 | 1.00（6/6） | 0.00     | 否   | 2293       | 13           |
-| ReAct+Reflection v1 | 1.00（6/6） | 0.00     | 是   | 1342       | 5            |
-
-这张表能说明：
-
-- harness 的污染隔离、nodeid 对齐、捕获率和假阳性计算可运行；
-- 三种策略的控制流差异能反映到工具调用成本上；
-- scripted MockLLM 可以覆盖 Direct 漏判、Plan 全覆盖、ReAct 反思修复等路径。
-
-这张表不能说明：
-
-- ReAct 在真实 LLM 下必然优于 Direct 或 Plan；
-- 当前 token/cost 是真实模型成本；
-- demo bug 捕获率可以直接外推到真实项目。
-
-换成真实 LLM 后，指标口径不变，但捕获率、假阳性率和成本需要重新测。
-
-## 安全边界
-
-V1 使用本地 subprocess 执行 pytest。它提供独立工作目录、路径白名单和硬超时，但 **不是安全沙箱**。
-
-生成测试本质上仍是 Python 代码。不能把当前执行器当作隔离恶意代码的安全边界。真正的容器隔离、禁网、资源限制和 Runner 加固属于后续版本。
-
-## 已知边界
-
-- 当前只覆盖 Python/FastAPI + pytest。
-- 默认评测使用 MockLLM/scripted author；普通 API run 默认读取 `backend/llm.config.json` 走真实模型。
-- 普通 run 已接 PostgreSQL/FastAPI；V1 评测仍走脚本，不开放 experiments API。
-- 当前评测走脚本，不落评测表。
-- 弱断言识别仍有边界，例如 `assert x == x`、`assert result is not None`、断言藏在永不执行分支等。
-
-## 后续建议
-
-短期优先级：
-
-1. B 线补强 API 响应 schema、事务边界和运行中取消能力。
-2. C 线继续增强真实 API 联调、创建计划表单和人工采纳入口。
-3. A 线继续用真实 OpenAI 或 Chat Compat API 跑更多 smoke，再决定是否跑全量真实评测。
-
-真实 LLM 已通过 `LLMClient` adapter 接入，现有工具契约、trace、Reflection contract 和 eval harness 不需要改。
+## 已知限制
+
+- 当前主要覆盖 Python/FastAPI + pytest 项目。
+- 本地 pytest 执行器有路径白名单和超时控制，但不是强安全沙箱。
+- 生成测试本质上仍是 Python 代码，不应在不可信项目上直接运行。
+- 真实 LLM 的效果、成本和稳定性依赖所选模型与 API 服务。
+- demo 数据只用于前端预览，判断真实系统状态应以后端 API、数据库和运行记录为准。
