@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import tempfile
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -28,6 +32,14 @@ from app.repositories.evaluation import (
     list_variants_for_bugs,
 )
 from app.schemas.api_evaluation import BugVariantOut, EvalDatasetDetailOut, EvalTaskDetailOut, SeededBugDetailOut
+from app.schemas.evaluation import (
+    BugVariantGroundTruthContract,
+    MutationCandidateContract,
+    MutationDiscoveryAuditReportContract,
+    MutationDiscoveryResultContract,
+)
+from app.services.mutation_discovery import discover_mutation_candidates
+from eval.harness.probes import ProbeCheckError, check_variant_probe
 
 
 class EvaluationError(ValueError):
@@ -221,6 +233,202 @@ def create_seeded_bug(
 def list_task_seeded_bugs(session: Session, task_id: str) -> list[SeededBug]:
     get_eval_task_or_404(session, task_id)
     return list_seeded_bugs_for_task(session, task_id)
+
+
+def dry_run_task_mutation_discovery(
+    session: Session,
+    task_id: str,
+    *,
+    sample_seed: int = 0,
+    max_selected: int = 20,
+    target_scope_override: dict | list | None = None,
+) -> MutationDiscoveryResultContract:
+    task = get_eval_task_or_404(session, task_id)
+    snapshot = _snapshot_or_error(session, task.project_snapshot_id)
+    return discover_mutation_candidates(
+        root=Path(snapshot.root_path),
+        eval_task_id=task.id,
+        source_snapshot_id=snapshot.id,
+        target_scope=target_scope_override if target_scope_override is not None else task.target_scope,
+        sample_seed=sample_seed,
+        max_selected=max_selected,
+    )
+
+
+def build_task_mutation_discovery_audit_report(
+    session: Session,
+    task_id: str,
+    *,
+    sample_seed: int = 0,
+    max_selected: int = 20,
+    target_scope_override: dict | list | None = None,
+) -> MutationDiscoveryAuditReportContract:
+    task = get_eval_task_or_404(session, task_id)
+    discovery = dry_run_task_mutation_discovery(
+        session,
+        task_id,
+        sample_seed=sample_seed,
+        max_selected=max_selected,
+        target_scope_override=target_scope_override,
+    )
+    selected_candidate_ids = [
+        candidate.candidate_id
+        for candidate in discovery.candidates
+        if candidate.selection.status == "selected"
+    ]
+    exclusion_summary: dict[str, int] = {}
+    for exclusion in discovery.exclusions:
+        exclusion_summary[exclusion.reason_code] = exclusion_summary.get(exclusion.reason_code, 0) + 1
+    return MutationDiscoveryAuditReportContract(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        eval_task_id=task.id,
+        dataset_id=task.dataset_id,
+        source_snapshot_id=task.project_snapshot_id,
+        target_scope=target_scope_override if target_scope_override is not None else task.target_scope,
+        sample_seed=sample_seed,
+        max_selected=max_selected,
+        selected_candidate_ids=selected_candidate_ids,
+        exclusion_summary=exclusion_summary,
+        discovery=discovery,
+    )
+
+
+def confirm_selected_mutation_candidate(
+    session: Session,
+    task_id: str,
+    *,
+    audit_report: MutationDiscoveryAuditReportContract,
+    candidate_id: str,
+    probe: dict[str, Any],
+    seeded_bug_id: str | None = None,
+    variant_id: str | None = None,
+    bug_type: str = "auto_mutation",
+    description: str | None = None,
+    expected_detection: str | None = None,
+    variant_name: str | None = None,
+) -> SeededBugDetailOut:
+    task = get_eval_task_or_404(session, task_id)
+    snapshot = _snapshot_or_error(session, task.project_snapshot_id)
+    if audit_report.eval_task_id != task.id:
+        raise EvaluationError("audit report eval_task_id does not match task")
+    if audit_report.dataset_id != task.dataset_id:
+        raise EvaluationError("audit report dataset_id does not match task")
+    if audit_report.source_snapshot_id != snapshot.id:
+        raise EvaluationError("audit report source_snapshot_id does not match task snapshot")
+
+    candidate = _selected_candidate_from_audit(audit_report, candidate_id)
+    if candidate.eval_task_id != task.id or candidate.source_snapshot_id != snapshot.id:
+        raise EvaluationError("mutation candidate does not match task or snapshot")
+
+    bug_id = seeded_bug_id or f"bug-{candidate.candidate_id}"
+    var_id = variant_id or f"variant-{candidate.candidate_id}"
+    if get_seeded_bug(session, bug_id) is not None:
+        raise EvaluationConflictError("seeded bug id already exists")
+    if get_bug_variant(session, var_id) is not None:
+        raise EvaluationConflictError("bug variant id already exists")
+
+    _validate_patch_unique_hit(snapshot, file=candidate.patch.file, old=candidate.patch.old)
+    target = candidate.matcher.target_symbol or candidate.patch.file
+    probe_payload = {
+        "target_kind": probe["target_kind"],
+        "probe": probe["probe"],
+        "clean_value": probe["clean_value"],
+        "buggy_value": probe["buggy_value"],
+    }
+    probe_ground_truth = {
+        **probe_payload,
+        "patch_artifact": {"patch": candidate.patch.model_dump(mode="json")},
+    }
+    probe_check = _check_auto_mutation_probe(
+        snapshot=snapshot,
+        candidate=candidate,
+        probe_ground_truth=probe_ground_truth,
+        variant_id=var_id,
+    )
+    bug = create_seeded_bug(
+        session,
+        eval_task_id=task.id,
+        bug_id=bug_id,
+        bug_type=bug_type,
+        description=description or f"Auto mutation {candidate.operator} in {candidate.patch.file}",
+        expected_detection=expected_detection or f"Generated tests should detect selected mutation {candidate.candidate_id}",
+    )
+    ground_truth = BugVariantGroundTruthContract(
+        source="auto_mutation",
+        target=target,
+        mutation=candidate,
+        probe=probe_payload | {"probe_check": probe_check},
+    ).model_dump(mode="json", exclude_none=True)
+    variant = create_bug_variant(
+        session,
+        seeded_bug_id=bug.id,
+        variant_id=var_id,
+        variant_name=variant_name or f"auto mutation {candidate.candidate_id}",
+        patch=candidate.patch.model_dump(mode="json"),
+        ground_truth=ground_truth,
+    )
+    return SeededBugDetailOut.model_validate(bug).model_copy(
+        update={"variants": [BugVariantOut.model_validate(variant)]}
+    )
+
+
+def _selected_candidate_from_audit(
+    audit_report: MutationDiscoveryAuditReportContract,
+    candidate_id: str,
+) -> MutationCandidateContract:
+    if candidate_id not in audit_report.selected_candidate_ids:
+        raise EvaluationError("candidate is not selected in audit report")
+    for candidate in audit_report.discovery.candidates:
+        if candidate.candidate_id == candidate_id:
+            if candidate.selection.status != "selected":
+                raise EvaluationError("candidate selection status is not selected")
+            return candidate
+    raise EvaluationError("candidate not found in audit report")
+
+
+def _check_auto_mutation_probe(
+    *,
+    snapshot: ProjectSnapshot,
+    candidate: MutationCandidateContract,
+    probe_ground_truth: dict,
+    variant_id: str,
+) -> dict:
+    clean_root = Path(snapshot.root_path).resolve()
+    with tempfile.TemporaryDirectory(prefix="trace-mut-probe-") as tmpdir:
+        variant_root = Path(tmpdir) / "variant"
+        shutil.copytree(
+            clean_root,
+            variant_root,
+            ignore=shutil.ignore_patterns(
+                ".git",
+                ".trace_artifacts",
+                ".pytest_cache",
+                "__pycache__",
+            ),
+        )
+        _apply_candidate_patch(variant_root, candidate)
+        try:
+            result = check_variant_probe(
+                clean_root=clean_root,
+                variant_root=variant_root,
+                ground_truth=probe_ground_truth,
+                variant_id=variant_id,
+            )
+        except ProbeCheckError as exc:
+            raise EvaluationError(str(exc)) from exc
+    if result is None:
+        raise EvaluationError("auto mutation confirmation requires probe metadata")
+    return result
+
+
+def _apply_candidate_patch(root: Path, candidate: MutationCandidateContract) -> None:
+    target = (root / candidate.patch.file).resolve()
+    if root.resolve() not in target.parents and target != root.resolve():
+        raise EvaluationError("mutation patch target escapes variant root")
+    text = target.read_text(encoding="utf-8")
+    if text.count(candidate.patch.old) != 1:
+        raise EvaluationError("mutation patch must hit exactly once during probe check")
+    target.write_text(text.replace(candidate.patch.old, candidate.patch.new, 1), encoding="utf-8")
 
 
 def get_seeded_bug_or_404(session: Session, bug_id: str) -> SeededBug:

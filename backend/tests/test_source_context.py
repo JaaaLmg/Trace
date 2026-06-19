@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.schemas.evaluation import EvaluationEventContract
 from app.schemas.tools import (
     AnalyzeProjectOutput,
     ExistingTestInfo,
@@ -753,6 +754,87 @@ def test_source_context_includes_failure_context_evidence(tmp_path):
     assert trace.status == "resolved"
     assert trace.source_path == "tests/generated/test_generated.py"
     assert trace.line_range == {"start": 4, "end": 4}
+
+
+def test_source_context_includes_evaluation_event_failure_context(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests" / "generated").mkdir(parents=True)
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(a, b)", file="shop/pricing.py")]
+    )
+
+    event = EvaluationEventContract(
+        event_id="evt-flaky-1",
+        event_type="flaky_clean_replay",
+        severity="blocking",
+        scope="clean_run",
+        experiment_id="exp-1",
+        clean_run_id="clean-1",
+        stable_code="flaky_clean_replay",
+        reason="run 2 mismatch: status changed",
+        source_ids={"baseline_replay_id": "replay-1"},
+        nodeids=["tests/generated/test_generated.py::test_target_fn_failure"],
+        payload={"required_runs": 3, "actual_runs": 3},
+    )
+
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["target_fn"],
+        analysis,
+        evaluation_events=[event],
+    )
+
+    failure = next(snippet for snippet in bundle.snippets if snippet.retrieval_source == "evaluation_event")
+    assert failure.source_kind == "failure_context"
+    assert failure.target_ref == "evt-flaky-1"
+    assert failure.path == "tests/generated/evaluation_events.txt"
+    assert "event_id: evt-flaky-1" in bundle.source_context_text
+    assert "event_type: flaky_clean_replay" in bundle.source_context_text
+    assert "source_id.baseline_replay_id: replay-1" in bundle.source_context_text
+    trace = next(t for t in bundle.context_completeness.retrieval_trace if t.retrieval_source == "evaluation_event")
+    assert trace.status == "resolved"
+    assert trace.target == "evt-flaky-1"
+
+
+def test_source_context_marks_evaluation_event_truncation_partial(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="target_fn", signature="target_fn(a, b)", file="shop/pricing.py")]
+    )
+    events = [
+        EvaluationEventContract(
+            event_id=f"evt-replay-{index}",
+            event_type="replay_uncaptured",
+            severity="info",
+            scope="replay",
+            experiment_id="exp-1",
+            clean_run_id="clean-1",
+            replay_id=f"replay-{index}",
+            bug_variant_id=f"variant-{index}",
+            stable_code="replay_uncaptured",
+            reason="variant replay did not capture bug",
+        )
+        for index in range(2)
+    ]
+
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["target_fn"],
+        analysis,
+        evaluation_events=events,
+        max_evaluation_events=1,
+    )
+
+    assert bundle.context_completeness.status == "partial"
+    assert any("evaluation event context truncated by max_evaluation_events" in note for note in bundle.context_completeness.risk_notes)
+    traces = [
+        trace
+        for trace in bundle.context_completeness.retrieval_trace
+        if trace.retrieval_source == "evaluation_event"
+    ]
+    assert [trace.status for trace in traces] == ["truncated", "resolved"]
 
 
 def test_source_context_snippets_carry_structured_retrieval_evidence(tmp_path):

@@ -112,5 +112,7 @@ def evaluate_variants(clean: CleanRun, bugs, workdir: Path) -> None:
 
 def run_one(strategy_spec, make_llm, repeat: int, workdir: Path, bugs) -> CleanRun:
     clean = run_clean(strategy_spec, make_llm, repeat, workdir)
+    if clean.status != "completed":
+        return clean
     evaluate_variants(clean, bugs, workdir)
     return clean

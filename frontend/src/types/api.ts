@@ -589,6 +589,90 @@ export interface SourceContextPolicy {
   agent_source_write_permission: "generated_tests_only";
 }
 
+export type EvaluationEventType =
+  | "invalid_test_set"
+  | "context_incomplete_blocking"
+  | "flaky_clean_replay"
+  | "probe_check_passed"
+  | "probe_check_failed"
+  | "replay_captured"
+  | "replay_uncaptured"
+  | "replay_failure"
+  | "artifact_hash_mismatch"
+  | "provider_failure";
+
+export interface EvaluationEventContract {
+  event_id: string;
+  event_type: EvaluationEventType;
+  severity: "info" | "warning" | "error" | "blocking";
+  scope: "experiment" | "clean_run" | "replay" | "variant" | "task" | "artifact";
+  experiment_id: string;
+  clean_run_id: string | null;
+  replay_id: string | null;
+  bug_variant_id: string | null;
+  eval_task_id: string | null;
+  strategy_version_id: string | null;
+  repeat_index: number | null;
+  stable_code: string;
+  reason: string;
+  source_ids: Record<string, string>;
+  artifact_ids: string[];
+  nodeids: string[];
+  payload: Record<string, unknown>;
+  created_from: "experiment_service_projection";
+}
+
+export interface ReflectionEventBackfeedDecisionContract {
+  event_id: string;
+  event_type: EvaluationEventType;
+  action: "included" | "filtered";
+  reason: string;
+}
+
+export interface ReflectionEventBackfeedContract {
+  clean_run_id: string;
+  eval_task_id: string;
+  strategy_version_id: string;
+  repeat_index: number;
+  max_events: number;
+  included_event_ids: string[];
+  decisions: ReflectionEventBackfeedDecisionContract[];
+  created_from: "evaluation_event_projection";
+}
+
+export type SampledMutationScoreStatus = "ok" | "not_applicable" | "incomplete_replay";
+
+export interface SampledMutationScoreRow {
+  strategy_id: string;
+  strategy_name: string;
+  mutant_count: number;
+  repeat_count: number;
+  expected_replay_count: number;
+  observed_replay_count: number;
+  captured_mutant_count: number;
+  score: number | null;
+  status: SampledMutationScoreStatus;
+}
+
+export interface SampledMutationMatrixStats {
+  captured: boolean;
+  captured_count: number;
+  replayed_count: number;
+  repeat_count: number;
+  capture_rate: number;
+}
+
+export interface SampledMutationScoreContract {
+  status: SampledMutationScoreStatus;
+  unit: "auto_mutation_bug_variant";
+  denominator_source: "bug_variants.ground_truth.source=auto_mutation + ground_truth.probe.probe_check.status=passed";
+  mutant_count: number;
+  included_variant_ids: string[];
+  excluded_variant_counts: Record<string, number>;
+  rows: SampledMutationScoreRow[];
+  matrix_counts: Record<string, Record<string, SampledMutationMatrixStats>>;
+}
+
 export interface ArtifactMetadataContract {
   kind:
     | "generated_test_set"
@@ -636,8 +720,11 @@ export interface ExperimentMetricsResponse {
       }
     >
   >;
+  sampled_mutation_score?: SampledMutationScoreContract;
   clean_runs: CleanRunContract[];
   replay_runs: TestReplayContract[];
   experiment_replay_runs: ExperimentReplayRunContract[];
+  evaluation_events?: EvaluationEventContract[];
+  reflection_event_backfeed?: ReflectionEventBackfeedContract[];
   artifacts: ArtifactContract[];
 }

@@ -9,7 +9,7 @@ from eval.demo.bugs import BUGS
 from eval.harness import dataset
 from eval.harness import metrics
 from eval.harness.probes import ProbeCheckError, check_variant_probe
-from eval.harness.run_eval import _format_run_error, run_full_eval
+from eval.harness.run_eval import _failed_smoke_runs, _format_run_error, run_full_eval
 from eval.harness.runner import CleanRun
 
 
@@ -68,6 +68,31 @@ def test_probe_check_rejects_equal_clean_and_buggy_value(tmp_path):
             },
             variant_id=bug.id,
         )
+
+
+def test_probe_check_accepts_structured_probe_metadata(tmp_path):
+    bug = BUGS[0]
+    variant_root = dataset.materialize_variant(bug, tmp_path / "variant")
+
+    result = check_variant_probe(
+        clean_root=dataset.CLEAN_ROOT,
+        variant_root=variant_root,
+        ground_truth={
+            "probe": {
+                "target_kind": bug.kind,
+                "probe": bug.probe,
+                "clean_value": bug.clean_value,
+                "buggy_value": bug.buggy_value,
+            },
+            "patch_artifact": {"patch": {"file": bug.file}},
+        },
+        variant_id=bug.id,
+    )
+
+    assert result is not None
+    assert result["status"] == "passed"
+    assert result["clean_actual"] == bug.clean_value
+    assert result["buggy_actual"] == bug.buggy_value
 
 
 def test_probe_check_rejects_non_literal_function_probe(tmp_path):
@@ -130,6 +155,21 @@ def test_comparison_table_marks_invalid_test_set():
     assert "| invalid | 不可评价 |" in table
 
 
+def test_failed_clean_run_is_not_evaluable_zero_capture():
+    ids = [f"b{i}" for i in range(2)]
+    failed = _mk("failed", 0, [], False, 0, ids)
+    failed.status = "failed"
+    failed.error_code = "LLM_PROVIDER_ERROR"
+
+    [row] = metrics.aggregate({"failed": [failed]}, total_in_scope=2)
+    table = metrics.comparison_table_md([row])
+
+    assert row["metric_status"] == "invalid_test_set"
+    assert row["repeats"] == 0
+    assert row["invalid_test_set_count"] == 1
+    assert "| failed | 不可评价 |" in table
+
+
 def test_format_run_error_keeps_smoke_failure_actionable():
     run = _mk("s", 0, [], False, 0, ["b0"])
     run.status = "failed"
@@ -137,3 +177,11 @@ def test_format_run_error_keeps_smoke_failure_actionable():
     run.error_message = "OpenAI API HTTP 401 Unauthorized: bad key"
 
     assert _format_run_error(run) == "LLM_PROVIDER_ERROR: OpenAI API HTTP 401 Unauthorized: bad key"
+
+
+def test_failed_smoke_runs_detects_non_completed_runs():
+    ok = _mk("ok", 0, [], False, 0, ["b0"])
+    failed = _mk("failed", 0, [], False, 0, ["b0"])
+    failed.status = "failed"
+
+    assert _failed_smoke_runs({"runs_by_strategy": {"ok": [ok], "failed": [failed]}}) == [failed]

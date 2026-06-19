@@ -13,7 +13,7 @@ from app.agents.llm import LLMClient, Message
 from app.agents.recorder import RunRecorder
 from app.agents.structured import generate_structured
 from app.core.errors import ErrorCode, TraceError
-from app.schemas.evaluation import ContextCompletenessEvidence
+from app.schemas.evaluation import ContextCompletenessEvidence, EvaluationEventContract
 from app.schemas.records import TestRunRecord
 from app.schemas.strategy import StrategyVersionSpec
 from app.schemas.trace import RunEvent, Stage, StepType, TraceStep
@@ -42,6 +42,7 @@ class PlanInput:
     goal: str
     allow_reflection: bool = False
     timeout_seconds: int = 120
+    evaluation_events: list[EvaluationEventContract] | None = None
 
 
 @dataclass

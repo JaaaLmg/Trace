@@ -4,6 +4,7 @@ import { ArrowLeft, Database, RefreshCw } from "@lucide/vue";
 import { getExperimentMetrics } from "../api/experiments";
 import CaptureMatrix from "../components/experiment/CaptureMatrix.vue";
 import CleanRunTable from "../components/experiment/CleanRunTable.vue";
+import EvaluationEventTimeline from "../components/experiment/EvaluationEventTimeline.vue";
 import ExperimentMetricsTable from "../components/experiment/ExperimentMetricsTable.vue";
 import ReplayEvidencePanel from "../components/experiment/ReplayEvidencePanel.vue";
 import { demoExperimentMetrics } from "../demo/staticRunFixture";
@@ -143,6 +144,10 @@ watch(
         :rows="metrics.rows"
         :capture-matrix="metrics.capture_matrix"
         :capture-matrix-counts="metrics.capture_matrix_counts"
+      />
+      <EvaluationEventTimeline
+        :evaluation-events="metrics.evaluation_events ?? []"
+        :reflection-event-backfeed="metrics.reflection_event_backfeed ?? []"
       />
       <CleanRunTable :clean-runs="metrics.clean_runs" @open-run="openCleanRun" />
       <ReplayEvidencePanel

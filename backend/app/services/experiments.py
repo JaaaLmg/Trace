@@ -34,9 +34,14 @@ from app.models import (
     TestRun,
 )
 from app.repositories.strategies import get_strategy_version
-from app.schemas.evaluation import LlmOverride
+from app.schemas.evaluation import EvaluationEventContract, LlmOverride
 from app.schemas.tools import AnalyzeProjectInput
 from app.services.evaluation import EvaluationConflictError, EvaluationError, EvaluationNotFoundError
+from app.services.evaluation_events import (
+    build_reflection_event_backfeed,
+    build_reflection_event_backfeed_audit,
+    project_evaluation_events,
+)
 from app.services.source_context import build_source_context_bundle
 from app.services.test_plans import create_test_plan
 from app.services.test_runs import create_run, execute_run_sync
@@ -801,6 +806,54 @@ def _make_llm_for_strategy(provider: str):
     return None
 
 
+def _experiment_event_projection_inputs(
+    session: Session,
+    experiment_id: str,
+) -> tuple[list[ExperimentCleanRun], list[TestReplay], list[ExperimentReplayRun]]:
+    clean_runs = list(
+        session.scalars(
+            select(ExperimentCleanRun)
+            .where(ExperimentCleanRun.experiment_id == experiment_id)
+            .order_by(ExperimentCleanRun.created_at.asc(), ExperimentCleanRun.id.asc())
+        )
+    )
+    replays = list(
+        session.scalars(
+            select(TestReplay)
+            .join_from(TestReplay, ExperimentCleanRun)
+            .where(ExperimentCleanRun.experiment_id == experiment_id)
+            .order_by(TestReplay.created_at.asc(), TestReplay.id.asc())
+        )
+    )
+    replay_results = list(
+        session.scalars(
+            select(ExperimentReplayRun)
+            .join_from(ExperimentReplayRun, ExperimentCleanRun)
+            .where(ExperimentCleanRun.experiment_id == experiment_id)
+            .order_by(ExperimentReplayRun.created_at.asc(), ExperimentReplayRun.id.asc())
+        )
+    )
+    return clean_runs, replays, replay_results
+
+
+def _reflection_event_backfeed_for_unit(
+    session: Session,
+    experiment: Experiment,
+    *,
+    eval_task_id: str,
+    strategy_version_id: str,
+    repeat_index: int,
+) -> list[EvaluationEventContract]:
+    clean_runs, replays, replay_results = _experiment_event_projection_inputs(session, experiment.id)
+    projected = project_evaluation_events(experiment, clean_runs, replays, replay_results)
+    return build_reflection_event_backfeed(
+        projected,
+        eval_task_id=eval_task_id,
+        strategy_version_id=strategy_version_id,
+        before_repeat_index=repeat_index,
+    ).events
+
+
 def run_experiment(session: Session, experiment_id: str) -> dict:
     experiment = session.get(Experiment, experiment_id)
     if experiment is None:
@@ -900,10 +953,18 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         session.commit()
                         continue
                     provider = ((run.strategy_snapshot or {}).get("resolved_llm") or {}).get("provider", "mock")
+                    evaluation_events = _reflection_event_backfeed_for_unit(
+                        session,
+                        experiment,
+                        eval_task_id=task.id,
+                        strategy_version_id=strategy_version_id,
+                        repeat_index=repeat_index,
+                    )
                     execute_run_sync(
                         session,
                         run_id=run.id,
                         make_llm=_make_llm_for_strategy(provider),
+                        evaluation_events=evaluation_events,
                     )
                     session.refresh(run)
                     _raise_if_cancelled(session, experiment.id)
@@ -1330,6 +1391,121 @@ def _capture_matrix_counts(variant_ids: list[str], runs_by_strategy: dict[str, l
     return matrix
 
 
+def _auto_mutation_variant_scope(session: Session, experiment: Experiment) -> tuple[list[str], dict[str, int]]:
+    stmt = (
+        select(BugVariant)
+        .join_from(BugVariant, SeededBug)
+        .join_from(SeededBug, EvalTask)
+        .where(EvalTask.dataset_id == experiment.dataset_id)
+        .order_by(SeededBug.created_at.asc(), SeededBug.id.asc(), BugVariant.created_at.asc(), BugVariant.id.asc())
+    )
+    variant_ids: list[str] = []
+    excluded_counts: dict[str, int] = {}
+    for variant in session.scalars(stmt):
+        ground_truth = variant.ground_truth or {}
+        if ground_truth.get("source") != "auto_mutation":
+            excluded_counts["non_auto_mutation"] = excluded_counts.get("non_auto_mutation", 0) + 1
+            continue
+        probe = ground_truth.get("probe") if isinstance(ground_truth.get("probe"), dict) else {}
+        probe_check = probe.get("probe_check") if isinstance(probe.get("probe_check"), dict) else {}
+        if probe_check.get("status") != "passed":
+            excluded_counts["probe_check_not_passed"] = excluded_counts.get("probe_check_not_passed", 0) + 1
+            continue
+        variant_ids.append(variant.id)
+    return variant_ids, excluded_counts
+
+
+def _sampled_mutation_matrix_counts(variant_ids: list[str], runs_by_strategy: dict[str, list[MetricRun]]) -> dict:
+    matrix: dict[str, dict[str, dict[str, int | float | bool]]] = {}
+    for variant_id in variant_ids:
+        matrix[variant_id] = {}
+        for strategy_id, runs in runs_by_strategy.items():
+            evaluable_runs = [run for run in runs if not run.invalid_test_set]
+            replayed_count = sum(1 for run in evaluable_runs if variant_id in run.variants)
+            captured_count = sum(
+                1
+                for run in evaluable_runs
+                if run.variants.get(variant_id, {}).get("captured")
+            )
+            repeat_count = len(evaluable_runs)
+            matrix[variant_id][strategy_id] = {
+                "captured": captured_count > 0,
+                "captured_count": captured_count,
+                "replayed_count": replayed_count,
+                "repeat_count": repeat_count,
+                "capture_rate": (captured_count / replayed_count) if replayed_count else 0.0,
+            }
+    return matrix
+
+
+def _sampled_mutation_score(
+    session: Session,
+    experiment: Experiment,
+    rows: list[dict],
+    runs_by_strategy: dict[str, list[MetricRun]],
+) -> dict:
+    variant_ids, excluded_counts = _auto_mutation_variant_scope(session, experiment)
+    matrix_counts = _sampled_mutation_matrix_counts(variant_ids, runs_by_strategy)
+    score_rows = []
+    for row in rows:
+        strategy_id = row["strategy_id"]
+        runs = [run for run in runs_by_strategy.get(strategy_id, []) if not run.invalid_test_set]
+        repeat_count = len(runs)
+        expected_replay_count = len(variant_ids) * repeat_count
+        observed_replay_count = sum(
+            stats[strategy_id]["replayed_count"]
+            for stats in matrix_counts.values()
+            if strategy_id in stats
+        )
+        captured_mutant_count = sum(
+            1
+            for stats in matrix_counts.values()
+            if strategy_id in stats and stats[strategy_id]["captured"]
+        )
+        if not variant_ids:
+            status = "not_applicable"
+            score = None
+        elif expected_replay_count == 0 or observed_replay_count != expected_replay_count:
+            status = "incomplete_replay"
+            score = None
+        else:
+            status = "ok"
+            score = captured_mutant_count / len(variant_ids)
+        score_rows.append(
+            {
+                "strategy_id": strategy_id,
+                "strategy_name": row["strategy_name"],
+                "mutant_count": len(variant_ids),
+                "repeat_count": repeat_count,
+                "expected_replay_count": expected_replay_count,
+                "observed_replay_count": observed_replay_count,
+                "captured_mutant_count": captured_mutant_count,
+                "score": score,
+                "status": status,
+            }
+        )
+
+    if not variant_ids:
+        status = "not_applicable"
+    elif not score_rows or any(row["status"] == "incomplete_replay" for row in score_rows):
+        status = "incomplete_replay"
+    else:
+        status = "ok"
+    return {
+        "status": status,
+        "unit": "auto_mutation_bug_variant",
+        "denominator_source": (
+            "bug_variants.ground_truth.source=auto_mutation + "
+            "ground_truth.probe.probe_check.status=passed"
+        ),
+        "mutant_count": len(variant_ids),
+        "included_variant_ids": variant_ids,
+        "excluded_variant_counts": excluded_counts,
+        "rows": score_rows,
+        "matrix_counts": matrix_counts,
+    }
+
+
 def _data_source(experiment: Experiment, rows: list[dict]) -> dict:
     providers = []
     models = []
@@ -1465,6 +1641,7 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
         for artifact in artifacts
         if (artifact.metadata_json or {}).get("experiment_id") == experiment_id
     ]
+    evaluation_events = project_evaluation_events(experiment, clean_runs, replays, replay_results)
 
     return {
         "schema_version": "v2.phase0",
@@ -1500,6 +1677,7 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
         "rows": rows,
         "capture_matrix": matrix,
         "capture_matrix_counts": matrix_counts,
+        "sampled_mutation_score": _sampled_mutation_score(session, experiment, rows, runs_by_strategy),
         "clean_runs": [_clean_run_payload(session, clean) for clean in clean_runs],
         "replay_runs": [
             {
@@ -1537,6 +1715,8 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
             }
             for replay_result in replay_results
         ],
+        "evaluation_events": evaluation_events,
+        "reflection_event_backfeed": build_reflection_event_backfeed_audit(clean_runs, evaluation_events),
         "artifacts": [
             {
                 "id": artifact.id,

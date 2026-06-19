@@ -44,6 +44,78 @@ def _clip(value: str | None, limit: int) -> str | None:
     return value[: max(0, limit - 14)] + "...<truncated>"
 
 
+def _plan_item_record(obj: RunPlanItem) -> RunPlanItemRecord:
+    return RunPlanItemRecord(
+        id=obj.id,
+        run_id=obj.run_id,
+        index=obj.index,
+        target_type=obj.target_type,
+        target_ref=obj.target_ref,
+        goal=obj.goal,
+        planned_assertions=obj.planned_assertions,
+        status=obj.status,
+    )
+
+
+def _attempt_record(obj: RunAttempt) -> RunAttemptRecord:
+    return RunAttemptRecord(
+        id=obj.id,
+        run_plan_item_id=obj.run_plan_item_id,
+        attempt_no=obj.attempt_no,
+        kind=obj.kind,
+        status=obj.status,
+        pytest_exit_code=obj.pytest_exit_code,
+        error_code=obj.error_code,
+        reflection_reason=obj.reflection_reason,
+    )
+
+
+def _generated_file_record(obj: GeneratedTestFile) -> GeneratedTestFileRecord:
+    return GeneratedTestFileRecord(
+        id=obj.id,
+        attempt_id=obj.attempt_id,
+        path=obj.path,
+        content_text=obj.content_text,
+        content_hash=obj.content_hash,
+        previous_file_id=obj.previous_file_id,
+        generation_reason=obj.generation_reason,
+    )
+
+
+def _generated_case_record(obj: GeneratedTestCase) -> GeneratedTestCaseRecord:
+    return GeneratedTestCaseRecord(
+        id=obj.id,
+        file_id=obj.file_id,
+        nodeid=obj.nodeid,
+        test_name=obj.test_name,
+        start_line=obj.start_line,
+        end_line=obj.end_line,
+        target_route=obj.target_route,
+        target_function=obj.target_function,
+        assertion_summary=obj.assertion_summary,
+        source_strategy_version_id=obj.source_strategy_version_id,
+        adoption_status=obj.adoption_status,
+        human_meaningfulness_score=obj.human_meaningfulness_score,
+        rule_flags=obj.rule_flags,
+    )
+
+
+def _pytest_result_record(obj: PytestCaseResult) -> PytestCaseResultRecord:
+    return PytestCaseResultRecord(
+        id=obj.id,
+        attempt_id=obj.attempt_id,
+        generated_test_case_id=obj.generated_test_case_id,
+        nodeid=obj.nodeid,
+        mapping_status=obj.mapping_status,
+        status=obj.status,
+        duration_ms=obj.duration_ms,
+        failure_type=obj.failure_type,
+        failure_message=obj.failure_message,
+        traceback_hash=obj.traceback_hash,
+        is_collection_error=obj.is_collection_error,
+    )
+
+
 class SQLAlchemyRunRecorder(RunRecorder):
     def __init__(self, session: Session, *, auto_commit: bool = True) -> None:
         # recorder 是 A/B 之间最关键的适配层：
@@ -279,20 +351,20 @@ class SQLAlchemyRunRecorder(RunRecorder):
         obj.json_uri = report.json_uri
         self._flush()
 
-    def list_plan_items(self, run_id: str) -> list[RunPlanItem]:
+    def list_plan_items(self, run_id: str) -> list[RunPlanItemRecord]:
         stmt = select(RunPlanItem).where(RunPlanItem.run_id == run_id).order_by(RunPlanItem.index.asc())
-        return list(self.session.scalars(stmt))
+        return [_plan_item_record(obj) for obj in self.session.scalars(stmt)]
 
-    def list_attempts(self, run_id: str) -> list[RunAttempt]:
+    def list_attempts(self, run_id: str) -> list[RunAttemptRecord]:
         stmt = (
             select(RunAttempt)
             .join_from(RunAttempt, RunPlanItem)
             .where(RunPlanItem.run_id == run_id)
             .order_by(RunAttempt.attempt_no.asc())
         )
-        return list(self.session.scalars(stmt))
+        return [_attempt_record(obj) for obj in self.session.scalars(stmt)]
 
-    def list_pytest_results(self, run_id: str) -> list[PytestCaseResult]:
+    def list_pytest_results(self, run_id: str) -> list[PytestCaseResultRecord]:
         stmt = (
             select(PytestCaseResult)
             .join_from(PytestCaseResult, RunAttempt)
@@ -300,9 +372,9 @@ class SQLAlchemyRunRecorder(RunRecorder):
             .where(RunPlanItem.run_id == run_id)
             .order_by(PytestCaseResult.nodeid.asc())
         )
-        return list(self.session.scalars(stmt))
+        return [_pytest_result_record(obj) for obj in self.session.scalars(stmt)]
 
-    def list_generated_files(self, run_id: str) -> list[GeneratedTestFile]:
+    def list_generated_files(self, run_id: str) -> list[GeneratedTestFileRecord]:
         stmt = (
             select(GeneratedTestFile)
             .join_from(GeneratedTestFile, RunAttempt)
@@ -310,9 +382,9 @@ class SQLAlchemyRunRecorder(RunRecorder):
             .where(RunPlanItem.run_id == run_id)
             .order_by(GeneratedTestFile.created_at.asc())
         )
-        return list(self.session.scalars(stmt))
+        return [_generated_file_record(obj) for obj in self.session.scalars(stmt)]
 
-    def list_generated_cases(self, run_id: str) -> list[GeneratedTestCase]:
+    def list_generated_cases(self, run_id: str) -> list[GeneratedTestCaseRecord]:
         stmt = (
             select(GeneratedTestCase)
             .join_from(GeneratedTestCase, GeneratedTestFile)
@@ -321,4 +393,4 @@ class SQLAlchemyRunRecorder(RunRecorder):
             .where(RunPlanItem.run_id == run_id)
             .order_by(GeneratedTestCase.test_name.asc())
         )
-        return list(self.session.scalars(stmt))
+        return [_generated_case_record(obj) for obj in self.session.scalars(stmt)]

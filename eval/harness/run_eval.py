@@ -34,6 +34,15 @@ def _format_run_error(run) -> str:
     return run.error_code or message or "unknown error"
 
 
+def _failed_smoke_runs(result: dict) -> list:
+    return [
+        run
+        for runs in result["runs_by_strategy"].values()
+        for run in runs
+        if run.status != "completed"
+    ]
+
+
 def run_full_eval(workdir, repeats: int = 3, *, make_llm=None, author=demo_author, specs=None) -> dict:
     # make_llm 工厂 () -> LLMClient。缺省 = MockLLM(author)，mock 路径与现状完全一致。
     if make_llm is None:
@@ -135,11 +144,24 @@ def main() -> None:
     out_dir = _TRACE_ROOT / "eval" / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    runtime_config = None
+    if args.real or args.list_models:
+        from app.agents.llm_config import load_llm_config
+
+        try:
+            runtime_config = load_llm_config()
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+
     if args.list_models:
         from app.agents.llm_factory import create_llm
 
+        provider_arg = args.provider or (runtime_config.provider if runtime_config is not None else None)
+        model_arg = args.model or (runtime_config.model if runtime_config is not None else None)
+        base_url_arg = args.base_url or (runtime_config.base_url if runtime_config is not None else None)
+        api_key_arg = runtime_config.api_key if runtime_config is not None else None
         try:
-            llm = create_llm(args.provider, args.model, base_url=args.base_url)
+            llm = create_llm(provider_arg, model_arg, api_key=api_key_arg, base_url=base_url_arg)
         except ValueError as e:
             raise SystemExit(str(e)) from e
         try:
@@ -157,34 +179,52 @@ def main() -> None:
         from app.agents.llm_factory import create_llm, normalize_provider, resolve_model
 
         try:
-            provider = normalize_provider(args.provider)
+            provider = normalize_provider(args.provider or (runtime_config.provider if runtime_config is not None else None))
         except ValueError as e:
             raise SystemExit(str(e)) from e
-        model = resolve_model(provider, args.model)
+        model = resolve_model(provider, args.model or (runtime_config.model if runtime_config is not None else None))
         if not model:
             raise SystemExit("openai_chat_compat 需要 --model 或 TRACE_LLM_MODEL/OPENAI_CHAT_COMPAT_MODEL")
+        api_key = runtime_config.api_key if runtime_config is not None else None
+        temperature = (
+            args.temperature
+            if args.temperature is not None
+            else (runtime_config.temperature if runtime_config is not None else None)
+        )
+        max_output_tokens = (
+            args.max_output_tokens
+            if args.max_output_tokens is not None
+            else (runtime_config.max_output_tokens if runtime_config is not None else None)
+        )
+        base_url = args.base_url or (runtime_config.base_url if runtime_config is not None else None)
+        reasoning_effort = args.reasoning_effort or (
+            runtime_config.reasoning_effort if runtime_config is not None else None
+        )
 
         # 单一来源：实跑参数与落库快照（strategy_snapshot.model_params）同出这一份 dict，
         # 避免「快照写 temperature=0.2、实际跑的是别的值」这种自相矛盾的复现记录。
         model_params: dict = {}
-        if args.temperature is not None:
-            model_params["temperature"] = args.temperature
-        if args.max_output_tokens is not None:
-            model_params["max_output_tokens"] = args.max_output_tokens
-        if args.base_url:
-            model_params["base_url"] = args.base_url
-        if args.reasoning_effort:
-            model_params["reasoning_effort"] = args.reasoning_effort
+        if temperature is not None:
+            model_params["temperature"] = temperature
+        if max_output_tokens is not None:
+            model_params["max_output_tokens"] = max_output_tokens
+        if base_url:
+            model_params["base_url"] = base_url
+        if reasoning_effort:
+            model_params["reasoning_effort"] = reasoning_effort
+        client_params = dict(model_params)
+        if api_key:
+            client_params["api_key"] = api_key
 
         # 提前构造一次做校验（chat_compat 缺 base_url、reasoning_effort 冲突等），失败立即退出；
         # 校验实例用完即关，不留泄漏的连接。
         try:
-            create_llm(provider, model, **model_params).close()
+            create_llm(provider, model, **client_params).close()
         except ValueError as e:
             raise SystemExit(str(e)) from e
 
         def make_llm():
-            return create_llm(provider, model, **model_params)
+            return create_llm(provider, model, **client_params)
 
     else:
         make_llm = None  # run_full_eval 默认 MockLLM
@@ -206,17 +246,17 @@ def main() -> None:
             service_override = {
                 "provider": provider,
                 "model": model,
-                "temperature_policy": {"mode": "fixed", "value": args.temperature}
-                if args.temperature is not None
+                "temperature_policy": {"mode": "fixed", "value": temperature}
+                if temperature is not None
                 else {"mode": "strategy_default"},
                 "model_params": {},
             }
-            if args.max_output_tokens is not None:
-                service_override["max_output_tokens"] = args.max_output_tokens
-            if args.reasoning_effort:
-                service_override["model_params"]["reasoning_effort"] = args.reasoning_effort
-            if args.base_url:
-                service_override["model_params"]["base_url"] = args.base_url
+            if max_output_tokens is not None:
+                service_override["max_output_tokens"] = max_output_tokens
+            if reasoning_effort:
+                service_override["model_params"]["reasoning_effort"] = reasoning_effort
+            if base_url:
+                service_override["model_params"]["base_url"] = base_url
         else:
             service_override = {"provider": "mock", "model": "mock-1"}
         result = run_full_eval_via_service(repeats=repeats, llm_override=service_override)
@@ -227,6 +267,7 @@ def main() -> None:
             tag = f"real:{specs[0].model_provider}:{specs[0].model_name}"
         else:
             tag = "mock"
+        failed_runs = _failed_smoke_runs(result)
         print(f"== SMOKE（{tag}，1 策略×1 重复）==")
         for runs in result["runs_by_strategy"].values():
             for run in runs:
@@ -237,6 +278,10 @@ def main() -> None:
                 if run.status != "completed":
                     line += f" error={_format_run_error(run)}"
                 print(line)
+        if failed_runs:
+            print()
+            print("SMOKE failed; comparison table omitted because failed runs are not evaluable.")
+            raise SystemExit(1)
         print()
         print(result["table_md"])
         print()
@@ -253,7 +298,7 @@ def main() -> None:
         header = [
             f"# TRACE 策略评测对比（真实模型 {model}）",
             "",
-            f"> provider={provider}　model={model}　temperature={args.temperature}　reasoning_effort={args.reasoning_effort}　repeats={args.repeats}　生成于 {stamp}",
+            f"> provider={provider}　model={model}　temperature={temperature}　reasoning_effort={reasoning_effort}　repeats={args.repeats}　生成于 {stamp}",
             f"> experiment_id={experiment_info.get('id', 'unknown')}",
             f"> 数据来自 `eval/harness/run_eval.py --real`：3 策略 × {args.repeats} 重复，干净代码生成 → 6 个 bug 变体重放。",
             "> 与 MockLLM 的 comparison.md 并存：本表是真实测量，捕获/假阳性/反思/token 皆来自真模型，逐次可能不同。",

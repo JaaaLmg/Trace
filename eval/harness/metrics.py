@@ -14,8 +14,16 @@ def _captured_count(clean_run) -> int:
 def aggregate(runs_by_strategy: dict, total_in_scope: int) -> list[dict]:
     rows = []
     for sid, runs in runs_by_strategy.items():
-        invalid_test_sets = sum(1 for r in runs if getattr(r, "invalid_test_set", False))
-        evaluable_runs = [r for r in runs if not getattr(r, "invalid_test_set", False)]
+        invalid_test_sets = sum(
+            1
+            for r in runs
+            if getattr(r, "invalid_test_set", False) or getattr(r, "status", "completed") != "completed"
+        )
+        evaluable_runs = [
+            r
+            for r in runs
+            if not getattr(r, "invalid_test_set", False) and getattr(r, "status", "completed") == "completed"
+        ]
         metric_status = "invalid_test_set" if runs and not evaluable_runs else "ok"
         caps = [_captured_count(r) for r in evaluable_runs]
         rates = [(c / total_in_scope if total_in_scope else 0.0) for c in caps]

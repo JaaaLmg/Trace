@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -60,6 +61,50 @@ def test_explicit_missing_llm_config_file_fails(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="配置文件不存在"):
         llm_config.load_llm_config()
+
+
+def test_run_eval_list_models_prefers_config_api_key_over_stale_openai_env(monkeypatch, tmp_path, capsys):
+    _clear_llm_env(monkeypatch)
+    config = tmp_path / "llm.json"
+    _write_llm_config(
+        config,
+        provider="openai_chat_compat",
+        model="cfg-chat-model",
+        base_url="https://cfg.example/v1",
+        api_key="file-key",
+    )
+    monkeypatch.setenv("TRACE_LLM_CONFIG_FILE", str(config))
+    monkeypatch.setenv("OPENAI_API_KEY", "stale-env-key")
+
+    import app.agents.llm_factory as llm_factory
+    from eval.harness import run_eval
+
+    captured = {}
+
+    class DummyLLM:
+        def list_models(self):
+            return ["cfg-chat-model"]
+
+        def close(self):
+            captured["closed"] = True
+
+    def fake_create_llm(provider, model, **kwargs):
+        captured["provider"] = provider
+        captured["model"] = model
+        captured.update(kwargs)
+        return DummyLLM()
+
+    monkeypatch.setattr(llm_factory, "create_llm", fake_create_llm)
+    monkeypatch.setattr(sys, "argv", ["run_eval.py", "--list-models"])
+
+    run_eval.main()
+
+    assert capsys.readouterr().out.strip() == "cfg-chat-model"
+    assert captured["provider"] == "openai_chat_compat"
+    assert captured["model"] == "cfg-chat-model"
+    assert captured["api_key"] == "file-key"
+    assert captured["base_url"] == "https://cfg.example/v1"
+    assert captured["closed"] is True
 
 
 def test_llm_for_strategy_passes_frozen_temperature_to_client(monkeypatch):

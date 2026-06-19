@@ -18,6 +18,28 @@ MetricStatus = Literal["ok", "invalid_test_set", "evaluable_zero_capture"]
 CleanRunValidityStatus = Literal["evaluable", "invalid_test_set"]
 ResolutionStep = Literal["strategy_version_defaults", "experiment_llm_override", "repeat_derivation"]
 CaptureRule = Literal["clean_passed_variant_assertion_failure_same_nodeid"]
+BugVariantSourceKind = Literal["seeded_bug", "auto_mutation"]
+MutationOperatorKind = Literal[
+    "comparison_boundary",
+    "comparison_negation",
+    "boolean_negation",
+    "arithmetic_operator",
+    "constant_replacement",
+    "return_value",
+    "exception_type",
+    "statement_deletion",
+    "unknown",
+]
+MutantMatcherKind = Literal["source_location_hash", "operator_signature"]
+MutantSelectionStatus = Literal["selected", "not_selected", "excluded"]
+MutantSelectedBy = Literal["auto_sampler", "manual"]
+MutationDiscoveryExclusionCode = Literal[
+    "syntax_error",
+    "target_not_found",
+    "source_segment_unavailable",
+    "unsupported_compare",
+    "non_unique_patch",
+]
 SourceContextKind = Literal[
     "target_source",
     "dependency",
@@ -38,6 +60,7 @@ RetrievalSourceKind = Literal[
     "ast_grep",
     "lsp",
     "pytest_result",
+    "evaluation_event",
 ]
 RetrievalTraceStatus = Literal["resolved", "missing", "truncated", "error"]
 ArtifactKind = Literal[
@@ -49,6 +72,22 @@ ArtifactKind = Literal[
     "bug_patch",
     "experiment_metrics",
 ]
+EvaluationEventType = Literal[
+    "invalid_test_set",
+    "context_incomplete_blocking",
+    "flaky_clean_replay",
+    "probe_check_passed",
+    "probe_check_failed",
+    "replay_captured",
+    "replay_uncaptured",
+    "replay_failure",
+    "artifact_hash_mismatch",
+    "provider_failure",
+]
+EvaluationEventSeverity = Literal["info", "warning", "error", "blocking"]
+EvaluationEventScope = Literal["experiment", "clean_run", "replay", "variant", "task", "artifact"]
+ReflectionEventBackfeedAction = Literal["included", "filtered"]
+SampledMutationScoreStatus = Literal["ok", "not_applicable", "incomplete_replay"]
 
 
 SECRET_PARAM_TOKENS = ("api_key", "apikey", "secret", "token", "password", "authorization")
@@ -147,6 +186,8 @@ class ResolvedLlmSpec(ContractModel):
 
 
 class StrategySnapshotContract(ContractModel):
+    model_config = ConfigDict(extra="allow")
+
     strategy_version_id: str
     prompt_version_id: str
     prompt_content_hash: str
@@ -160,6 +201,8 @@ class StrategySnapshotContract(ContractModel):
 
 
 class RuntimeSnapshotContract(ContractModel):
+    model_config = ConfigDict(extra="allow")
+
     runtime_profile_id: str | None = None
     runtime_profile_name: str | None = None
     executor: Literal["local_subprocess", "docker"] = "local_subprocess"
@@ -195,6 +238,200 @@ class ExperimentDefinition(ContractModel):
     finished_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+
+
+class MutantPatchContract(ContractModel):
+    file: str
+    old: str = Field(min_length=1)
+    new: str
+
+    @field_validator("file")
+    @classmethod
+    def _file_is_project_relative(cls, value: str) -> str:
+        return _validate_relative_project_path(value, field_name="mutation patch file")
+
+
+class MutantMatcherContract(ContractModel):
+    matcher_kind: MutantMatcherKind = "source_location_hash"
+    source_path: str
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+    original_content_hash: str
+    operator: MutationOperatorKind
+    target_symbol: str | None = None
+    context_hash: str | None = None
+
+    @field_validator("source_path")
+    @classmethod
+    def _source_path_is_project_relative(cls, value: str) -> str:
+        return _validate_relative_project_path(value, field_name="mutation matcher source_path")
+
+    @field_validator("original_content_hash")
+    @classmethod
+    def _content_hash_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mutation matcher original_content_hash cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _line_range_is_valid(self) -> MutantMatcherContract:
+        if self.end_line < self.start_line:
+            raise ValueError("mutation matcher end_line must be >= start_line")
+        return self
+
+
+class MutantSelectionContract(ContractModel):
+    status: MutantSelectionStatus
+    selected_by: MutantSelectedBy = "auto_sampler"
+    reason: str
+    sample_seed: int | None = Field(default=None, ge=0)
+    sample_index: int | None = Field(default=None, ge=0)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mutation selection reason cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _auto_selected_mutants_are_reproducible(self) -> MutantSelectionContract:
+        if self.status == "selected" and self.selected_by == "auto_sampler":
+            if self.sample_seed is None or self.sample_index is None:
+                raise ValueError("auto-selected mutants require sample_seed and sample_index")
+        return self
+
+
+class MutationCandidateContract(ContractModel):
+    candidate_id: str
+    eval_task_id: str
+    source_snapshot_id: str
+    operator: MutationOperatorKind
+    patch: MutantPatchContract
+    matcher: MutantMatcherContract
+    selection: MutantSelectionContract
+    probe: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("candidate_id", "eval_task_id", "source_snapshot_id")
+    @classmethod
+    def _required_ids_are_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mutation candidate ids cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _matcher_operator_matches_candidate(self) -> MutationCandidateContract:
+        if self.matcher.operator != self.operator:
+            raise ValueError("mutation matcher operator must match candidate operator")
+        return self
+
+
+class BugVariantGroundTruthContract(ContractModel):
+    source: BugVariantSourceKind = "seeded_bug"
+    target: str | None = None
+    patch_unique_hit: dict[str, Any] = Field(default_factory=dict)
+    patch_artifact: dict[str, Any] = Field(default_factory=dict)
+    mutation: MutationCandidateContract | None = None
+    probe: dict[str, Any] = Field(default_factory=dict)
+    expected_behavior: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _auto_mutation_requires_selected_candidate(self) -> BugVariantGroundTruthContract:
+        if self.source == "auto_mutation":
+            if self.mutation is None:
+                raise ValueError("auto mutation bug variants require mutation candidate metadata")
+            if self.mutation.selection.status != "selected":
+                raise ValueError("only selected mutants may become bug variants")
+        elif self.mutation is not None:
+            raise ValueError("seeded bug ground truth must not carry auto mutation metadata")
+        return self
+
+
+class MutationDiscoveryExclusionContract(ContractModel):
+    reason_code: MutationDiscoveryExclusionCode
+    message: str
+    target_ref: str | None = None
+    source_path: str | None = None
+    line: int | None = Field(default=None, ge=1)
+
+    @field_validator("message")
+    @classmethod
+    def _message_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mutation discovery exclusion message cannot be blank")
+        return value
+
+    @field_validator("source_path")
+    @classmethod
+    def _source_path_is_project_relative(cls, value: str | None) -> str | None:
+        if value is not None:
+            _validate_relative_project_path(value, field_name="mutation discovery exclusion source_path")
+        return value
+
+
+class MutationDiscoveryResultContract(ContractModel):
+    eval_task_id: str
+    source_snapshot_id: str
+    sample_seed: int = Field(ge=0)
+    max_selected: int = Field(ge=0)
+    candidates: list[MutationCandidateContract] = Field(default_factory=list)
+    exclusions: list[MutationDiscoveryExclusionContract] = Field(default_factory=list)
+    selected_count: int = Field(ge=0)
+    excluded_count: int = Field(ge=0)
+
+    @field_validator("eval_task_id", "source_snapshot_id")
+    @classmethod
+    def _required_ids_are_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mutation discovery ids cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _counts_match_payload(self) -> MutationDiscoveryResultContract:
+        selected = [candidate for candidate in self.candidates if candidate.selection.status == "selected"]
+        if self.selected_count != len(selected):
+            raise ValueError("selected_count must match selected candidates")
+        if self.excluded_count != len(self.exclusions):
+            raise ValueError("excluded_count must match exclusions")
+        if self.selected_count > self.max_selected:
+            raise ValueError("selected_count cannot exceed max_selected")
+        return self
+
+
+class MutationDiscoveryAuditReportContract(ContractModel):
+    schema_version: Literal["v2.mutation_discovery_audit"] = "v2.mutation_discovery_audit"
+    generated_at: str
+    eval_task_id: str
+    dataset_id: str
+    source_snapshot_id: str
+    target_scope: dict[str, Any] | list[Any] | None = None
+    sample_seed: int = Field(ge=0)
+    max_selected: int = Field(ge=0)
+    dry_run: Literal[True] = True
+    writes_database: Literal[False] = False
+    runs_replay: Literal[False] = False
+    selected_candidate_ids: list[str] = Field(default_factory=list)
+    exclusion_summary: dict[MutationDiscoveryExclusionCode, int] = Field(default_factory=dict)
+    discovery: MutationDiscoveryResultContract
+
+    @field_validator("generated_at", "eval_task_id", "dataset_id", "source_snapshot_id")
+    @classmethod
+    def _required_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("mutation discovery audit report identifiers cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _summary_matches_discovery(self) -> MutationDiscoveryAuditReportContract:
+        selected = [candidate.candidate_id for candidate in self.discovery.candidates if candidate.selection.status == "selected"]
+        if self.selected_candidate_ids != selected:
+            raise ValueError("selected_candidate_ids must match discovery selected candidates")
+        summary: dict[str, int] = {}
+        for exclusion in self.discovery.exclusions:
+            summary[exclusion.reason_code] = summary.get(exclusion.reason_code, 0) + 1
+        if dict(self.exclusion_summary) != summary:
+            raise ValueError("exclusion_summary must match discovery exclusions")
+        return self
 
 
 class TargetMappingEvidence(ContractModel):
@@ -379,6 +616,8 @@ class SourceContextPolicy(ContractModel):
 
 
 class CleanRunMetricsContract(ContractModel):
+    model_config = ConfigDict(extra="allow")
+
     final_cases_total: int = Field(ge=0)
     final_passed: int = Field(ge=0)
     final_failed: int = Field(ge=0)
@@ -467,6 +706,8 @@ class TestReplayContract(ContractModel):
 
 
 class ReplayMetricsContract(ContractModel):
+    model_config = ConfigDict(extra="allow")
+
     capture_rule: CaptureRule = "clean_passed_variant_assertion_failure_same_nodeid"
     clean_passed_nodeids: list[str] = Field(default_factory=list)
     variant_assertion_failure_nodeids: list[str] = Field(default_factory=list)
@@ -574,6 +815,93 @@ class ExperimentMetricRow(ContractModel):
         return self
 
 
+class SampledMutationScoreRow(ContractModel):
+    strategy_id: str
+    strategy_name: str
+    mutant_count: int = Field(ge=0)
+    repeat_count: int = Field(ge=0)
+    expected_replay_count: int = Field(ge=0)
+    observed_replay_count: int = Field(ge=0)
+    captured_mutant_count: int = Field(ge=0)
+    score: float | None = Field(default=None, ge=0, le=1)
+    status: SampledMutationScoreStatus
+
+    @model_validator(mode="after")
+    def _score_inputs_are_consistent(self) -> SampledMutationScoreRow:
+        expected = self.mutant_count * self.repeat_count
+        if self.expected_replay_count != expected:
+            raise ValueError("expected_replay_count must equal mutant_count * repeat_count")
+        if self.observed_replay_count > self.expected_replay_count:
+            raise ValueError("observed_replay_count cannot exceed expected_replay_count")
+        if self.captured_mutant_count > self.mutant_count:
+            raise ValueError("captured_mutant_count cannot exceed mutant_count")
+        if self.mutant_count == 0:
+            if self.status != "not_applicable":
+                raise ValueError("0 sampled mutants must use not_applicable status")
+            if self.score is not None:
+                raise ValueError("not_applicable sampled mutation score must be null")
+            return self
+        if self.expected_replay_count == 0 or self.observed_replay_count != self.expected_replay_count:
+            if self.status != "incomplete_replay":
+                raise ValueError("incomplete sampled replay coverage must use incomplete_replay status")
+            if self.score is not None:
+                raise ValueError("incomplete sampled mutation score must be null")
+            return self
+        if self.status != "ok":
+            raise ValueError("complete sampled mutation score rows must use ok status")
+        expected_score = self.captured_mutant_count / self.mutant_count
+        if self.score is None or abs(self.score - expected_score) > 1e-9:
+            raise ValueError("sampled mutation score must equal captured_mutant_count / mutant_count")
+        return self
+
+
+class SampledMutationScoreContract(ContractModel):
+    status: SampledMutationScoreStatus
+    unit: Literal["auto_mutation_bug_variant"] = "auto_mutation_bug_variant"
+    denominator_source: Literal[
+        "bug_variants.ground_truth.source=auto_mutation + ground_truth.probe.probe_check.status=passed"
+    ] = "bug_variants.ground_truth.source=auto_mutation + ground_truth.probe.probe_check.status=passed"
+    mutant_count: int = Field(ge=0)
+    included_variant_ids: list[str] = Field(default_factory=list)
+    excluded_variant_counts: dict[str, int] = Field(default_factory=dict)
+    rows: list[SampledMutationScoreRow] = Field(default_factory=list)
+    matrix_counts: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _summary_matches_rows(self) -> SampledMutationScoreContract:
+        if self.mutant_count != len(self.included_variant_ids):
+            raise ValueError("mutant_count must match included_variant_ids")
+        if any(count < 0 for count in self.excluded_variant_counts.values()):
+            raise ValueError("excluded_variant_counts cannot contain negative counts")
+        if self.mutant_count == 0:
+            if self.status != "not_applicable":
+                raise ValueError("empty sampled mutation scope must use not_applicable status")
+            if any(row.status != "not_applicable" for row in self.rows):
+                raise ValueError("empty sampled mutation scope rows must be not_applicable")
+            return self
+        if any(row.mutant_count != self.mutant_count for row in self.rows):
+            raise ValueError("sampled mutation rows must use the summary mutant_count")
+        expected_status = (
+            "incomplete_replay"
+            if not self.rows or any(row.status == "incomplete_replay" for row in self.rows)
+            else "ok"
+        )
+        if self.status != expected_status:
+            raise ValueError("sampled mutation summary status must match row statuses")
+        return self
+
+
+def _empty_sampled_mutation_score() -> SampledMutationScoreContract:
+    return SampledMutationScoreContract(
+        status="not_applicable",
+        mutant_count=0,
+        included_variant_ids=[],
+        excluded_variant_counts={},
+        rows=[],
+        matrix_counts={},
+    )
+
+
 class ArtifactMetadataContract(ContractModel):
     kind: ArtifactKind
     created_by: Literal["agent", "executor", "experiment_service", "seed_script"]
@@ -594,6 +922,73 @@ class ArtifactContract(ContractModel):
     metadata: ArtifactMetadataContract
 
 
+class EvaluationEventContract(ContractModel):
+    event_id: str
+    event_type: EvaluationEventType
+    severity: EvaluationEventSeverity
+    scope: EvaluationEventScope
+    experiment_id: str
+    clean_run_id: str | None = None
+    replay_id: str | None = None
+    bug_variant_id: str | None = None
+    eval_task_id: str | None = None
+    strategy_version_id: str | None = None
+    repeat_index: int | None = Field(default=None, ge=0)
+    stable_code: str
+    reason: str
+    source_ids: dict[str, str] = Field(default_factory=dict)
+    artifact_ids: list[str] = Field(default_factory=list)
+    nodeids: list[str] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_from: Literal["experiment_service_projection"] = "experiment_service_projection"
+
+    @field_validator("event_id", "stable_code", "reason")
+    @classmethod
+    def _required_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("evaluation event id, stable_code, and reason cannot be blank")
+        return value
+
+    @field_validator("source_ids")
+    @classmethod
+    def _source_ids_have_no_blank_values(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not str(key).strip() or not str(item).strip() for key, item in value.items()):
+            raise ValueError("evaluation event source_ids cannot contain blank keys or values")
+        return value
+
+
+class ReflectionEventBackfeedDecisionContract(ContractModel):
+    event_id: str
+    event_type: EvaluationEventType
+    action: ReflectionEventBackfeedAction
+    reason: str
+
+    @field_validator("event_id", "reason")
+    @classmethod
+    def _required_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reflection event backfeed decision event_id and reason cannot be blank")
+        return value
+
+
+class ReflectionEventBackfeedContract(ContractModel):
+    clean_run_id: str
+    eval_task_id: str
+    strategy_version_id: str
+    repeat_index: int = Field(ge=0)
+    max_events: int = Field(ge=1)
+    included_event_ids: list[str] = Field(default_factory=list)
+    decisions: list[ReflectionEventBackfeedDecisionContract] = Field(default_factory=list)
+    created_from: Literal["evaluation_event_projection"] = "evaluation_event_projection"
+
+    @field_validator("clean_run_id", "eval_task_id", "strategy_version_id")
+    @classmethod
+    def _required_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reflection event backfeed identifiers cannot be blank")
+        return value
+
+
 class TableSchemaDraft(ContractModel):
     name: str
     purpose: str
@@ -610,9 +1005,13 @@ class ExperimentMetricsResponse(ContractModel):
     capture_scope: dict[str, Any] = Field(default_factory=dict)
     rows: list[ExperimentMetricRow]
     capture_matrix: dict[str, dict[str, bool]]
+    capture_matrix_counts: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
+    sampled_mutation_score: SampledMutationScoreContract = Field(default_factory=_empty_sampled_mutation_score)
     clean_runs: list[CleanRunContract]
     replay_runs: list[TestReplayContract]
     experiment_replay_runs: list[ExperimentReplayRunContract]
+    evaluation_events: list[EvaluationEventContract] = Field(default_factory=list)
+    reflection_event_backfeed: list[ReflectionEventBackfeedContract] = Field(default_factory=list)
     artifacts: list[ArtifactContract] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -680,7 +1079,10 @@ V2_PHASE0_DB_SCHEMA_DRAFT: tuple[TableSchemaDraft, ...] = (
         name="bug_variants",
         purpose="Concrete canonical bug variant.",
         fields=["id", "seeded_bug_id", "variant_name", "canonical_kind", "patch_artifact_id", "mutated_snapshot_id", "ground_truth"],
-        constraints=["canonical patch must apply to exactly one clean snapshot location"],
+        constraints=[
+            "canonical patch must apply to exactly one clean snapshot location",
+            "auto mutation variants must carry selected mutation matcher metadata in ground_truth",
+        ],
     ),
     TableSchemaDraft(
         name="experiments",

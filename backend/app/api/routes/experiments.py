@@ -10,6 +10,7 @@ from app.schemas.api_evaluation import (
     ExperimentOut,
     TestReplayOut,
 )
+from app.schemas.evaluation import ExperimentMetricsResponse
 from app.services.experiments import (
     ExperimentError,
     cancel_experiment,
@@ -90,7 +91,7 @@ def list_replay_runs_route(experiment_id: str, db: Session = Depends(get_db)):
         raise _experiment_http_error(e) from e
 
 
-@router.get("/api/v1/experiments/{experiment_id}/metrics")
+@router.get("/api/v1/experiments/{experiment_id}/metrics", response_model=ExperimentMetricsResponse)
 def get_experiment_metrics_route(experiment_id: str, db: Session = Depends(get_db)):
     try:
         return get_experiment_metrics(db, experiment_id)

@@ -46,6 +46,56 @@ def _seed_v2_demo() -> None:
         seed_demo_dataset(session)
 
 
+def _mark_wrong_status_as_confirmed_auto_mutation() -> None:
+    bug = next(item for item in BUGS if item.id == "wrong-status")
+    with Session(get_engine()) as session:
+        variant = session.get(BugVariant, "variant-wrong-status")
+        assert variant is not None
+        ground_truth = dict(variant.ground_truth or {})
+        ground_truth["source"] = "auto_mutation"
+        ground_truth["mutation"] = {
+            "candidate_id": "mut-demo-wrong-status",
+            "eval_task_id": "task-demo-shop-pricing-v2",
+            "source_snapshot_id": DEMO_SNAPSHOT_ID,
+            "operator": "unknown",
+            "patch": {"file": bug.file, "old": bug.old, "new": bug.new},
+            "matcher": {
+                "matcher_kind": "operator_signature",
+                "source_path": bug.file,
+                "start_line": 1,
+                "end_line": 1,
+                "original_content_hash": "sha256-demo-wrong-status",
+                "operator": "unknown",
+                "target_symbol": bug.target,
+            },
+            "selection": {
+                "status": "selected",
+                "selected_by": "auto_sampler",
+                "reason": "stage4 sampled mutation score fixture",
+                "sample_seed": 7,
+                "sample_index": 0,
+            },
+            "probe": {},
+        }
+        ground_truth["probe"] = {
+            "target_kind": bug.kind,
+            "probe": bug.probe,
+            "clean_value": bug.clean_value,
+            "buggy_value": bug.buggy_value,
+            "probe_check": {
+                "status": "passed",
+                "target_kind": bug.kind,
+                "probe": bug.probe,
+                "clean_expected": bug.clean_value,
+                "clean_actual": bug.clean_value,
+                "buggy_expected": bug.buggy_value,
+                "buggy_actual": bug.buggy_value,
+            },
+        }
+        variant.ground_truth = ground_truth
+        session.commit()
+
+
 def _run_celery_eager(monkeypatch) -> None:
     monkeypatch.setattr(celery_app.conf, "task_always_eager", True)
     monkeypatch.setattr(celery_app.conf, "task_eager_propagates", True)
@@ -73,6 +123,7 @@ def _assertion_failure_nodeids(summary: dict) -> set[str]:
 def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch, tmp_path, clean_db):
     _run_celery_eager(monkeypatch)
     _seed_v2_demo()
+    _mark_wrong_status_as_confirmed_auto_mutation()
     app = create_app()
 
     with TestClient(app) as client:
@@ -122,9 +173,20 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
     assert matrix_counts["variant-wrong-status"]["direct"]["captured_count"] == 0
     assert matrix_counts["variant-wrong-status"]["direct"]["repeat_count"] == 1
     assert matrix_counts["variant-wrong-status"]["plan_execute"]["capture_rate"] == 1.0
+    assert metrics["capture_matrix_counts"] == matrix_counts
     assert metrics["capture_scope"]["unit"] == "bug_variant"
     assert metrics["capture_scope"]["single_variant_per_seeded_bug"] is True
     assert metrics["data_source"]["kind"] == "mock"
+    sampled = metrics["sampled_mutation_score"]
+    sampled_rows = {row["strategy_id"]: row for row in sampled["rows"]}
+    assert sampled["status"] == "ok"
+    assert sampled["included_variant_ids"] == ["variant-wrong-status"]
+    assert sampled["excluded_variant_counts"]["non_auto_mutation"] == 5
+    assert sampled_rows["direct"]["score"] == 0.0
+    assert sampled_rows["direct"]["captured_mutant_count"] == 0
+    assert sampled_rows["plan_execute"]["score"] == 1.0
+    assert sampled_rows["react_reflection"]["score"] == 1.0
+    assert sampled["matrix_counts"]["variant-wrong-status"]["direct"]["replayed_count"] == 1
 
     harness = run_full_eval(tmp_path / "harness", repeats=1)
     harness_rows = {row["strategy_id"]: row for row in harness["rows"]}
@@ -136,6 +198,12 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
     assert len(metrics["experiment_replay_runs"]) == 18
     assert all(replay["llm_calls"] == 0 for replay in metrics["replay_runs"])
     assert any(replay["bug_variant_id"] is None for replay in metrics["replay_runs"])
+    events = metrics["evaluation_events"]
+    event_types = {event["event_type"] for event in events}
+    assert {"probe_check_passed", "replay_captured", "replay_uncaptured"}.issubset(event_types)
+    assert all(event["event_id"].startswith("evt-") for event in events)
+    assert all(event["created_from"] == "experiment_service_projection" for event in events)
+    assert all("clean_metrics" not in event["payload"] for event in events)
     for clean in metrics["clean_runs"]:
         clean_replay = clean["clean_metrics"]["clean_replay"]
         assert clean["clean_metrics"]["clean_replay_id"]
@@ -277,6 +345,8 @@ def test_experiment_fails_if_generated_test_set_artifact_hash_changes(monkeypatc
         assert experiment.status == "failed"
         assert experiment.error_code == "ExperimentError"
         assert "generated test set artifact hash mismatch" in (experiment.error_message or "")
+        metrics = get_experiment_metrics(session, "exp-corrupt-artifact")
+        assert any(event["event_type"] == "artifact_hash_mismatch" for event in metrics["evaluation_events"])
 
 
 def test_experiment_fails_when_variant_probe_does_not_match_ground_truth(clean_db):
@@ -315,6 +385,8 @@ def test_experiment_fails_when_variant_probe_does_not_match_ground_truth(clean_d
         assert replay is not None
         assert replay.status == "failed"
         assert replay.error_code == "ExperimentError"
+        metrics = get_experiment_metrics(session, "exp-bad-probe")
+        assert any(event["event_type"] == "probe_check_failed" for event in metrics["evaluation_events"])
 
 
 def test_experiment_fails_when_clean_run_provider_call_fails(monkeypatch, clean_db):
@@ -322,7 +394,7 @@ def test_experiment_fails_when_clean_run_provider_call_fails(monkeypatch, clean_
 
     import app.services.experiments as experiment_module
 
-    def fail_clean_run(session, *, run_id, budget_override=None, make_llm=None):
+    def fail_clean_run(session, *, run_id, budget_override=None, make_llm=None, evaluation_events=None):
         run = session.get(TestRun, run_id)
         run.status = "failed"
         run.error_code = "LLM_PROVIDER_ERROR"
@@ -353,6 +425,8 @@ def test_experiment_fails_when_clean_run_provider_call_fails(monkeypatch, clean_
         assert session.scalar(
             select(func.count()).select_from(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-provider-failure")
         ) == 0
+        metrics = get_experiment_metrics(session, "exp-provider-failure")
+        assert any(event["event_type"] == "provider_failure" for event in metrics["evaluation_events"])
 
 
 def test_experiment_run_route_enqueues_without_sync(monkeypatch, clean_db):
@@ -432,7 +506,7 @@ def test_run_experiment_observes_mid_run_cancel(monkeypatch, clean_db):
 
     import app.services.experiments as experiment_module
 
-    def cancel_during_execute(session, *, run_id, budget_override=None, make_llm=None):
+    def cancel_during_execute(session, *, run_id, budget_override=None, make_llm=None, evaluation_events=None):
         experiment = session.get(experiment_module.Experiment, "exp-cancel-mid-run")
         experiment.status = "cancelled"
         experiment.finished_at = experiment_module._now()
@@ -660,6 +734,8 @@ def test_experiment_marks_flaky_clean_replay_invalid_and_skips_variants(monkeypa
         assert clean.clean_metrics["invalid_reason"] == "flaky_clean_replay"
         assert clean.clean_metrics["flaky_check"]["stable"] is False
         assert "status changed" in clean.clean_metrics["flaky_check"]["reasons"][0]
+        metrics = get_experiment_metrics(session, "exp-flaky-clean")
+        assert any(event["event_type"] == "flaky_clean_replay" for event in metrics["evaluation_events"])
 
         replays = list(
             session.scalars(
@@ -672,13 +748,96 @@ def test_experiment_marks_flaky_clean_replay_invalid_and_skips_variants(monkeypa
         assert replays[0].bug_variant_id is None
         assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 0
 
-        metrics = get_experiment_metrics(session, "exp-flaky-clean")
         [row] = metrics["rows"]
         assert row["metric_status"] == "invalid_test_set"
         assert row["invalid_test_set_count"] == 1
         assert row["repeats"] == 0
         assert row["captured_per_repeat"] == []
         assert metrics["capture_matrix_counts"]["variant-wrong-status"]["plan_execute"]["repeat_count"] == 0
+
+
+def test_experiment_backfeeds_previous_evaluation_events_to_later_repeats(monkeypatch, clean_db):
+    _seed_v2_demo()
+
+    import app.services.experiments as experiment_module
+
+    original_execute_run_sync = experiment_module.execute_run_sync
+    seen_event_types: list[list[str]] = []
+
+    def capture_execute_run_sync(
+        session,
+        *,
+        run_id,
+        budget_override=None,
+        make_llm=None,
+        evaluation_events=None,
+    ):
+        seen_event_types.append([event.event_type for event in evaluation_events or []])
+        return original_execute_run_sync(
+            session,
+            run_id=run_id,
+            budget_override=budget_override,
+            make_llm=make_llm,
+            evaluation_events=evaluation_events,
+        )
+
+    def unstable_flaky_gate(
+        session,
+        *,
+        clean_run,
+        artifact,
+        target_snapshot,
+        baseline_replay,
+        baseline_statuses,
+        timeout_seconds,
+        required_runs=3,
+    ):
+        return {
+            "enabled": True,
+            "required_runs": required_runs,
+            "actual_runs": required_runs,
+            "stable": False,
+            "baseline_replay_id": baseline_replay.id,
+            "replay_ids": [baseline_replay.id, f"flaky-run-{clean_run.repeat_index}"],
+            "reasons": [f"repeat {clean_run.repeat_index} clean replay changed status"],
+            "runs": [
+                {
+                    "replay_id": baseline_replay.id,
+                    "summary": {"collected": 1, "passed": 1, "failed": 0, "skipped": 0, "collection_errors": 0},
+                    "nodeid_statuses": baseline_statuses,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(experiment_module, "execute_run_sync", capture_execute_run_sync)
+    monkeypatch.setattr(experiment_module, "_run_clean_flaky_gate", unstable_flaky_gate)
+
+    with Session(get_engine()) as session:
+        experiment_module.create_experiment(
+            session,
+            experiment_id="exp-event-backfeed",
+            name="event backfeed",
+            dataset_id=DEMO_DATASET_ID,
+            strategy_version_ids=["sv-plan-v1"],
+            repeat_count=2,
+            llm_override={"provider": "mock", "model": "mock-1"},
+        )
+        result = run_experiment(session, "exp-event-backfeed")
+        assert result["status"] == "completed"
+        metrics = get_experiment_metrics(session, "exp-event-backfeed")
+
+    assert len(seen_event_types) == 2
+    assert seen_event_types[0] == []
+    assert seen_event_types[1] == ["flaky_clean_replay"]
+    second_repeat_audit = [
+        audit for audit in metrics["reflection_event_backfeed"] if audit["repeat_index"] == 1
+    ]
+    assert len(second_repeat_audit) == 1
+    [decision] = second_repeat_audit[0]["decisions"]
+    assert decision["event_type"] == "flaky_clean_replay"
+    assert decision["action"] == "included"
+    assert decision["reason"] == "reflection-consumable failure event"
+    assert second_repeat_audit[0]["included_event_ids"] == [decision["event_id"]]
 
 
 def test_experiment_blocks_seeded_bug_run_when_target_source_context_is_missing(clean_db):
@@ -748,6 +907,7 @@ def test_experiment_blocks_seeded_bug_run_when_target_source_context_is_missing(
         assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 0
 
         metrics = get_experiment_metrics(session, "exp-missing-context")
+        assert any(event["event_type"] == "context_incomplete_blocking" for event in metrics["evaluation_events"])
         [row] = metrics["rows"]
         assert row["repeats"] == 0
         assert row["captured_per_repeat"] == []
@@ -761,7 +921,7 @@ def test_experiment_marks_pipeline_reject_as_invalid_test_set(monkeypatch, clean
 
     import app.services.experiments as experiment_module
 
-    def reject_generation(session, *, run_id, budget_override=None, make_llm=None):
+    def reject_generation(session, *, run_id, budget_override=None, make_llm=None, evaluation_events=None):
         run = session.get(TestRun, run_id)
         run.status = "failed"
         run.error_code = "PIPELINE_REJECT"

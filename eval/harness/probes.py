@@ -127,17 +127,18 @@ def check_variant_probe(
     ground_truth: dict,
     variant_id: str,
 ) -> dict | None:
-    probe = ground_truth.get("probe")
-    has_probe_metadata = any(key in ground_truth for key in ("probe", "clean_value", "buggy_value"))
+    probe_meta = ground_truth.get("probe") if isinstance(ground_truth.get("probe"), dict) else ground_truth
+    probe = probe_meta.get("probe")
+    has_probe_metadata = any(key in probe_meta for key in ("probe", "clean_value", "buggy_value"))
     if not has_probe_metadata:
         return None
 
     patch = ((ground_truth.get("patch_artifact") or {}).get("patch") or {})
     required = {
-        "target_kind": ground_truth.get("target_kind"),
+        "target_kind": probe_meta.get("target_kind"),
         "probe": probe,
-        "clean_value": ground_truth.get("clean_value"),
-        "buggy_value": ground_truth.get("buggy_value"),
+        "clean_value": probe_meta.get("clean_value"),
+        "buggy_value": probe_meta.get("buggy_value"),
         "patch_file": patch.get("file"),
     }
     missing = [key for key, value in required.items() if value is None]

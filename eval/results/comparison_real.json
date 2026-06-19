@@ -14,13 +14,13 @@
       "capture_rate_mean": 1.0,
       "capture_rate_std": 0.0,
       "false_positive_rate": 0.0,
-      "avg_tokens": 9713.666666666666,
+      "avg_tokens": 11814.666666666666,
       "avg_tool_calls": 3,
       "reflection_used": false,
       "invalid_test_set_count": 0,
       "metric_status": "ok",
-      "cost_per_captured_bug": 1618.9444444444443,
-      "avg_duration_ms": 10024.333333333334,
+      "cost_per_captured_bug": 1969.111111111111,
+      "avg_duration_ms": 10567.333333333334,
       "pytest_collection_success_rate": 1.0,
       "reflection_contract_pass_rate": null,
       "reflection_acceptance_rate": null,
@@ -30,9 +30,9 @@
         "provider": "openai_chat_compat",
         "model": "deepseek-v4-flash",
         "derived_from_clean_run_ids": [
-          "c0771da4-11b0-4482-a9ad-53a3bfc873a8",
-          "995f5a57-d2dc-493a-909c-9f6eedae1907",
-          "8c78e8a7-b99d-409f-8190-01542e8a53da"
+          "5cd320d5-9553-4a6a-954c-fccbe4d5d64a",
+          "96bc24de-9898-4f72-8084-db60735f7475",
+          "2da7c8a0-fe67-4f8b-9564-10d8a46bb792"
         ],
         "source": "derived_from_clean_run_strategy_snapshots"
       }
@@ -51,13 +51,13 @@
       "capture_rate_mean": 1.0,
       "capture_rate_std": 0.0,
       "false_positive_rate": 0.0,
-      "avg_tokens": 27642.333333333332,
-      "avg_tool_calls": 13.666666666666666,
+      "avg_tokens": 24865.333333333332,
+      "avg_tool_calls": 14.333333333333334,
       "reflection_used": false,
       "invalid_test_set_count": 0,
       "metric_status": "ok",
-      "cost_per_captured_bug": 4607.055555555556,
-      "avg_duration_ms": 9871.666666666666,
+      "cost_per_captured_bug": 4144.222222222223,
+      "avg_duration_ms": 11689.0,
       "pytest_collection_success_rate": 1.0,
       "reflection_contract_pass_rate": null,
       "reflection_acceptance_rate": null,
@@ -67,9 +67,9 @@
         "provider": "openai_chat_compat",
         "model": "deepseek-v4-flash",
         "derived_from_clean_run_ids": [
-          "0ba3c847-332c-4b8a-b61f-2e670b063930",
-          "9357cd8f-fb72-4960-b4c0-6304e8609927",
-          "456e6836-6c71-4573-b0d5-b71e950522b9"
+          "3aac73e1-ecbf-41c5-87a5-2e57d264ba21",
+          "16c20bee-e2f9-4e38-8d1a-71ef2c85b8b3",
+          "0efb35f7-bb75-492b-a36c-6111197acf9d"
         ],
         "source": "derived_from_clean_run_strategy_snapshots"
       }
@@ -88,13 +88,13 @@
       "capture_rate_mean": 1.0,
       "capture_rate_std": 0.0,
       "false_positive_rate": 0.0,
-      "avg_tokens": 7062,
+      "avg_tokens": 4881.333333333333,
       "avg_tool_calls": 3,
       "reflection_used": false,
       "invalid_test_set_count": 0,
       "metric_status": "ok",
-      "cost_per_captured_bug": 1177.0,
-      "avg_duration_ms": 8815.333333333334,
+      "cost_per_captured_bug": 813.5555555555555,
+      "avg_duration_ms": 11199.0,
       "pytest_collection_success_rate": 1.0,
       "reflection_contract_pass_rate": null,
       "reflection_acceptance_rate": null,
@@ -104,9 +104,9 @@
         "provider": "openai_chat_compat",
         "model": "deepseek-v4-flash",
         "derived_from_clean_run_ids": [
-          "2388f9ec-0367-4434-bb4d-482db601566c",
-          "01e55a2e-4140-4d4d-aa5a-8c9cfce667a0",
-          "588ffdcd-517f-4881-b29f-bb8c4ede08af"
+          "855da13c-268a-44d5-9720-9ea3fd3de5ed",
+          "b040d3c9-24e0-460b-b317-42ec08bbf5f4",
+          "29ef9161-e8f7-4d39-922e-7d059db38242"
         ],
         "source": "derived_from_clean_run_strategy_snapshots"
       }
@@ -145,7 +145,7 @@
     }
   },
   "experiment": {
-    "id": "exp-8d9f99fe-e7b4-4d2f-b807-7a2f1857a798",
+    "id": "exp-05e9a883-e479-4079-a3ce-294fb874589f",
     "name": "cli-v2-eval",
     "dataset_id": "dataset-demo-v2",
     "strategy_version_ids": [
@@ -162,13 +162,14 @@
       },
       "max_output_tokens": 16384,
       "temperature_policy": {
-        "mode": "strategy_default"
+        "mode": "fixed",
+        "value": 0.0
       }
     },
     "status": "completed",
-    "created_at": "2026-06-17T22:48:51.059966+08:00",
-    "started_at": "2026-06-17T22:48:51.068864+08:00",
-    "finished_at": "2026-06-17T23:05:39.207350+08:00",
+    "created_at": "2026-06-19T17:14:52.399316+08:00",
+    "started_at": "2026-06-19T17:14:52.408558+08:00",
+    "finished_at": "2026-06-19T17:28:51.432829+08:00",
     "error_code": null,
     "error_message": null
   }

@@ -12,15 +12,21 @@ from app.schemas.api_evaluation import (
     EvalDatasetOut,
     EvalTaskCreate,
     EvalTaskOut,
+    MutationCandidateConfirmRequest,
+    MutationDiscoveryDryRunRequest,
     SeededBugCreate,
+    SeededBugDetailOut,
     SeededBugOut,
 )
+from app.schemas.evaluation import MutationDiscoveryResultContract
 from app.services.evaluation import (
     EvaluationError,
     create_bug_variant,
     create_eval_dataset,
     create_eval_task,
     create_seeded_bug,
+    confirm_selected_mutation_candidate,
+    dry_run_task_mutation_discovery,
     get_dataset_detail,
     list_bug_variants,
     list_dataset_tasks,
@@ -106,6 +112,49 @@ def create_seeded_bug_route(task_id: str, body: SeededBugCreate, db: Session = D
 def list_seeded_bugs_route(task_id: str, db: Session = Depends(get_db)):
     try:
         return list_task_seeded_bugs(db, task_id)
+    except EvaluationError as e:
+        raise _evaluation_http_error(e) from e
+
+
+@router.post("/api/v1/eval-tasks/{task_id}/mutation-discovery/dry-run", response_model=MutationDiscoveryResultContract)
+def dry_run_task_mutation_discovery_route(
+    task_id: str,
+    body: MutationDiscoveryDryRunRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    body = body or MutationDiscoveryDryRunRequest()
+    try:
+        return dry_run_task_mutation_discovery(
+            db,
+            task_id,
+            sample_seed=body.sample_seed,
+            max_selected=body.max_selected,
+            target_scope_override=body.target_scope_override,
+        )
+    except EvaluationError as e:
+        raise _evaluation_http_error(e) from e
+
+
+@router.post("/api/v1/eval-tasks/{task_id}/mutation-discovery/confirm-selected", response_model=SeededBugDetailOut)
+def confirm_selected_mutation_candidate_route(
+    task_id: str,
+    body: MutationCandidateConfirmRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return confirm_selected_mutation_candidate(
+            db,
+            task_id,
+            audit_report=body.audit_report,
+            candidate_id=body.candidate_id,
+            probe=body.probe.model_dump(mode="json"),
+            seeded_bug_id=body.seeded_bug_id,
+            variant_id=body.variant_id,
+            bug_type=body.bug_type,
+            description=body.description,
+            expected_detection=body.expected_detection,
+            variant_name=body.variant_name,
+        )
     except EvaluationError as e:
         raise _evaluation_http_error(e) from e
 

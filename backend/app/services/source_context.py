@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from app.schemas.evaluation import ContextCompletenessEvidence, SourceContextRetrievalTrace, SourceContextSnippet
+from app.schemas.evaluation import (
+    ContextCompletenessEvidence,
+    EvaluationEventContract,
+    SourceContextRetrievalTrace,
+    SourceContextSnippet,
+)
 from app.schemas.tools import (
     AnalyzeProjectOutput,
     AstGrepMatch,
@@ -44,8 +49,9 @@ _RETRIEVAL_SOURCE_PRIORITY = {
     "ast_grep": 4,
     "pytest_scanner": 5,
     "pytest_result": 6,
-    "rg": 7,
-    "default_path": 8,
+    "evaluation_event": 7,
+    "rg": 8,
+    "default_path": 9,
 }
 
 
@@ -89,8 +95,11 @@ def build_source_context_bundle(
     max_dependency_depth: int = 2,
     max_reference_snippets: int = 2,
     failure_details: Sequence[FailureDetail] | None = None,
+    evaluation_events: Sequence[EvaluationEventContract | dict] | None = None,
     max_failure_contexts: int = 4,
     max_failure_context_chars: int = 1600,
+    max_evaluation_events: int = 4,
+    max_evaluation_event_chars: int = 1600,
 ) -> SourceContextBundle:
     """按目标函数/路由读取源码片段。
 
@@ -317,6 +326,19 @@ def build_source_context_bundle(
             max_total_bytes=max_total_bytes,
             max_failure_contexts=max_failure_contexts,
             max_failure_context_chars=max_failure_context_chars,
+            risk_notes=risk_notes,
+            retrieval_trace=retrieval_trace,
+        )
+    if evaluation_events:
+        total_bytes = _append_evaluation_event_context(
+            ctx,
+            evaluation_events,
+            snippets,
+            pieces,
+            total_bytes,
+            max_total_bytes=max_total_bytes,
+            max_evaluation_events=max_evaluation_events,
+            max_evaluation_event_chars=max_evaluation_event_chars,
             risk_notes=risk_notes,
             retrieval_trace=retrieval_trace,
         )
@@ -1830,6 +1852,120 @@ def _append_failure_context(
 
 def _failure_target(detail: FailureDetail) -> str:
     return str(detail.nodeid or detail.file or "<collect>")
+
+
+def _append_evaluation_event_context(
+    ctx: ToolContext,
+    evaluation_events: Sequence[EvaluationEventContract | dict],
+    snippets: list[SourceContextSnippet],
+    pieces: list[str],
+    total_bytes: int,
+    *,
+    max_total_bytes: int,
+    max_evaluation_events: int,
+    max_evaluation_event_chars: int,
+    risk_notes: list[str],
+    retrieval_trace: list[SourceContextRetrievalTrace],
+) -> int:
+    events = [EvaluationEventContract.model_validate(event) for event in evaluation_events]
+    source_path = _safe_source_path(f"{ctx.relpath(ctx.test_write_dir)}/evaluation_events.txt")
+    if source_path is None:
+        source_path = "tests/generated/evaluation_events.txt"
+
+    if len(events) > max_evaluation_events:
+        risk_notes.append("evaluation event context truncated by max_evaluation_events")
+        for event in events[max_evaluation_events:]:
+            retrieval_trace.append(
+                _trace(
+                    target=event.event_id,
+                    source_kind="failure_context",
+                    retrieval_source="evaluation_event",
+                    status="truncated",
+                    source_path=source_path,
+                    start_line=1,
+                    end_line=1,
+                    confidence=0.8,
+                    risk_notes=["evaluation event context truncated by max_evaluation_events"],
+                )
+            )
+
+    for event in events[:max_evaluation_events]:
+        segment = _evaluation_event_segment(event, max_evaluation_event_chars)
+        segment_bytes = len(segment.encode("utf-8"))
+        if total_bytes + segment_bytes > max_total_bytes:
+            risk_notes.append("evaluation event context truncated by max_total_bytes")
+            retrieval_trace.append(
+                _trace(
+                    target=event.event_id,
+                    source_kind="failure_context",
+                    retrieval_source="evaluation_event",
+                    status="truncated",
+                    source_path=source_path,
+                    start_line=1,
+                    end_line=1,
+                    confidence=0.8,
+                    risk_notes=["evaluation event context truncated by max_total_bytes"],
+                )
+            )
+            break
+
+        total_bytes += segment_bytes
+        content_hash = hashlib.sha256(segment.encode("utf-8")).hexdigest()
+        trace_id = _trace_id(event.event_id, "failure_context", "evaluation_event", source_path, 1, content_hash)
+        snippets.append(
+            SourceContextSnippet(
+                path=source_path,
+                source_path=source_path,
+                target_ref=event.event_id,
+                target=event.event_id,
+                symbol=None,
+                source_kind="failure_context",
+                retrieval_source="evaluation_event",
+                confidence=0.85,
+                start_line=1,
+                end_line=1,
+                content_hash=content_hash,
+                bytes=segment_bytes,
+                retrieval_trace_id=trace_id,
+            )
+        )
+        retrieval_trace.append(
+            _trace(
+                trace_id=trace_id,
+                target=event.event_id,
+                source_kind="failure_context",
+                retrieval_source="evaluation_event",
+                status="resolved",
+                source_path=source_path,
+                start_line=1,
+                end_line=1,
+                confidence=0.85,
+                content_hash=content_hash,
+            )
+        )
+        header = f"## {source_path}:1-1 (failure_context:{event.event_id})"
+        pieces.append(f"{header}\n```text\n{segment}\n```")
+    return total_bytes
+
+
+def _evaluation_event_segment(event: EvaluationEventContract, max_chars: int) -> str:
+    rows = [
+        f"event_id: {event.event_id}",
+        f"event_type: {event.event_type}",
+        f"severity: {event.severity}",
+        f"scope: {event.scope}",
+        f"stable_code: {event.stable_code}",
+        f"reason: {_clip_failure_text(event.reason, 400)}",
+    ]
+    for key, value in sorted(event.source_ids.items()):
+        rows.append(f"source_id.{key}: {value}")
+    for artifact_id in event.artifact_ids:
+        rows.append(f"artifact_id: {artifact_id}")
+    for nodeid in event.nodeids:
+        rows.append(f"nodeid: {nodeid}")
+    for key, value in sorted(event.payload.items()):
+        rows.append(f"payload.{key}: {_clip_failure_text(str(value), 400)}")
+    return _clip_failure_text("\n".join(rows), max_chars)
 
 
 def _failure_source_path(ctx: ToolContext, detail: FailureDetail) -> str | None:

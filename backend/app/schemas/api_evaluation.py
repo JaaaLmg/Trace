@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from typing import Any
 from datetime import datetime
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schemas.evaluation import LlmOverride
+from app.schemas.evaluation import LlmOverride, MutationDiscoveryAuditReportContract
 
 
 _RESOURCE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -97,6 +98,56 @@ class BugVariantCreate(BaseModel):
     @classmethod
     def _id_is_safe(cls, value: str | None) -> str | None:
         return validate_resource_id(value)
+
+
+class MutationDiscoveryDryRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sample_seed: int = Field(default=0, ge=0)
+    max_selected: int = Field(default=20, ge=0)
+    target_scope_override: dict[str, Any] | list[Any] | None = None
+
+
+class MutationProbeSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_kind: str
+    probe: str
+    clean_value: Any
+    buggy_value: Any
+
+    @field_validator("target_kind", "probe")
+    @classmethod
+    def _required_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("probe target_kind and expression cannot be blank")
+        return value
+
+
+class MutationCandidateConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    audit_report: MutationDiscoveryAuditReportContract
+    candidate_id: str
+    probe: MutationProbeSpec
+    seeded_bug_id: str | None = None
+    variant_id: str | None = None
+    bug_type: str = "auto_mutation"
+    description: str | None = None
+    expected_detection: str | None = None
+    variant_name: str | None = None
+
+    @field_validator("seeded_bug_id", "variant_id")
+    @classmethod
+    def _id_is_safe(cls, value: str | None) -> str | None:
+        return validate_resource_id(value)
+
+    @field_validator("candidate_id", "bug_type")
+    @classmethod
+    def _required_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("candidate_id and bug_type cannot be blank")
+        return value
 
 
 class EvalDatasetOut(BaseModel):

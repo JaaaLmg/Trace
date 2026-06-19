@@ -1,7 +1,9 @@
 from app.core.ids import new_id
 from app.db.session import get_engine
+from app.agents.recorder import InMemoryRecorder
 from app.models.project import Project, ProjectSnapshot
 from app.models.strategy import StrategyVersion
+from app.models.test_run import RunAttempt as RunAttemptModel
 from app.models.trace import TraceStep as TraceStepModel
 from app.recorders.sqlalchemy_recorder import SQLAlchemyRunRecorder
 from app.schemas.records import (
@@ -15,6 +17,7 @@ from app.schemas.records import (
     TestRunRecord,
 )
 from app.schemas.trace import RunEvent, TraceStep
+from app.agents.final_attempts import final_attempts_by_item
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -188,6 +191,99 @@ def test_sqlalchemy_recorder_roundtrip(clean_db):
         assert [x.id for x in recorder.list_plan_items(run.id)] == [item.id]
         assert [x.id for x in recorder.list_attempts(run.id)] == [attempt.id]
         assert [x.id for x in recorder.list_pytest_results(run.id)] == [result.id]
+
+
+def test_sqlalchemy_recorder_query_methods_return_record_contracts(clean_db):
+    engine = get_engine()
+
+    with Session(engine) as session:
+        _, snapshot_id, strategy_id, plan_id = _seed_fk_prereqs(session)
+        db_recorder = SQLAlchemyRunRecorder(session)
+        mem_recorder = InMemoryRecorder()
+
+        run = TestRunRecord(test_plan_id=plan_id, project_snapshot_id=snapshot_id, strategy_version_id=strategy_id)
+        db_recorder.save_run(run)
+        mem_recorder.save_run(run)
+
+        item = RunPlanItemRecord(
+            run_id=run.id,
+            index=0,
+            target_type="function",
+            target_ref="calc.add",
+            goal="测试 add",
+            planned_assertions=["returns sum"],
+            status="done",
+        )
+        attempt1 = RunAttemptRecord(
+            run_plan_item_id=item.id,
+            attempt_no=1,
+            kind="initial",
+            status="failed",
+            pytest_exit_code=1,
+        )
+        attempt2 = RunAttemptRecord(
+            run_plan_item_id=item.id,
+            attempt_no=2,
+            kind="reflection",
+            status="passed",
+            pytest_exit_code=0,
+            reflection_reason="fix assertion",
+        )
+        generated_file = GeneratedTestFileRecord(
+            attempt_id=attempt2.id,
+            path="tests/generated/test_calc.py",
+            content_text="def test_add():\n    assert True\n",
+            content_hash="hash-file",
+            generation_reason="reflection fix",
+        )
+        case = GeneratedTestCaseRecord(
+            file_id=generated_file.id,
+            nodeid="tests/generated/test_calc.py::test_add",
+            test_name="test_add",
+            start_line=1,
+            end_line=2,
+            target_function="add",
+            assertion_summary="returns sum",
+            source_strategy_version_id=strategy_id,
+            adoption_status="adopted",
+            human_meaningfulness_score=4,
+            rule_flags=["strong_assertion"],
+        )
+        result = PytestCaseResultRecord(
+            attempt_id=attempt2.id,
+            generated_test_case_id=case.id,
+            nodeid="tests/generated/test_calc.py::test_add",
+            mapping_status="matched",
+            status="passed",
+            duration_ms=12,
+        )
+
+        for recorder in (db_recorder, mem_recorder):
+            recorder.add_plan_item(item)
+            recorder.add_attempt(attempt1)
+            recorder.add_attempt(attempt2)
+            recorder.add_generated_file(generated_file)
+            recorder.add_generated_cases([case])
+            recorder.add_pytest_results([result])
+
+        db_plan_items = db_recorder.list_plan_items(run.id)
+        db_attempts = db_recorder.list_attempts(run.id)
+        db_results = db_recorder.list_pytest_results(run.id)
+        db_files = db_recorder.list_generated_files(run.id)
+        db_cases = db_recorder.list_generated_cases(run.id)
+
+        assert db_plan_items == mem_recorder.list_plan_items(run.id)
+        assert db_attempts == mem_recorder.list_attempts(run.id)
+        assert db_results == mem_recorder.list_pytest_results(run.id)
+        assert db_files == mem_recorder.list_generated_files(run.id)
+        assert db_cases == mem_recorder.list_generated_cases(run.id)
+        assert isinstance(db_plan_items[0], RunPlanItemRecord)
+        assert isinstance(db_attempts[0], RunAttemptRecord)
+        assert isinstance(db_results[0], PytestCaseResultRecord)
+        assert isinstance(db_files[0], GeneratedTestFileRecord)
+        assert isinstance(db_cases[0], GeneratedTestCaseRecord)
+        assert not isinstance(db_attempts[0], RunAttemptModel)
+        assert final_attempts_by_item(db_recorder, run.id)[item.id] == attempt2
 
 
 def test_sqlalchemy_recorder_does_not_overwrite_cancelled_run(clean_db):

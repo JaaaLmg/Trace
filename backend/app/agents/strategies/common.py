@@ -162,6 +162,7 @@ def _reflect_once(ctx, analysis, plan_input, item, prev_file, prev_cases, out, t
         plan_input.target_scope,
         analysis,
         failure_details=[*out.failures, *out.collection_errors],
+        evaluation_events=plan_input.evaluation_events or [],
     )
     ctx.source_context_text = failure_bundle.source_context_text
     ctx.context_completeness = failure_bundle.context_completeness

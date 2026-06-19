@@ -7,13 +7,18 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.evaluation import (
+    BugVariantGroundTruthContract,
+    EvaluationEventContract,
     ExperimentMetricRow,
     ExperimentMetricsResponse,
     FailureClassificationEvidence,
     LlmDisplayEvidence,
     LlmOverride,
+    MutationCandidateContract,
+    ReflectionEventBackfeedDecisionContract,
     ReplayMetricsContract,
     ResolvedLlmSpec,
+    SampledMutationScoreContract,
     SourceContextPolicy,
     TestReplayContract,
     V2_PHASE0_DB_SCHEMA_DRAFT,
@@ -36,6 +41,8 @@ def test_mock_experiment_fixture_validates_and_keeps_v1_metric_shape():
     assert response.clean_runs
     assert response.replay_runs
     assert response.experiment_replay_runs
+    assert response.capture_matrix_counts == {}
+    assert response.sampled_mutation_score.status == "not_applicable"
 
     legacy_row_keys = {
         "strategy_id",
@@ -286,6 +293,52 @@ def test_context_policy_keeps_agent_inside_project_and_generated_test_boundaries
         assert all(not snippet.path.startswith("../") for snippet in context.snippets)
 
 
+def test_metrics_response_keeps_reflection_event_backfeed_audit():
+    data = _fixture_data()
+    data["reflection_event_backfeed"] = [
+        {
+            "clean_run_id": "clean-2",
+            "eval_task_id": "task-1",
+            "strategy_version_id": "sv-react-v1",
+            "repeat_index": 1,
+            "max_events": 8,
+            "included_event_ids": ["evt-flaky"],
+            "decisions": [
+                {
+                    "event_id": "evt-flaky",
+                    "event_type": "flaky_clean_replay",
+                    "action": "included",
+                    "reason": "reflection-consumable failure event",
+                },
+                {
+                    "event_id": "evt-provider",
+                    "event_type": "provider_failure",
+                    "action": "filtered",
+                    "reason": "event is audit-only and must not enter LLM prompt",
+                },
+            ],
+        }
+    ]
+
+    response = ExperimentMetricsResponse.model_validate(data)
+
+    [audit] = response.reflection_event_backfeed
+    assert audit.included_event_ids == ["evt-flaky"]
+    assert audit.decisions[1].reason
+
+
+def test_reflection_event_backfeed_decision_requires_filter_reason():
+    with pytest.raises(ValidationError):
+        ReflectionEventBackfeedDecisionContract.model_validate(
+            {
+                "event_id": "evt-provider",
+                "event_type": "provider_failure",
+                "action": "filtered",
+                "reason": "",
+            }
+        )
+
+
 def test_context_policy_rejects_escape_paths_and_missing_parent_deny_rule():
     base = {
         "project_root_boundary": "project_snapshot_root",
@@ -317,8 +370,13 @@ def test_replay_metrics_require_capturing_nodeids_to_be_clean_variant_intersecti
         clean_passed_nodeids=["tests/generated/test_x.py::test_bug"],
         variant_assertion_failure_nodeids=["tests/generated/test_x.py::test_bug"],
         capturing_nodeids=["tests/generated/test_x.py::test_bug"],
+        clean_replay_id="replay-clean-1",
+        probe_check={"status": "passed"},
     )
     assert ok.capturing_nodeids
+    dumped = ok.model_dump()
+    assert dumped["clean_replay_id"] == "replay-clean-1"
+    assert dumped["probe_check"] == {"status": "passed"}
 
     with pytest.raises(ValidationError):
         ReplayMetricsContract(
@@ -332,6 +390,221 @@ def test_replay_metrics_require_capturing_nodeids_to_be_clean_variant_intersecti
             clean_passed_nodeids=["tests/generated/test_x.py::test_bug"],
             variant_assertion_failure_nodeids=[],
             capturing_nodeids=["tests/generated/test_x.py::test_bug"],
+        )
+
+
+def test_evaluation_event_contract_uses_stable_vocab_and_sources():
+    event = EvaluationEventContract(
+        event_id="evt-flaky-1",
+        event_type="flaky_clean_replay",
+        severity="blocking",
+        scope="clean_run",
+        experiment_id="exp-1",
+        clean_run_id="clean-1",
+        stable_code="flaky_clean_replay",
+        reason="clean replay changed status across repeated runs",
+        source_ids={"baseline_replay_id": "replay-1"},
+        nodeids=["tests/generated/test_x.py::test_case"],
+        payload={"required_runs": 3},
+    )
+
+    assert event.created_from == "experiment_service_projection"
+    assert event.source_ids["baseline_replay_id"] == "replay-1"
+
+    with pytest.raises(ValidationError):
+        EvaluationEventContract(
+            event_id="evt-bad-1",
+            event_type="internal_metrics_blob",
+            severity="blocking",
+            scope="clean_run",
+            experiment_id="exp-1",
+            stable_code="flaky_clean_replay",
+            reason="bad event type",
+        )
+
+    with pytest.raises(ValidationError):
+        EvaluationEventContract(
+            event_id="evt-bad-2",
+            event_type="provider_failure",
+            severity="error",
+            scope="experiment",
+            experiment_id="exp-1",
+            stable_code="",
+            reason="provider rejected request",
+        )
+
+    with pytest.raises(ValidationError):
+        EvaluationEventContract(
+            event_id="evt-bad-3",
+            event_type="provider_failure",
+            severity="error",
+            scope="experiment",
+            experiment_id="exp-1",
+            stable_code="provider_failure",
+            reason="provider rejected request",
+            source_ids={"experiment_id": ""},
+        )
+
+
+def _mutation_candidate_payload(selection_status: str = "selected") -> dict:
+    return {
+        "candidate_id": "mut-cmp-boundary-1",
+        "eval_task_id": "task-pricing",
+        "source_snapshot_id": "snap-clean",
+        "operator": "comparison_boundary",
+        "patch": {
+            "file": "shop/pricing.py",
+            "old": "if weight_kg <= 5:",
+            "new": "if weight_kg < 5:",
+        },
+        "matcher": {
+            "matcher_kind": "source_location_hash",
+            "source_path": "shop/pricing.py",
+            "start_line": 2,
+            "end_line": 2,
+            "original_content_hash": "sha256-clean-line",
+            "operator": "comparison_boundary",
+            "target_symbol": "shipping_fee",
+        },
+        "selection": {
+            "status": selection_status,
+            "selected_by": "auto_sampler",
+            "reason": "sampled from deterministic operator budget",
+            "sample_seed": 42,
+            "sample_index": 0,
+        },
+        "probe": {"status": "passed"},
+    }
+
+
+def test_auto_mutation_ground_truth_requires_selected_matchable_candidate():
+    ground_truth = BugVariantGroundTruthContract.model_validate(
+        {
+            "source": "auto_mutation",
+            "target": "shipping_fee",
+            "patch_unique_hit": {"hit_count": 1},
+            "mutation": _mutation_candidate_payload(),
+            "expected_behavior": {"clean_value": 10, "buggy_value": 20},
+        }
+    )
+
+    assert ground_truth.source == "auto_mutation"
+    assert ground_truth.mutation is not None
+    assert ground_truth.mutation.selection.status == "selected"
+    assert ground_truth.mutation.matcher.source_path == "shop/pricing.py"
+
+    with pytest.raises(ValidationError):
+        BugVariantGroundTruthContract.model_validate(
+            {
+                "source": "auto_mutation",
+                "target": "shipping_fee",
+                "mutation": _mutation_candidate_payload(selection_status="not_selected"),
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        BugVariantGroundTruthContract.model_validate(
+            {
+                "source": "auto_mutation",
+                "target": "shipping_fee",
+            }
+        )
+
+
+def test_mutation_candidate_rejects_unstable_matchers_and_unreproducible_sampling():
+    ok = MutationCandidateContract.model_validate(_mutation_candidate_payload())
+    assert ok.matcher.operator == ok.operator
+
+    with pytest.raises(ValidationError):
+        MutationCandidateContract.model_validate(
+            _mutation_candidate_payload()
+            | {
+                "patch": {
+                    "file": "../shop/pricing.py",
+                    "old": "if weight_kg <= 5:",
+                    "new": "if weight_kg < 5:",
+                }
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        MutationCandidateContract.model_validate(
+            _mutation_candidate_payload()
+            | {"matcher": _mutation_candidate_payload()["matcher"] | {"operator": "boolean_negation"}}
+        )
+
+    with pytest.raises(ValidationError):
+        MutationCandidateContract.model_validate(
+            _mutation_candidate_payload()
+            | {
+                "selection": {
+                    "status": "selected",
+                    "selected_by": "auto_sampler",
+                    "reason": "missing deterministic sampling coordinates",
+                }
+            }
+        )
+
+
+def test_sampled_mutation_score_contract_separates_empty_incomplete_and_zero_capture():
+    empty = SampledMutationScoreContract.model_validate(
+        {
+            "status": "not_applicable",
+            "mutant_count": 0,
+            "included_variant_ids": [],
+            "excluded_variant_counts": {"non_auto_mutation": 3},
+            "rows": [],
+            "matrix_counts": {},
+        }
+    )
+    assert empty.status == "not_applicable"
+
+    zero_capture = SampledMutationScoreContract.model_validate(
+        {
+            "status": "ok",
+            "mutant_count": 2,
+            "included_variant_ids": ["variant-auto-1", "variant-auto-2"],
+            "excluded_variant_counts": {},
+            "rows": [
+                {
+                    "strategy_id": "direct",
+                    "strategy_name": "Direct",
+                    "mutant_count": 2,
+                    "repeat_count": 1,
+                    "expected_replay_count": 2,
+                    "observed_replay_count": 2,
+                    "captured_mutant_count": 0,
+                    "score": 0.0,
+                    "status": "ok",
+                }
+            ],
+            "matrix_counts": {},
+        }
+    )
+    assert zero_capture.rows[0].score == 0.0
+
+    with pytest.raises(ValidationError):
+        SampledMutationScoreContract.model_validate(
+            {
+                "status": "ok",
+                "mutant_count": 1,
+                "included_variant_ids": ["variant-auto-1"],
+                "excluded_variant_counts": {},
+                "rows": [
+                    {
+                        "strategy_id": "direct",
+                        "strategy_name": "Direct",
+                        "mutant_count": 1,
+                        "repeat_count": 1,
+                        "expected_replay_count": 1,
+                        "observed_replay_count": 0,
+                        "captured_mutant_count": 0,
+                        "score": 0.0,
+                        "status": "ok",
+                    }
+                ],
+                "matrix_counts": {},
+            }
         )
 
 

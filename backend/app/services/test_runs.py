@@ -22,7 +22,7 @@ from app.repositories.test_plans import get_test_plan
 from app.repositories.test_runs import get_test_run, list_test_runs_for_plan, list_test_runs_for_project
 from app.repositories.versioning import get_prompt_version, get_tool_schema_version
 from app.schemas.records import TestRunRecord
-from app.schemas.evaluation import RuntimeSnapshotContract, StrategySnapshotContract
+from app.schemas.evaluation import EvaluationEventContract, RuntimeSnapshotContract, StrategySnapshotContract
 from app.schemas.strategy import StrategyVersionSpec
 from app.services.path_policy import ensure_generated_tests_dir, validate_snapshot_root
 from app.services.runtime_profiles import ensure_default_runtime_profile
@@ -468,6 +468,7 @@ def execute_run_sync(
     run_id: str,
     budget_override: dict | None = None,
     make_llm=None,
+    evaluation_events: list[EvaluationEventContract] | None = None,
 ) -> TestRun:
     # 这是 run 的真正执行主链路。
     # worker 会调用这里：加载 DB 上下文 -> 构建 ToolContext/Recorder -> 调用 A 线 execute_run。
@@ -520,6 +521,7 @@ def execute_run_sync(
                     goal=plan.goal,
                     allow_reflection=bool(budget.get("allow_reflection", False)),
                     timeout_seconds=int(budget.get("timeout_seconds", 120)),
+                    evaluation_events=evaluation_events or [],
                 ),
                 run=_run_record_from_model(run),
                 artifacts_dir=_artifacts_dir(root, run.id),

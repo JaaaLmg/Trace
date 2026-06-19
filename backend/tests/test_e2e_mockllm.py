@@ -9,6 +9,7 @@ from app.agents.orchestrator import execute_run
 from app.agents.recorder import InMemoryRecorder
 from app.agents.runtime import PlanInput
 from app.agents.seeds import SEED_STRATEGIES
+from app.schemas.evaluation import EvaluationEventContract
 from app.tools import default_registry
 from app.tools.base import ToolContext
 
@@ -100,7 +101,7 @@ def _case(name, fn, summary):
     return {"test_name": name, "target_function": fn, "assertion_summary": summary}
 
 
-def _run(ctx, strategy_key, responder, *, allow_reflection=False, artifacts=None):
+def _run(ctx, strategy_key, responder, *, allow_reflection=False, artifacts=None, evaluation_events=None):
     rec = InMemoryRecorder()
     from app.agents.llm import MockLLM
 
@@ -110,7 +111,12 @@ def _run(ctx, strategy_key, responder, *, allow_reflection=False, artifacts=None
         llm=MockLLM(responder),
         recorder=rec,
         strategy_spec=SEED_STRATEGIES[strategy_key],
-        plan_input=PlanInput(target_scope=[], goal="测试 calc 模块", allow_reflection=allow_reflection),
+        plan_input=PlanInput(
+            target_scope=[],
+            goal="测试 calc 模块",
+            allow_reflection=allow_reflection,
+            evaluation_events=evaluation_events or [],
+        ),
         artifacts_dir=artifacts,
     )
     return outcome, rec
@@ -269,6 +275,59 @@ def test_react_reflection_recovers(tmp_path):
     assert attempts[1].kind == "reflection" and attempts[1].status == "passed"
     stages = _stages(rec)
     assert "reflecting" in stages and "reexecuting" in stages
+
+
+def test_react_reflection_includes_evaluation_event_context(tmp_path):
+    ctx = _mini_project(tmp_path, CALC_OK)
+    event = EvaluationEventContract(
+        event_id="evt-flaky-clean-1",
+        event_type="flaky_clean_replay",
+        severity="blocking",
+        scope="clean_run",
+        experiment_id="exp-1",
+        clean_run_id="clean-1",
+        stable_code="flaky_clean_replay",
+        reason="run 2 mismatch: status changed",
+        source_ids={"baseline_replay_id": "replay-clean-1"},
+        nodeids=["tests/generated/test_generated.py::test_add"],
+    )
+
+    def responder(messages):
+        b = _blob(messages)
+        if "TASK: REFLECT" in b:
+            assert "event_id: evt-flaky-clean-1" in b
+            assert "event_type: flaky_clean_replay" in b
+            assert "source_id.baseline_replay_id: replay-clean-1" in b
+            return json.dumps(
+                {
+                    "fixed_content": T_ADD_OK,
+                    "fix_reason": "结合 evaluation event 和 pytest 失败修正断言",
+                    "changed_points": ["6 -> 5"],
+                    "lowered_assertion_strength": False,
+                    "suspected_code_bug": False,
+                },
+                ensure_ascii=False,
+            )
+        if "TASK: GENERATE" in b:
+            return _gen_payload(T_ADD_IMPORT_WRONG, [_case("test_add", "add", "2+3=5")])
+        raise AssertionError("未预期的任务消息：" + b[:120])
+
+    outcome, rec = _run(
+        ctx,
+        "react_reflection",
+        responder,
+        allow_reflection=True,
+        artifacts=tmp_path / "art",
+        evaluation_events=[event],
+    )
+
+    assert outcome.run.status == "completed", outcome.run.error_message
+    observation = next(step for step in rec.steps_of(outcome.run.id) if step.name == "读取失败上下文")
+    traces = observation.payload["retrieval_trace"]
+    assert any(
+        trace["retrieval_source"] == "evaluation_event" and trace["target"] == "evt-flaky-clean-1"
+        for trace in traces
+    )
 
 
 # ---------- 场景 4：Reflection 削弱断言却不标疑似缺陷 = 契约违规，不采纳 ----------
