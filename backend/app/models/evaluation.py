@@ -79,6 +79,9 @@ class Experiment(Base):
     dataset_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("eval_datasets.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    runtime_profile_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("runtime_profiles.id", ondelete="RESTRICT"), index=True
+    )
     repeat_count: Mapped[int] = mapped_column(Integer, nullable=False)
     llm_override: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
@@ -154,6 +157,12 @@ class TestReplay(Base):
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
     pytest_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    runtime_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    executor_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    workspace_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    cache_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    cache_status: Mapped[str] = mapped_column(String(32), nullable=False, default="miss")
+    source_replay_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("test_replays.id", ondelete="SET NULL"))
     replay_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="frozen_test_set")
     llm_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -6,10 +6,69 @@ import type {
   ProjectSnapshotOut,
   RunBundle,
   StrategyVersionOut,
-  TestPlanOut
+  TestPlanOut,
+  TestReplayContract
 } from "../types/api";
 
 const now = "2026-06-14T08:00:00.000Z";
+
+function demoReplayEvidence(
+  replayId: string,
+  strategyId: string,
+  targetSnapshotId: string,
+  bugVariantId: string | null
+): Pick<
+  TestReplayContract,
+  "runtime_snapshot" | "executor_metadata" | "workspace_manifest" | "cache_key" | "cache_status" | "source_replay_id"
+> {
+  const runtimeSnapshot = {
+    runtime_profile_id: "runtime-demo-python311",
+    runtime_profile_name: "Demo Local Subprocess",
+    executor: "local_subprocess" as const,
+    image: null,
+    working_dir: null,
+    python_version: "3.11",
+    install_command: null,
+    test_command: "pytest tests/generated",
+    network_policy: "default" as const,
+    timeout_seconds: 120,
+    resource_limits: { enforced: false, timeout_seconds: 120 },
+    artifact_policy: { retain: "evidence" },
+    cleanup_policy: { mode: "manual", keep_failed: true },
+    executor_capabilities: {
+      executor_kind: "local_subprocess",
+      isolation_level: "process",
+      network_enforced: false,
+      resource_limits_enforced: false,
+      workspace_strategy: "host_workdir",
+      supports_parallel: true
+    },
+    env_keys: ["PYTHONPATH"],
+    secret_included: false as const
+  };
+  return {
+    runtime_snapshot: runtimeSnapshot,
+    executor_metadata: { capabilities: runtimeSnapshot.executor_capabilities },
+    workspace_manifest: {
+      schema_version: "v2.2.workspace_manifest",
+      replay_id: replayId,
+      experiment_id: "exp-demo-v2-static",
+      clean_run_id: `ecr-${strategyId}-r0`,
+      target_snapshot_id: targetSnapshotId,
+      bug_variant_id: bugVariantId,
+      generated_test_set_artifact_id: `artifact-testset-${strategyId}-r0`,
+      generated_test_set_hash: `sha256:testset-${strategyId}`,
+      executor: "local_subprocess",
+      runtime_profile_id: "runtime-demo-python311",
+      runtime_snapshot_hash: `sha256:runtime-${strategyId}`,
+      workspace_root: `.pytest_tmp_experiments/exp-demo-v2-static/ecr-${strategyId}-r0/${replayId}`,
+      workspace_strategy: "host_workdir"
+    },
+    cache_key: `sha256:cache-${replayId}`,
+    cache_status: "miss",
+    source_replay_id: null
+  };
+}
 
 export const demoProjects: ProjectOut[] = [
   {
@@ -630,6 +689,7 @@ export const demoExperimentMetrics: ExperimentMetricsResponse = {
     id: "exp-demo-v2-static",
     name: "demo-scripted-v2",
     dataset_id: "dataset-demo-v2",
+    runtime_profile_id: "runtime-demo-python311",
     strategy_version_ids: ["sv-direct-v1", "sv-plan-v1", "sv-react-v1"],
     repeat_count: 3,
     llm_override: {
@@ -657,6 +717,23 @@ export const demoExperimentMetrics: ExperimentMetricsResponse = {
     trace_payload_required: true,
     missing_context_marker: "context_incomplete",
     agent_source_write_permission: "generated_tests_only"
+  },
+  runtime_execution: {
+    executor_kind_distribution: { local_subprocess: 36 },
+    runtime_profiles: [
+      {
+        id: "runtime-demo-python311",
+        name: "Demo Local Subprocess",
+        executor: "local_subprocess",
+        network_policy: "default",
+        timeout_seconds: 120
+      }
+    ],
+    replay_cache_counts: { miss: 27 },
+    setup_status_counts: { skipped: 36 },
+    replay_concurrency: { configured: 1, mode: "sequential" },
+    observed_replay_count: 27,
+    reused_replay_count: 0
   },
   rows: demoComparison.rows.map((row) => ({
     ...row,
@@ -694,12 +771,26 @@ export const demoExperimentMetrics: ExperimentMetricsResponse = {
       },
       runtime_snapshot: {
         runtime_profile_id: "runtime-demo-python311",
+        runtime_profile_name: "Demo Local Subprocess",
         executor: "local_subprocess",
+        image: null,
+        working_dir: null,
         python_version: "3.11",
+        install_command: null,
         test_command: "pytest tests/generated",
-        network_policy: "disabled",
+        network_policy: "default",
         timeout_seconds: 120,
-        resource_limits: { cpu: "declared_only_v2_1", memory: "declared_only_v2_1" },
+        resource_limits: { enforced: false, timeout_seconds: 120 },
+        artifact_policy: { retain: "evidence" },
+        cleanup_policy: { mode: "manual", keep_failed: true },
+        executor_capabilities: {
+          executor_kind: "local_subprocess",
+          isolation_level: "process",
+          network_enforced: false,
+          resource_limits_enforced: false,
+          workspace_strategy: "host_workdir",
+          supports_parallel: true
+        },
         env_keys: ["PYTHONPATH"],
         secret_included: false
       },
@@ -805,6 +896,7 @@ export const demoExperimentMetrics: ExperimentMetricsResponse = {
         collection_errors: 0,
         duration_ms: 810
       },
+      ...demoReplayEvidence(`replay-clean-${row.strategy_id}`, row.strategy_id, "snapshot-clean", null),
       replay_mode: "frozen_test_set" as const,
       llm_calls: 0 as const,
       started_at: "2026-06-15T00:00:10.000Z",
@@ -828,6 +920,7 @@ export const demoExperimentMetrics: ExperimentMetricsResponse = {
           collection_errors: 0,
           duration_ms: 820
         },
+        ...demoReplayEvidence(`replay-${bugId}-${row.strategy_id}`, row.strategy_id, `snapshot-${bugId}`, bugId),
         replay_mode: "frozen_test_set" as const,
         llm_calls: 0 as const,
         started_at: "2026-06-15T00:00:12.000Z",

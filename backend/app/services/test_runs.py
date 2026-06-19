@@ -28,7 +28,7 @@ from app.services.path_policy import ensure_generated_tests_dir, validate_snapsh
 from app.services.runtime_profiles import ensure_default_runtime_profile
 from app.tools import default_registry
 from app.tools.base import ToolContext
-from app.tools.executor import executor_from_runtime_snapshot
+from app.tools.executor import executor_capabilities_from_snapshot, executor_from_runtime_snapshot
 from sqlalchemy.orm import Session
 
 
@@ -251,12 +251,15 @@ def _runtime_snapshot(
     budget_override: dict | None = None,
     output_options: dict | None = None,
 ) -> dict:
-    timeout_seconds = int((budget_override or {}).get("timeout_seconds", 120))
     runtime_base = get_runtime_profile_snapshot(runtime_profile) if runtime_profile is not None else {}
+    profile_timeout = (runtime_base.get("resource_limits") or {}).get("timeout_seconds")
+    timeout_seconds = int((budget_override or {}).get("timeout_seconds") or profile_timeout or 120)
     snap = RuntimeSnapshotContract(
         runtime_profile_id=runtime_base.get("runtime_profile_id"),
         runtime_profile_name=runtime_base.get("runtime_profile_name"),
-        executor="local_subprocess",
+        executor=runtime_base.get("executor", "local_subprocess"),
+        image=runtime_base.get("image"),
+        working_dir=runtime_base.get("working_dir"),
         python_version=runtime_base.get("python_version"),
         install_command=runtime_base.get("install_command"),
         test_command=runtime_base.get("test_command", "python -m pytest tests -q --rootdir . -p no:cacheprovider"),
@@ -264,10 +267,13 @@ def _runtime_snapshot(
         timeout_seconds=timeout_seconds,
         env_template=dict(runtime_base.get("env_template") or {}),
         resource_limits=dict(runtime_base.get("resource_limits") or {}),
+        artifact_policy=dict(runtime_base.get("artifact_policy") or {}),
+        cleanup_policy=dict(runtime_base.get("cleanup_policy") or {}),
         env_keys=sorted((runtime_base.get("env_template") or {}).keys()),
     ).model_dump()
     snap["budget_override"] = dict(budget_override or {})
     snap["output_options"] = dict(output_options or {})
+    snap["executor_capabilities"] = executor_capabilities_from_snapshot(snap)
     return snap
 
 
@@ -440,13 +446,17 @@ def get_runtime_profile_snapshot(profile) -> dict:
     return {
         "runtime_profile_id": profile.id,
         "runtime_profile_name": profile.name,
-        "executor": "local_subprocess",
+        "executor": profile.executor,
+        "image": profile.image,
+        "working_dir": profile.working_dir,
         "python_version": profile.python_version,
         "install_command": profile.install_command,
         "test_command": profile.test_command,
         "network_policy": profile.network_policy,
         "env_template": dict(profile.env_template or {}),
         "resource_limits": dict(profile.resource_limits or {}),
+        "artifact_policy": dict(profile.artifact_policy or {}),
+        "cleanup_policy": dict(profile.cleanup_policy or {}),
     }
 
 

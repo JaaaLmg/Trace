@@ -215,6 +215,7 @@ class ExperimentCreate(BaseModel):
     id: str | None = None
     name: str
     dataset_id: str
+    runtime_profile_id: str | None = None
     strategy_version_ids: list[str] = Field(min_length=1)
     repeat_count: int = Field(default=1, ge=1)
     llm_override: LlmOverride | None = None
@@ -231,6 +232,7 @@ class ExperimentOut(BaseModel):
     id: str
     name: str
     dataset_id: str
+    runtime_profile_id: str | None = None
     repeat_count: int
     llm_override: dict | None = None
     status: str
@@ -267,6 +269,12 @@ class TestReplayOut(BaseModel):
     bug_variant_id: str | None = None
     status: str
     pytest_summary: dict
+    runtime_snapshot: dict
+    executor_metadata: dict
+    workspace_manifest: dict
+    cache_key: str | None = None
+    cache_status: str
+    source_replay_id: str | None = None
     replay_mode: str
     llm_calls: int
     started_at: datetime | None = None
@@ -274,3 +282,10 @@ class TestReplayOut(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     created_at: datetime
+
+
+class ExperimentCleanupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dry_run: bool = True
+    keep_failed: bool = True

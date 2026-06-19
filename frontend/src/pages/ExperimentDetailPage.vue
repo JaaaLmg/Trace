@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
 import { ArrowLeft, Database, RefreshCw } from "@lucide/vue";
-import { getExperimentMetrics } from "../api/experiments";
+import { cleanupExperiment, getExperimentMetrics } from "../api/experiments";
 import CaptureMatrix from "../components/experiment/CaptureMatrix.vue";
 import CleanRunTable from "../components/experiment/CleanRunTable.vue";
 import EvaluationEventTimeline from "../components/experiment/EvaluationEventTimeline.vue";
@@ -28,6 +28,7 @@ const metrics = ref<ExperimentMetricsResponse | null>(null);
 const loading = ref(false);
 const errorMessage = ref<string | null>(null);
 const selectedReplayId = ref<string | null>(null);
+const cleanupMessage = ref<string | null>(null);
 
 const metricsRequest = useLatestRequest();
 
@@ -70,6 +71,32 @@ async function loadMetrics() {
   }
 }
 
+function countText(values: Record<string, number> | undefined): string {
+  if (!values) {
+    return "none";
+  }
+  const pairs = Object.entries(values);
+  return pairs.length ? pairs.map(([key, value]) => `${key}: ${value}`).join(" / ") : "none";
+}
+
+async function runCleanup(dryRun: boolean) {
+  if (props.dataSource !== "api") {
+    return;
+  }
+  cleanupMessage.value = null;
+  try {
+    const result = await cleanupExperiment(props.experimentId, { dry_run: dryRun, keep_failed: true });
+    cleanupMessage.value = dryRun
+      ? `Cleanup dry run: ${String(result.candidate_count ?? 0)} candidates.`
+      : `Cleanup completed: ${String(result.deleted_count ?? 0)} workspaces deleted.`;
+    if (!dryRun) {
+      await loadMetrics();
+    }
+  } catch (error) {
+    cleanupMessage.value = error instanceof Error ? error.message : "Cleanup failed.";
+  }
+}
+
 onMounted(() => {
   void loadMetrics();
 });
@@ -96,6 +123,7 @@ watch(
     </section>
 
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
+    <p v-if="cleanupMessage" class="mode-note">{{ cleanupMessage }}</p>
     <p v-if="loading" class="mode-note">{{ t("experiments.loadingMetrics") }}</p>
 
     <template v-if="metrics">
@@ -139,6 +167,29 @@ watch(
         </article>
       </section>
 
+      <section class="runtime-band subtle-panel">
+        <article>
+          <span>Executors</span>
+          <strong>{{ countText(metrics.runtime_execution.executor_kind_distribution) }}</strong>
+        </article>
+        <article>
+          <span>Replay cache</span>
+          <strong>{{ countText(metrics.runtime_execution.replay_cache_counts) }}</strong>
+        </article>
+        <article>
+          <span>Setup</span>
+          <strong>{{ countText(metrics.runtime_execution.setup_status_counts) }}</strong>
+        </article>
+        <article>
+          <span>Replay work</span>
+          <strong>{{ metrics.runtime_execution.observed_replay_count }} observed / {{ metrics.runtime_execution.reused_replay_count }} reused</strong>
+        </article>
+        <div v-if="props.dataSource === 'api'" class="cleanup-actions">
+          <button class="text-button" type="button" @click="runCleanup(true)">Dry-run cleanup</button>
+          <button class="text-button" type="button" @click="runCleanup(false)">Clean workspaces</button>
+        </div>
+      </section>
+
       <ExperimentMetricsTable :rows="metrics.rows" />
       <CaptureMatrix
         :rows="metrics.rows"
@@ -165,6 +216,39 @@ watch(
 .hero-band,
 .metadata-grid {
   margin-top: 18px;
+}
+
+.runtime-band {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  gap: 12px;
+  align-items: start;
+  margin-top: 18px;
+  padding: 14px;
+}
+
+.runtime-band article {
+  display: grid;
+  gap: 3px;
+}
+
+.runtime-band span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.runtime-band strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.cleanup-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .detail-head {
@@ -267,6 +351,10 @@ watch(
 @media (max-width: 1080px) {
   .hero-band,
   .metadata-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-band {
     grid-template-columns: 1fr;
   }
 

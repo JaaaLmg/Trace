@@ -22,14 +22,19 @@ from app.models import (
     RunArtifact,
     RunAttempt,
     RunPlanItem,
+    TestPlan,
     TestReplay as ReplayModel,
     TestRun,
 )
+from app.core.ids import new_id
 from app.services.evaluation import create_bug_variant, create_eval_dataset, create_eval_task, create_seeded_bug
 from app.services.evaluation_seed import DEMO_DATASET_ID, DEMO_SNAPSHOT_ID, seed_demo_dataset
 from app.services.experiments import (
     ExperimentError,
     _copy_clean_snapshot,
+    _empty_final_test_set,
+    _store_generated_test_set_artifact,
+    _run_replay,
     _replay_timeout_seconds,
     get_experiment_metrics,
     run_experiment,
@@ -675,6 +680,399 @@ def test_replay_timeout_uses_runtime_snapshot():
     assert _replay_timeout_seconds({"timeout_seconds": 17}) == 17
     assert _replay_timeout_seconds({"budget_override": {"timeout_seconds": "23"}}) == 23
     assert _replay_timeout_seconds({"timeout_seconds": "bad"}, default=11) == 11
+
+
+def _create_cache_replay_fixture(
+    session: Session,
+    *,
+    experiment_id: str,
+    plan_id: str,
+    runtime_snapshot: dict | None = None,
+) -> tuple[Experiment, ProjectSnapshot, TestRun, RunArtifact, ExperimentCleanRun, BugVariant]:
+    experiment = Experiment(
+        id=experiment_id,
+        name=experiment_id,
+        dataset_id=DEMO_DATASET_ID,
+        repeat_count=1,
+        llm_override={"provider": "mock", "model": "mock-1"},
+        status="running",
+    )
+    session.add(experiment)
+    snapshot = session.get(ProjectSnapshot, DEMO_SNAPSHOT_ID)
+    assert snapshot is not None
+    snapshot_runtime = runtime_snapshot or {
+        "executor": "local_subprocess",
+        "test_command": "python -m pytest tests -q",
+        "network_policy": "default",
+        "timeout_seconds": 120,
+        "resource_limits": {"timeout_seconds": 120},
+        "env_keys": [],
+    }
+    plan = TestPlan(
+        id=plan_id,
+        project_id=snapshot.project_id,
+        name="unused",
+        target_scope=[],
+        goal="unused",
+        budget={},
+        output_options={},
+        default_strategy_version_id="sv-direct-v1",
+    )
+    run = TestRun(
+        id=new_id(),
+        test_plan_id=plan.id,
+        project_snapshot_id=snapshot.id,
+        strategy_version_id="sv-direct-v1",
+        runtime_snapshot=snapshot_runtime,
+        strategy_snapshot={},
+        status="completed",
+        pytest_summary={},
+    )
+    session.add_all([plan, run])
+    session.commit()
+    clean_id = new_id()
+    final_set = _empty_final_test_set()
+    final_set.files = {"tests/generated/test_cache.py": "def test_cache_replay():\n    assert True\n"}
+    artifact = _store_generated_test_set_artifact(
+        session,
+        run_id=run.id,
+        experiment_id=experiment.id,
+        clean_run_id=clean_id,
+        final_set=final_set,
+    )
+    clean = ExperimentCleanRun(
+        id=clean_id,
+        experiment_id=experiment.id,
+        eval_task_id="task-demo-shop-pricing-v2",
+        strategy_version_id="sv-direct-v1",
+        repeat_index=0,
+        clean_run_id=run.id,
+        generated_test_set_artifact_id=artifact.id,
+        false_positive=False,
+        clean_metrics={"validity_status": "evaluable"},
+    )
+    session.add(clean)
+    session.commit()
+    variant = session.get(BugVariant, "variant-wrong-status")
+    assert variant is not None
+    return experiment, snapshot, run, artifact, clean, variant
+
+
+def test_variant_replay_reuses_completed_cache_hit(clean_db):
+    _seed_v2_demo()
+    with Session(get_engine()) as session:
+        experiment, snapshot, _run, artifact, clean, variant = _create_cache_replay_fixture(
+            session,
+            experiment_id="exp-cache-hit",
+            plan_id="unused-plan",
+        )
+
+        first, _capturing, _failures = _run_replay(
+            session,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variant=variant,
+            clean_passed=set(),
+            timeout_seconds=120,
+        )
+        assert first.cache_status in {"miss", "stale"}
+        second, _capturing, _failures = _run_replay(
+            session,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variant=variant,
+            clean_passed=set(),
+            timeout_seconds=120,
+        )
+        assert second.status == "completed"
+        assert second.cache_status == "hit"
+        assert second.source_replay_id == first.id
+        metrics = get_experiment_metrics(session, experiment.id)
+        assert metrics["runtime_execution"]["reused_replay_count"] == 1
+        assert any(event["event_type"] == "replay_cache_hit" for event in metrics["evaluation_events"])
+
+
+def test_variant_replay_marks_stale_when_runtime_changes(clean_db):
+    _seed_v2_demo()
+    with Session(get_engine()) as session:
+        experiment, snapshot, run, artifact, clean, variant = _create_cache_replay_fixture(
+            session,
+            experiment_id="exp-cache-stale",
+            plan_id="unused-plan-stale",
+        )
+
+        first, _capturing, _failures = _run_replay(
+            session,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variant=variant,
+            clean_passed=set(),
+            timeout_seconds=120,
+        )
+        assert first.status == "completed"
+        run.runtime_snapshot = {**dict(run.runtime_snapshot), "test_command": "python -m pytest tests -q -k cache"}
+        session.commit()
+        second, _capturing, _failures = _run_replay(
+            session,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variant=variant,
+            clean_passed=set(),
+            timeout_seconds=120,
+        )
+        assert second.status == "completed"
+        assert second.cache_status == "stale"
+        assert second.source_replay_id is None
+        assert "runtime_profile_changed" in second.executor_metadata["cache_invalidation_reasons"]
+        metrics = get_experiment_metrics(session, experiment.id)
+        assert any(event["event_type"] == "replay_cache_stale" for event in metrics["evaluation_events"])
+
+
+def test_variant_replay_marks_stale_when_generated_artifact_changes(clean_db):
+    _seed_v2_demo()
+    with Session(get_engine()) as session:
+        _experiment, snapshot, _run, artifact, clean, variant = _create_cache_replay_fixture(
+            session,
+            experiment_id="exp-cache-stale-artifact",
+            plan_id="unused-plan-stale-artifact",
+        )
+        first, _capturing, _failures = _run_replay(
+            session,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variant=variant,
+            clean_passed=set(),
+            timeout_seconds=120,
+        )
+        assert first.status == "completed"
+        payload = {"files": {"tests/generated/test_cache.py": "def test_cache_replay():\n    assert 2 + 2 == 4\n"}}
+        data = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        Path(artifact.uri).write_bytes(data)
+        artifact.content_hash = hashlib.sha256(data).hexdigest()
+        artifact.size_bytes = len(data)
+        session.commit()
+
+        second, _capturing, _failures = _run_replay(
+            session,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variant=variant,
+            clean_passed=set(),
+            timeout_seconds=120,
+        )
+
+        assert second.status == "completed"
+        assert second.cache_status == "stale"
+        assert "generated_test_set_changed" in second.executor_metadata["cache_invalidation_reasons"]
+
+
+def test_variant_replay_marks_stale_when_variant_ground_truth_changes(clean_db):
+    _seed_v2_demo()
+    with Session(get_engine()) as session:
+        _experiment, snapshot, _run, artifact, clean, variant = _create_cache_replay_fixture(
+            session,
+            experiment_id="exp-cache-stale-variant",
+            plan_id="unused-plan-stale-variant",
+        )
+        first, _capturing, _failures = _run_replay(
+            session,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variant=variant,
+            clean_passed=set(),
+            timeout_seconds=120,
+        )
+        assert first.status == "completed"
+        variant.ground_truth = {**dict(variant.ground_truth or {}), "mutation_version": "changed"}
+        session.commit()
+
+        second, _capturing, _failures = _run_replay(
+            session,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variant=variant,
+            clean_passed=set(),
+            timeout_seconds=120,
+        )
+
+        assert second.status == "completed"
+        assert second.cache_status == "stale"
+        assert "bug_variant_changed" in second.executor_metadata["cache_invalidation_reasons"]
+
+
+def test_variant_replay_scheduler_records_parallel_summary(monkeypatch, clean_db):
+    _seed_v2_demo()
+
+    import app.services.experiments as experiment_module
+
+    monkeypatch.setenv("TRACE_REPLAY_CONCURRENCY", "2")
+
+    def fast_replay_job(job):
+        with experiment_module.get_session_factory()() as worker_session:
+            replay = ReplayModel(
+                id=f"replay-{job.variant_id}",
+                experiment_clean_run_id=job.clean_run_id,
+                generated_test_set_artifact_id=job.artifact_id,
+                target_snapshot_id=job.target_snapshot_id,
+                bug_variant_id=job.variant_id,
+                status="completed",
+                pytest_summary={
+                    "collected": 1,
+                    "passed": 1,
+                    "failed": 0,
+                    "skipped": 0,
+                    "collection_errors": 0,
+                    "duration_ms": 1,
+                    "case_results": [],
+                },
+                runtime_snapshot={"executor": "local_subprocess", "timeout_seconds": 120},
+                executor_metadata={},
+                workspace_manifest={},
+                cache_status="miss",
+                replay_mode="frozen_test_set",
+                llm_calls=0,
+            )
+            worker_session.add(replay)
+            worker_session.commit()
+        return experiment_module.VariantReplayJobOutput(
+            replay_id=f"replay-{job.variant_id}",
+            bug_variant_id=job.variant_id,
+            captured_bug=False,
+            replay_metrics={
+                "capture_rule": "clean_passed_variant_assertion_failure_same_nodeid",
+                "clean_passed_nodeids": sorted(job.clean_passed),
+                "variant_assertion_failure_nodeids": [],
+                "capturing_nodeids": [],
+                "probe_check": {"status": "passed"},
+            },
+        )
+
+    monkeypatch.setattr(experiment_module, "_run_variant_replay_job", fast_replay_job)
+
+    with Session(get_engine()) as session:
+        experiment = Experiment(
+            id="exp-parallel-summary",
+            name="parallel",
+            dataset_id=DEMO_DATASET_ID,
+            repeat_count=1,
+            llm_override={"provider": "mock", "model": "mock-1"},
+            status="running",
+        )
+        session.add(experiment)
+        snapshot = session.get(ProjectSnapshot, DEMO_SNAPSHOT_ID)
+        assert snapshot is not None
+        plan = TestPlan(
+            id="unused-plan-parallel",
+            project_id=snapshot.project_id,
+            name="unused",
+            target_scope=[],
+            goal="unused",
+            budget={},
+            output_options={},
+            default_strategy_version_id="sv-direct-v1",
+        )
+        run = TestRun(
+            id=new_id(),
+            test_plan_id=plan.id,
+            project_snapshot_id=snapshot.id,
+            strategy_version_id="sv-direct-v1",
+            runtime_snapshot={
+                "executor": "local_subprocess",
+                "test_command": "python -m pytest tests -q",
+                "network_policy": "default",
+                "timeout_seconds": 120,
+                "resource_limits": {"timeout_seconds": 120},
+                "env_keys": [],
+            },
+            strategy_snapshot={},
+            status="completed",
+            pytest_summary={},
+        )
+        session.add_all([plan, run])
+        session.commit()
+        clean_id = new_id()
+        final_set = _empty_final_test_set()
+        final_set.files = {"tests/generated/test_cache.py": "def test_cache_replay():\n    assert True\n"}
+        artifact = _store_generated_test_set_artifact(
+            session,
+            run_id=run.id,
+            experiment_id=experiment.id,
+            clean_run_id=clean_id,
+            final_set=final_set,
+        )
+        clean = ExperimentCleanRun(
+            id=clean_id,
+            experiment_id=experiment.id,
+            eval_task_id="task-demo-shop-pricing-v2",
+            strategy_version_id="sv-direct-v1",
+            repeat_index=0,
+            clean_run_id=run.id,
+            generated_test_set_artifact_id=artifact.id,
+            false_positive=False,
+            clean_metrics={"validity_status": "evaluable"},
+        )
+        session.add(clean)
+        session.commit()
+        variants = experiment_module._task_bugs_and_variants(session, "task-demo-shop-pricing-v2")[:2]
+
+        experiment_module._run_variant_replays_for_clean(
+            session,
+            experiment_id=experiment.id,
+            clean_run=clean,
+            artifact=artifact,
+            target_snapshot=snapshot,
+            variants=variants,
+            clean_replay_id="clean-replay",
+            clean_replay_passed={"tests/generated/test_cache.py::test_cache_replay"},
+            timeout_seconds=120,
+            concurrency=2,
+        )
+        clean.clean_metrics = {
+            **dict(clean.clean_metrics or {}),
+            "replay_scheduler": {"variant_concurrency": 2, "variant_job_count": len(variants)},
+        }
+        session.commit()
+        metrics = get_experiment_metrics(session, experiment.id)
+        assert metrics["runtime_execution"]["replay_concurrency"]["mode"] == "parallel"
+        assert metrics["runtime_execution"]["replay_concurrency"]["configured"] == 2
+        assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 2
+
+
+def test_clean_setup_failure_marks_invalid_test_set(monkeypatch, clean_db):
+    _seed_v2_demo()
+
+    import app.services.experiments as experiment_module
+
+    def fail_setup(*args, **kwargs):
+        return {"status": "failed", "exit_code": 7, "artifact_id": "setup-log"}
+
+    monkeypatch.setattr(experiment_module, "_run_setup_stage", fail_setup)
+
+    with Session(get_engine()) as session:
+        experiment_module.create_experiment(
+            session,
+            experiment_id="exp-setup-fail",
+            name="setup fail",
+            dataset_id=DEMO_DATASET_ID,
+            strategy_version_ids=["sv-direct-v1"],
+            repeat_count=1,
+            llm_override={"provider": "mock", "model": "mock-1"},
+        )
+        result = run_experiment(session, "exp-setup-fail")
+        assert result["status"] == "completed"
+        [clean] = list(session.scalars(select(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-setup-fail")))
+        assert clean.clean_metrics["invalid_reason"] == "setup_failed"
+        assert session.scalar(select(func.count()).select_from(ReplayModel)) == 0
+        metrics = get_experiment_metrics(session, "exp-setup-fail")
+        assert any(event["event_type"] == "setup_failed" for event in metrics["evaluation_events"])
 
 
 def test_experiment_marks_flaky_clean_replay_invalid_and_skips_variants(monkeypatch, clean_db):

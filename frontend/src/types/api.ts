@@ -331,6 +331,7 @@ export interface ExperimentCreateRequest {
   id?: string | null;
   name: string;
   dataset_id: string;
+  runtime_profile_id?: string | null;
   strategy_version_ids: string[];
   repeat_count: number;
   llm_override?: Partial<LlmOverride> | null;
@@ -351,6 +352,7 @@ export interface ExperimentDefinition {
   id: string;
   name: string;
   dataset_id: string;
+  runtime_profile_id: string | null;
   strategy_version_ids: string[];
   repeat_count: number;
   llm_override: LlmOverride | null;
@@ -383,6 +385,12 @@ export interface TestReplayOut {
   bug_variant_id: string | null;
   status: ReplayStatus;
   pytest_summary: JsonObject;
+  runtime_snapshot: RuntimeSnapshotContract;
+  executor_metadata: Record<string, unknown>;
+  workspace_manifest: Record<string, unknown>;
+  cache_key: string | null;
+  cache_status: "miss" | "hit" | "stale";
+  source_replay_id: string | null;
   replay_mode: string;
   llm_calls: number;
   started_at: string | null;
@@ -402,14 +410,67 @@ export interface ExperimentDataSourceLabel {
 
 export interface RuntimeSnapshotContract {
   runtime_profile_id: string | null;
+  runtime_profile_name?: string | null;
   executor: "local_subprocess" | "docker";
+  image?: string | null;
+  working_dir?: string | null;
   python_version: string | null;
+  install_command?: string | null;
   test_command: string;
   network_policy: "default" | "disabled" | "install_only";
   timeout_seconds: number;
   resource_limits: JsonObject;
+  artifact_policy?: JsonObject;
+  cleanup_policy?: JsonObject;
+  executor_capabilities?: JsonObject;
   env_keys: string[];
   secret_included: false;
+}
+
+export interface RuntimeProfileOut {
+  id: string;
+  project_id: string;
+  name: string;
+  executor: "local_subprocess" | "docker";
+  image: string | null;
+  working_dir: string | null;
+  python_version: string | null;
+  install_command: string | null;
+  test_command: string;
+  env_template: JsonObject;
+  resource_limits: JsonObject;
+  network_policy: "default" | "disabled" | "install_only";
+  artifact_policy: JsonObject;
+  cleanup_policy: JsonObject;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RuntimeProfileUpsertRequest {
+  name: string;
+  executor?: "local_subprocess" | "docker";
+  image?: string | null;
+  working_dir?: string | null;
+  test_command?: string | null;
+  python_version?: string | null;
+  install_command?: string | null;
+  env_template?: JsonObject;
+  resource_limits?: JsonObject;
+  network_policy?: "default" | "disabled" | "install_only";
+  timeout_seconds?: number | null;
+  artifact_policy?: JsonObject;
+  cleanup_policy?: JsonObject;
+}
+
+export interface RuntimeExecutionSummary {
+  executor_kind_distribution: Record<string, number>;
+  runtime_profiles: JsonObject[];
+  replay_cache_counts: Record<string, number>;
+  setup_status_counts: Record<string, number>;
+  replay_concurrency: JsonObject;
+  observed_replay_count: number;
+  reused_replay_count: number;
 }
 
 export interface StrategySnapshotContract {
@@ -537,6 +598,12 @@ export interface TestReplayContract {
   bug_variant_id: string | null;
   status: ReplayStatus;
   pytest_summary: PytestSummaryContract;
+  runtime_snapshot: RuntimeSnapshotContract;
+  executor_metadata: Record<string, unknown>;
+  workspace_manifest: Record<string, unknown>;
+  cache_key: string | null;
+  cache_status: "miss" | "hit" | "stale";
+  source_replay_id: string | null;
   replay_mode: "frozen_test_set";
   llm_calls: 0;
   started_at: string | null;
@@ -574,6 +641,7 @@ export interface ExperimentMetricRow extends ComparisonRow {
   cost_per_captured_bug_status: "ok" | "no_bug_captured";
   data_source: ExperimentDataSourceKind;
   llm_display: LlmDisplayEvidence;
+  runtime_execution?: RuntimeExecutionSummary;
 }
 
 export interface SourceContextPolicy {
@@ -599,7 +667,15 @@ export type EvaluationEventType =
   | "replay_uncaptured"
   | "replay_failure"
   | "artifact_hash_mismatch"
-  | "provider_failure";
+  | "provider_failure"
+  | "executor_unavailable"
+  | "executor_timeout"
+  | "setup_failed"
+  | "cleanup_failed"
+  | "resource_limit_exceeded"
+  | "network_policy_violation"
+  | "replay_cache_hit"
+  | "replay_cache_stale";
 
 export interface EvaluationEventContract {
   event_id: string;
@@ -706,6 +782,7 @@ export interface ExperimentMetricsResponse {
   data_source: ExperimentDataSourceLabel;
   experiment: ExperimentDefinition;
   source_context_policy: SourceContextPolicy;
+  runtime_execution: RuntimeExecutionSummary;
   rows: ExperimentMetricRow[];
   capture_matrix: Record<string, Record<string, boolean>>;
   capture_matrix_counts?: Record<

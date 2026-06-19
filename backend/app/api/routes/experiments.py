@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.schemas.api_evaluation import (
+    ExperimentCleanupRequest,
     ExperimentCleanRunOut,
     ExperimentCreate,
     ExperimentOut,
@@ -22,6 +23,7 @@ from app.services.experiments import (
     list_experiments,
     list_replay_runs,
 )
+from app.services.artifact_cleanup import CleanupError, cleanup_experiment_workspaces
 
 router = APIRouter(tags=["experiments"])
 
@@ -38,6 +40,7 @@ def create_experiment_route(body: ExperimentCreate, db: Session = Depends(get_db
             experiment_id=body.id,
             name=body.name,
             dataset_id=body.dataset_id,
+            runtime_profile_id=body.runtime_profile_id,
             strategy_version_ids=body.strategy_version_ids,
             repeat_count=body.repeat_count,
             llm_override=body.llm_override,
@@ -97,4 +100,21 @@ def get_experiment_metrics_route(experiment_id: str, db: Session = Depends(get_d
         return get_experiment_metrics(db, experiment_id)
     except ExperimentError as e:
         raise _experiment_http_error(e) from e
+
+
+@router.post("/api/v1/experiments/{experiment_id}/cleanup")
+def cleanup_experiment_route(
+    experiment_id: str,
+    body: ExperimentCleanupRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return cleanup_experiment_workspaces(
+            db,
+            experiment_id=experiment_id,
+            dry_run=body.dry_run,
+            keep_failed=body.keep_failed,
+        )
+    except CleanupError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 

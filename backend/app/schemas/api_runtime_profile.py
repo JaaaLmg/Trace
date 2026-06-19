@@ -9,12 +9,36 @@ class RuntimeProfileCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    executor: str = "local_subprocess"
+    image: str | None = None
+    working_dir: str | None = None
     test_command: str | None = None
     python_version: str | None = None
     install_command: str | None = None
     env_template: dict = Field(default_factory=dict)
     resource_limits: dict = Field(default_factory=dict)
     network_policy: str = "default"
+    timeout_seconds: int | None = Field(default=None, ge=1)
+    artifact_policy: dict = Field(default_factory=dict)
+    cleanup_policy: dict = Field(default_factory=dict)
+
+
+class RuntimeProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    executor: str | None = None
+    image: str | None = None
+    working_dir: str | None = None
+    test_command: str | None = None
+    python_version: str | None = None
+    install_command: str | None = None
+    env_template: dict | None = None
+    resource_limits: dict | None = None
+    network_policy: str | None = None
+    timeout_seconds: int | None = Field(default=None, ge=1)
+    artifact_policy: dict | None = None
+    cleanup_policy: dict | None = None
 
 
 class RuntimeProfileOut(BaseModel):
@@ -23,11 +47,17 @@ class RuntimeProfileOut(BaseModel):
     id: str
     project_id: str
     name: str
+    executor: str
+    image: str | None = None
+    working_dir: str | None = None
     python_version: str | None = None
     install_command: str | None = None
     test_command: str
     env_template: dict
     resource_limits: dict
     network_policy: str
+    artifact_policy: dict
+    cleanup_policy: dict
+    archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

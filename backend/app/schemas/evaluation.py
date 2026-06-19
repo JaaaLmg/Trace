@@ -83,6 +83,14 @@ EvaluationEventType = Literal[
     "replay_failure",
     "artifact_hash_mismatch",
     "provider_failure",
+    "executor_unavailable",
+    "executor_timeout",
+    "setup_failed",
+    "cleanup_failed",
+    "resource_limit_exceeded",
+    "network_policy_violation",
+    "replay_cache_hit",
+    "replay_cache_stale",
 ]
 EvaluationEventSeverity = Literal["info", "warning", "error", "blocking"]
 EvaluationEventScope = Literal["experiment", "clean_run", "replay", "variant", "task", "artifact"]
@@ -206,6 +214,8 @@ class RuntimeSnapshotContract(ContractModel):
     runtime_profile_id: str | None = None
     runtime_profile_name: str | None = None
     executor: Literal["local_subprocess", "docker"] = "local_subprocess"
+    image: str | None = None
+    working_dir: str | None = None
     python_version: str | None = None
     install_command: str | None = None
     test_command: str
@@ -213,6 +223,9 @@ class RuntimeSnapshotContract(ContractModel):
     timeout_seconds: int = Field(ge=1)
     env_template: dict[str, Any] = Field(default_factory=dict)
     resource_limits: dict[str, Any] = Field(default_factory=dict)
+    artifact_policy: dict[str, Any] = Field(default_factory=dict)
+    cleanup_policy: dict[str, Any] = Field(default_factory=dict)
+    executor_capabilities: dict[str, Any] = Field(default_factory=dict)
     env_keys: list[str] = Field(default_factory=list)
     secret_included: Literal[False] = False
 
@@ -229,6 +242,7 @@ class ExperimentDefinition(ContractModel):
     id: str
     name: str
     dataset_id: str
+    runtime_profile_id: str | None = None
     strategy_version_ids: list[str] = Field(min_length=1)
     repeat_count: int = Field(ge=1)
     llm_override: LlmOverride | None = None
@@ -679,6 +693,8 @@ class CleanRunContract(ContractModel):
 
 
 class PytestSummaryContract(ContractModel):
+    model_config = ConfigDict(extra="allow")
+
     collected: int = Field(ge=0)
     passed: int = Field(ge=0)
     failed: int = Field(ge=0)
@@ -697,6 +713,16 @@ class TestReplayContract(ContractModel):
     bug_variant_id: str | None = None
     status: ReplayStatus
     pytest_summary: PytestSummaryContract
+    runtime_snapshot: RuntimeSnapshotContract = Field(default_factory=lambda: RuntimeSnapshotContract(
+        test_command="python -m pytest tests -q --rootdir . -p no:cacheprovider",
+        network_policy="default",
+        timeout_seconds=120,
+    ))
+    executor_metadata: dict[str, Any] = Field(default_factory=dict)
+    workspace_manifest: dict[str, Any] = Field(default_factory=dict)
+    cache_key: str | None = None
+    cache_status: Literal["miss", "hit", "stale"] = "miss"
+    source_replay_id: str | None = None
     replay_mode: ReplayMode = "frozen_test_set"
     llm_calls: Literal[0] = 0
     started_at: str | None = None
@@ -750,6 +776,8 @@ class LlmDisplayEvidence(ContractModel):
 
 
 class ExperimentMetricRow(ContractModel):
+    model_config = ConfigDict(extra="allow")
+
     strategy_id: str
     strategy_name: str
     repeats: int = Field(ge=0)
@@ -1002,6 +1030,7 @@ class ExperimentMetricsResponse(ContractModel):
     data_source: DataSourceLabel
     experiment: ExperimentDefinition
     source_context_policy: SourceContextPolicy
+    runtime_execution: dict[str, Any] = Field(default_factory=dict)
     capture_scope: dict[str, Any] = Field(default_factory=dict)
     rows: list[ExperimentMetricRow]
     capture_matrix: dict[str, dict[str, bool]]
