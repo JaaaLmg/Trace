@@ -285,6 +285,68 @@ def _add_v2_metric_fields(rows: list[dict], runs_by_strategy: dict[str, list[Met
         row["reflection_acceptance_rate"] = _rate(accepted, acceptance_total)
 
 
+def _runtime_execution_summary(clean_runs: list[ExperimentCleanRun], replays: list[TestReplay], session: Session) -> dict:
+    executor_counts: dict[str, int] = {}
+    runtime_profiles: dict[str, dict] = {}
+    cache_counts: dict[str, int] = {}
+    setup_counts: dict[str, int] = {}
+    replay_count = len(replays)
+    reused_count = 0
+    configured_concurrency = 1
+    scheduled_variant_jobs = 0
+
+    for clean in clean_runs:
+        run = session.get(TestRun, clean.clean_run_id)
+        snapshot = (run.runtime_snapshot or {}) if run is not None else {}
+        executor = str(snapshot.get("executor") or "local_subprocess")
+        executor_counts[executor] = executor_counts.get(executor, 0) + 1
+        profile_id = snapshot.get("runtime_profile_id")
+        if profile_id:
+            runtime_profiles[str(profile_id)] = {
+                "id": profile_id,
+                "name": snapshot.get("runtime_profile_name"),
+                "executor": executor,
+                "network_policy": snapshot.get("network_policy"),
+                "timeout_seconds": snapshot.get("timeout_seconds"),
+                "capabilities": snapshot.get("executor_capabilities") or {},
+            }
+        setup = (clean.clean_metrics or {}).get("setup") if isinstance(clean.clean_metrics, dict) else None
+        if isinstance(setup, dict):
+            status = str(setup.get("status") or "unknown")
+            setup_counts[status] = setup_counts.get(status, 0) + 1
+        scheduler = (clean.clean_metrics or {}).get("replay_scheduler") if isinstance(clean.clean_metrics, dict) else None
+        if isinstance(scheduler, dict):
+            configured_concurrency = max(configured_concurrency, int(scheduler.get("variant_concurrency") or 1))
+            scheduled_variant_jobs += int(scheduler.get("variant_job_count") or 0)
+
+    for replay in replays:
+        snapshot = replay.runtime_snapshot or {}
+        executor = str(snapshot.get("executor") or "local_subprocess")
+        executor_counts[executor] = executor_counts.get(executor, 0) + 1
+        cache_status = replay.cache_status or "miss"
+        cache_counts[cache_status] = cache_counts.get(cache_status, 0) + 1
+        if cache_status == "hit":
+            reused_count += 1
+        setup = (replay.workspace_manifest or {}).get("setup")
+        if isinstance(setup, dict):
+            status = str(setup.get("status") or "unknown")
+            setup_counts[status] = setup_counts.get(status, 0) + 1
+
+    return {
+        "executor_kind_distribution": executor_counts,
+        "runtime_profiles": list(runtime_profiles.values()),
+        "replay_cache_counts": cache_counts,
+        "setup_status_counts": setup_counts,
+        "replay_concurrency": {
+            "configured": configured_concurrency,
+            "mode": "parallel" if configured_concurrency > 1 else "sequential",
+            "scheduled_variant_jobs": scheduled_variant_jobs,
+        },
+        "observed_replay_count": replay_count - reused_count,
+        "reused_replay_count": reused_count,
+    }
+
+
 def _capture_matrix_variant_ids(session: Session, experiment: Experiment) -> list[str]:
     stmt = (
         select(BugVariant.id)
@@ -594,6 +656,10 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
             )
         )
     evaluation_events = project_evaluation_events(experiment, clean_runs, replays, replay_results)
+    runtime_execution = _runtime_execution_summary(clean_runs, replays, session)
+
+    for row in rows:
+        row["runtime_execution"] = runtime_execution
 
     return {
         "schema_version": "v2.phase0",
@@ -625,6 +691,7 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
             "missing_context_marker": "context_incomplete",
             "agent_source_write_permission": "generated_tests_only",
         },
+        "runtime_execution": runtime_execution,
         "capture_scope": _capture_scope(session, experiment),
         "rows": rows,
         "capture_matrix": matrix,
@@ -647,6 +714,12 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
                     "collection_errors": int((replay_row.pytest_summary or {}).get("collection_errors", 0)),
                     "duration_ms": (replay_row.pytest_summary or {}).get("duration_ms"),
                 },
+                "runtime_snapshot": replay_row.runtime_snapshot or {},
+                "executor_metadata": replay_row.executor_metadata or {},
+                "workspace_manifest": replay_row.workspace_manifest or {},
+                "cache_key": replay_row.cache_key,
+                "cache_status": replay_row.cache_status,
+                "source_replay_id": replay_row.source_replay_id,
                 "replay_mode": replay_row.replay_mode,
                 "llm_calls": replay_row.llm_calls,
                 "started_at": _iso(replay_row.started_at),

@@ -186,6 +186,10 @@ def _clean_run_events(clean: ExperimentCleanRun) -> list[dict]:
     elif invalid_reason == "pipeline_reject":
         payload = {"pipeline_reject_error": metrics.get("pipeline_reject_error")}
         reason = str(metrics.get("pipeline_reject_error") or "contract guard rejected generated tests")
+    elif invalid_reason == "setup_failed":
+        event_type = "setup_failed"
+        payload = {"setup": metrics.get("setup") if isinstance(metrics.get("setup"), dict) else {}}
+        reason = "setup command failed"
     elif invalid_reason == "clean_replay_collection_error":
         payload = {"clean_replay_id": metrics.get("clean_replay_id")}
         reason = "clean replay had collection errors"
@@ -246,6 +250,49 @@ def _replay_failure_events(clean_by_id: dict[str, ExperimentCleanRun], replay: T
             },
         )
     ]
+    if replay.error_code == "EXECUTOR_UNAVAILABLE":
+        events.append(
+            _event_payload(
+                event_type="executor_unavailable",
+                severity="error",
+                scope="replay",
+                experiment_id=clean.experiment_id,
+                clean_run_id=clean.id,
+                replay_id=replay.id,
+                bug_variant_id=replay.bug_variant_id,
+                eval_task_id=clean.eval_task_id,
+                strategy_version_id=clean.strategy_version_id,
+                repeat_index=clean.repeat_index,
+                stable_code="executor_unavailable",
+                reason=str(message),
+                source_ids={"test_replay_id": replay.id},
+                artifact_ids=[replay.generated_test_set_artifact_id],
+                payload={
+                    "executor": (replay.runtime_snapshot or {}).get("executor"),
+                    "runtime_profile_id": (replay.runtime_snapshot or {}).get("runtime_profile_id"),
+                },
+            )
+        )
+    if replay.error_code == "SETUP_FAILED":
+        events.append(
+            _event_payload(
+                event_type="setup_failed",
+                severity="error",
+                scope="replay",
+                experiment_id=clean.experiment_id,
+                clean_run_id=clean.id,
+                replay_id=replay.id,
+                bug_variant_id=replay.bug_variant_id,
+                eval_task_id=clean.eval_task_id,
+                strategy_version_id=clean.strategy_version_id,
+                repeat_index=clean.repeat_index,
+                stable_code="setup_failed",
+                reason=str(message),
+                source_ids={"test_replay_id": replay.id},
+                artifact_ids=[replay.generated_test_set_artifact_id],
+                payload={"setup": (replay.workspace_manifest or {}).get("setup")},
+            )
+        )
     if replay.bug_variant_id and "probe" in str(message).lower():
         events.append(
             _event_payload(
@@ -267,6 +314,34 @@ def _replay_failure_events(clean_by_id: dict[str, ExperimentCleanRun], replay: T
             )
         )
     return events
+
+
+def _replay_cache_events(clean_by_id: dict[str, ExperimentCleanRun], replay: TestReplay) -> list[dict]:
+    clean = clean_by_id.get(replay.experiment_clean_run_id)
+    if clean is None:
+        return []
+    if replay.cache_status not in {"hit", "stale"}:
+        return []
+    event_type = "replay_cache_hit" if replay.cache_status == "hit" else "replay_cache_stale"
+    return [
+        _event_payload(
+            event_type=event_type,
+            severity="info",
+            scope="replay",
+            experiment_id=clean.experiment_id,
+            clean_run_id=clean.id,
+            replay_id=replay.id,
+            bug_variant_id=replay.bug_variant_id,
+            eval_task_id=clean.eval_task_id,
+            strategy_version_id=clean.strategy_version_id,
+            repeat_index=clean.repeat_index,
+            stable_code=event_type,
+            reason="replay cache hit" if replay.cache_status == "hit" else "replay cache was stale",
+            source_ids={"test_replay_id": replay.id},
+            artifact_ids=[replay.generated_test_set_artifact_id],
+            payload={"cache_key": replay.cache_key, "source_replay_id": replay.source_replay_id},
+        )
+    ]
 
 
 def _experiment_replay_events(clean_by_id: dict[str, ExperimentCleanRun], replay_result: ExperimentReplayRun) -> list[dict]:
@@ -376,6 +451,7 @@ def project_evaluation_events(
         events.extend(_clean_run_events(clean))
     for replay in replays:
         events.extend(_replay_failure_events(clean_by_id, replay))
+        events.extend(_replay_cache_events(clean_by_id, replay))
     for replay_result in replay_results:
         events.extend(_experiment_replay_events(clean_by_id, replay_result))
     events.extend(_experiment_failure_events(experiment))

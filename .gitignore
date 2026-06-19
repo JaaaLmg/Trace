@@ -7,6 +7,7 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .pytest_tmp/
+.pytest_tmp_*/
 .pytest_tmp_diag/
 .pytest_tmp_experiments/
 .mypy_cache/
@@ -46,6 +47,7 @@ eval/.work/
 *.log
 logs/
 .tmp-logs/
+.e2e_logs/
 artifacts/
 output/playwright/
 .playwright-cli/

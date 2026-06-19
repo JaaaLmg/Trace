@@ -304,3 +304,4 @@ class RunPytestOutput(BaseModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     # 系统级错误（超时/pytest 没起来）填这里；业务失败填 failures，收集失败填 collection_errors
     error: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from app.models import (
     TestRun,
 )
 from app.repositories.strategies import get_strategy_version
+from app.repositories.runtime_profiles import get_runtime_profile
 from app.schemas.evaluation import EvaluationEventContract, LlmOverride
 from app.schemas.tools import AnalyzeProjectInput
 from app.services.evaluation import EvaluationConflictError, EvaluationError, EvaluationNotFoundError
@@ -42,6 +44,15 @@ from app.services.evaluation_events import (
 from app.services.source_context import build_source_context_bundle
 from app.services.test_plans import create_test_plan
 from app.services.test_runs import create_run, execute_run_sync
+from app.services.replay_scheduler import ReplaySchedulerConfig, run_replay_jobs
+from app.services.replay_orchestration import (
+    VariantReplayJob,
+    VariantReplayJobOutput,
+    build_variant_replay_jobs,
+    persist_variant_replay_results,
+)
+from app.db.session import get_session_factory
+from app.tools.executor import DockerExecutorUnavailable, executor_capabilities_from_snapshot, executor_from_runtime_snapshot
 from app.tools.analyze import analyze_project
 from app.tools.base import ToolContext
 from eval.harness.authors import demo_author
@@ -138,6 +149,7 @@ def _serialize_experiment(session: Session, experiment: Experiment) -> dict:
         "id": experiment.id,
         "name": experiment.name,
         "dataset_id": experiment.dataset_id,
+        "runtime_profile_id": experiment.runtime_profile_id,
         "repeat_count": experiment.repeat_count,
         "llm_override": experiment.llm_override,
         "status": experiment.status,
@@ -230,6 +242,7 @@ def create_experiment(
     *,
     name: str,
     dataset_id: str,
+    runtime_profile_id: str | None = None,
     strategy_version_ids: list[str],
     repeat_count: int,
     llm_override: LlmOverride | dict | None = None,
@@ -237,6 +250,12 @@ def create_experiment(
 ) -> dict:
     if session.get(EvalDataset, dataset_id) is None:
         raise ExperimentNotFoundError("dataset not found")
+    if runtime_profile_id is not None:
+        profile = get_runtime_profile(session, runtime_profile_id)
+        if profile is None:
+            raise ExperimentNotFoundError("runtime profile not found")
+        if profile.archived_at is not None:
+            raise ExperimentConflictError("archived runtime profile cannot be used for a new experiment")
     if experiment_id is not None and session.get(Experiment, experiment_id) is not None:
         raise ExperimentConflictError("experiment id already exists")
     for strategy_version_id in strategy_version_ids:
@@ -257,6 +276,7 @@ def create_experiment(
         id=experiment_id or f"exp-{new_id()}",
         name=name,
         dataset_id=dataset_id,
+        runtime_profile_id=runtime_profile_id,
         repeat_count=repeat_count,
         llm_override=override_payload,
         status="draft",
@@ -544,7 +564,7 @@ def _check_variant_probe(*, clean_root: Path, variant_root: Path, variant: BugVa
 
 
 def _pytest_summary_from_replay(out) -> dict:
-    return {
+    summary = {
         "collected": out.collected,
         "passed": out.passed,
         "failed": out.failed,
@@ -555,6 +575,224 @@ def _pytest_summary_from_replay(out) -> dict:
         "error": out.error,
         "case_results": [case.model_dump() for case in out.case_results],
         "failures": [failure.model_dump() for failure in out.failures],
+    }
+    if getattr(out, "metadata", None):
+        summary["metadata"] = out.metadata
+    return summary
+
+
+def _stable_hash(payload: dict) -> str:
+    return _sha256_bytes(_json_bytes(payload))
+
+
+def _replay_cache_runtime_fingerprint(runtime_snapshot: dict) -> dict:
+    return {
+        "executor": runtime_snapshot.get("executor", "local_subprocess"),
+        "image": runtime_snapshot.get("image"),
+        "working_dir": runtime_snapshot.get("working_dir"),
+        "python_version": runtime_snapshot.get("python_version"),
+        "test_command": runtime_snapshot.get("test_command"),
+        "network_policy": runtime_snapshot.get("network_policy"),
+        "timeout_seconds": runtime_snapshot.get("timeout_seconds"),
+        "resource_limits": runtime_snapshot.get("resource_limits") or {},
+        "env_keys": runtime_snapshot.get("env_keys") or [],
+        "executor_capabilities": runtime_snapshot.get("executor_capabilities") or {},
+    }
+
+
+def _variant_cache_fingerprint(variant: BugVariant | None) -> dict | None:
+    if variant is None:
+        return None
+    return {
+        "id": variant.id,
+        "ground_truth": variant.ground_truth or {},
+    }
+
+
+def _replay_cache_key(
+    *,
+    artifact: RunArtifact,
+    target_snapshot: ProjectSnapshot,
+    variant: BugVariant | None,
+    runtime_snapshot: dict,
+) -> str:
+    payload = {
+        "schema": "v2.2.replay_cache_key",
+        "generated_test_set_hash": artifact.content_hash,
+        "target_snapshot_hash": target_snapshot.content_hash,
+        "bug_variant": _variant_cache_fingerprint(variant),
+        "runtime": _replay_cache_runtime_fingerprint(runtime_snapshot),
+        "trace_pytest_plugin": "_trace_pytest_plugin",
+        "replay_mode": "frozen_test_set",
+    }
+    return _stable_hash(payload)
+
+
+def _find_completed_replay_cache_hit(session: Session, *, cache_key: str) -> TestReplay | None:
+    stmt = (
+        select(TestReplay)
+        .where(
+            TestReplay.cache_key == cache_key,
+            TestReplay.status == "completed",
+            TestReplay.cache_status.in_(["miss", "hit"]),
+        )
+        .order_by(TestReplay.created_at.desc(), TestReplay.id.asc())
+    )
+    return session.scalar(stmt)
+
+
+def _cache_invalidation_reasons(
+    session: Session,
+    *,
+    artifact: RunArtifact,
+    target_snapshot: ProjectSnapshot,
+    variant: BugVariant | None,
+    runtime_snapshot: dict,
+    cache_key: str,
+) -> list[str]:
+    similar = list(
+        session.scalars(
+            select(TestReplay)
+            .where(
+                TestReplay.generated_test_set_artifact_id == artifact.id,
+                TestReplay.target_snapshot_id == target_snapshot.id,
+                TestReplay.bug_variant_id == (variant.id if variant is not None else None),
+                TestReplay.cache_key != cache_key,
+            )
+            .order_by(TestReplay.created_at.desc())
+        )
+    )
+    if not similar:
+        return []
+    reasons: set[str] = set()
+    for replay in similar[:5]:
+        manifest = replay.workspace_manifest or {}
+        snapshot = replay.runtime_snapshot or {}
+        if manifest.get("generated_test_set_hash") != artifact.content_hash:
+            reasons.add("generated_test_set_changed")
+        if manifest.get("target_snapshot_hash") != target_snapshot.content_hash:
+            reasons.add("source_snapshot_changed")
+        if manifest.get("bug_variant_fingerprint") != _variant_cache_fingerprint(variant):
+            reasons.add("bug_variant_changed")
+        current_runtime = _replay_cache_runtime_fingerprint(runtime_snapshot)
+        replay_runtime = _replay_cache_runtime_fingerprint(snapshot)
+        if current_runtime and replay_runtime and current_runtime.get("executor") != replay_runtime.get("executor"):
+            reasons.add("executor_changed")
+        if current_runtime and _stable_hash(current_runtime) != _stable_hash(replay_runtime):
+            reasons.add("runtime_profile_changed")
+    return sorted(reasons or {"cache_key_changed"})
+
+
+def _workspace_manifest(
+    *,
+    replay_id: str,
+    replay_root: Path,
+    clean_run: ExperimentCleanRun,
+    artifact: RunArtifact,
+    target_snapshot: ProjectSnapshot,
+    variant: BugVariant | None,
+    runtime_snapshot: dict,
+) -> dict:
+    return {
+        "schema_version": "v2.2.workspace_manifest",
+        "replay_id": replay_id,
+        "experiment_id": clean_run.experiment_id,
+        "clean_run_id": clean_run.id,
+        "target_snapshot_id": target_snapshot.id,
+        "target_snapshot_hash": target_snapshot.content_hash,
+        "bug_variant_id": variant.id if variant is not None else None,
+        "bug_variant_fingerprint": _variant_cache_fingerprint(variant),
+        "generated_test_set_artifact_id": artifact.id,
+        "generated_test_set_hash": artifact.content_hash,
+        "executor": runtime_snapshot.get("executor", "local_subprocess"),
+        "runtime_profile_id": runtime_snapshot.get("runtime_profile_id"),
+        "runtime_snapshot_hash": _stable_hash(runtime_snapshot),
+        "workspace_root": str(replay_root),
+        "workspace_strategy": (runtime_snapshot.get("executor_capabilities") or {}).get("workspace_strategy"),
+        "mounted_paths": [{"host_path": str(replay_root), "container_path": runtime_snapshot.get("working_dir") or "/workspace"}],
+        "artifact_output_paths": [str(replay_root / ".trace_pytest_report.json"), str(replay_root / ".trace_junit.xml")],
+    }
+
+
+def _store_text_artifact(
+    session: Session,
+    *,
+    run_id: str,
+    artifact_type: str,
+    text: str,
+    metadata: dict,
+) -> RunArtifact:
+    data = text.encode("utf-8", errors="replace")
+    content_hash = _sha256_bytes(data)
+    artifact_id = new_id()
+    path = _artifact_dir(run_id) / f"{artifact_id}.{artifact_type}.txt"
+    path.write_bytes(data)
+    artifact = RunArtifact(
+        id=artifact_id,
+        run_id=run_id,
+        attempt_id=None,
+        artifact_type=artifact_type,
+        uri=str(path),
+        content_hash=content_hash,
+        size_bytes=len(data),
+        metadata_json={**metadata, "kind": artifact_type, "hash_algorithm": "sha256"},
+    )
+    session.add(artifact)
+    session.commit()
+    session.refresh(artifact)
+    return artifact
+
+
+def _run_setup_stage(
+    session: Session,
+    *,
+    run_id: str,
+    work_dir: Path,
+    runtime_snapshot: dict,
+    experiment_id: str,
+    clean_run_id: str,
+    replay_id: str | None = None,
+) -> dict:
+    install_command = (runtime_snapshot or {}).get("install_command")
+    if not install_command:
+        return {"status": "skipped", "reason": "no install_command"}
+    started = _now()
+    timeout_seconds = _replay_timeout_seconds(runtime_snapshot)
+    executor = executor_from_runtime_snapshot(runtime_snapshot)
+    setup_result = executor.run_setup(work_dir, str(install_command), timeout_seconds)
+    stdout = setup_result.stdout
+    stderr = setup_result.stderr
+    finished = _now()
+    artifact = _store_text_artifact(
+        session,
+        run_id=run_id,
+        artifact_type="setup_log",
+        text=f"$ {install_command}\n\n[stdout]\n{stdout}\n\n[stderr]\n{stderr}\n",
+        metadata={
+            "created_by": "experiment_service",
+            "experiment_id": experiment_id,
+            "clean_run_id": clean_run_id,
+            "replay_id": replay_id,
+            "content_role": "setup_logs",
+            "relative_paths": [],
+        },
+    )
+    exit_code = int(setup_result.exit_code if setup_result.exit_code is not None else -1)
+    setup_metadata = dict(setup_result.metadata or {})
+    status = setup_result.status
+    return {
+        "status": status,
+        "install_command": str(install_command),
+        "network_policy": runtime_snapshot.get("network_policy"),
+        "network_enforced": bool((runtime_snapshot.get("executor_capabilities") or {}).get("network_enforced")),
+        "resource_limits_enforced": bool((runtime_snapshot.get("executor_capabilities") or {}).get("resource_limits_enforced")),
+        "timeout_seconds": timeout_seconds,
+        "timed_out": bool(setup_metadata.get("timed_out")),
+        "exit_code": exit_code,
+        "started_at": _iso(started),
+        "finished_at": _iso(finished),
+        "artifact_id": artifact.id,
+        "executor_metadata": setup_metadata,
     }
 
 
@@ -600,6 +838,22 @@ def _replay_timeout_seconds(runtime_snapshot: dict | None, *, default: int = DEF
         except (TypeError, ValueError):
             continue
     return default
+
+
+def _replay_concurrency(runtime_snapshot: dict | None) -> int:
+    snapshot = runtime_snapshot or {}
+    candidates = [
+        os.environ.get("TRACE_REPLAY_CONCURRENCY"),
+        (snapshot.get("resource_limits") or {}).get("replay_concurrency") if isinstance(snapshot.get("resource_limits"), dict) else None,
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            return max(1, int(candidate))
+        except (TypeError, ValueError):
+            continue
+    return 1
 
 
 def _flaky_mismatch_reason(expected: dict[str, str], actual: dict[str, str]) -> str | None:
@@ -696,6 +950,16 @@ def _run_replay(
     timeout_seconds: int,
 ) -> tuple[TestReplay, list[str], list[str]]:
     replay_id = new_id()
+    clean_test_run = session.get(TestRun, clean_run.clean_run_id)
+    runtime_snapshot = dict((clean_test_run.runtime_snapshot if clean_test_run is not None else {}) or {})
+    runtime_snapshot["timeout_seconds"] = timeout_seconds
+    runtime_snapshot["executor_capabilities"] = executor_capabilities_from_snapshot(runtime_snapshot)
+    cache_key = _replay_cache_key(
+        artifact=artifact,
+        target_snapshot=target_snapshot,
+        variant=variant,
+        runtime_snapshot=runtime_snapshot,
+    )
     replay_row = TestReplay(
         id=replay_id,
         experiment_clean_run_id=clean_run.id,
@@ -704,6 +968,11 @@ def _run_replay(
         bug_variant_id=variant.id if variant is not None else None,
         status="running",
         pytest_summary={},
+        runtime_snapshot=runtime_snapshot,
+        executor_metadata={"capabilities": runtime_snapshot["executor_capabilities"]},
+        workspace_manifest={},
+        cache_key=cache_key,
+        cache_status="miss",
         replay_mode="frozen_test_set",
         llm_calls=0,
         started_at=_now(),
@@ -713,6 +982,48 @@ def _run_replay(
 
     try:
         files = _read_generated_test_set_artifact(artifact)
+        if variant is not None:
+            cached = _find_completed_replay_cache_hit(session, cache_key=cache_key)
+            if cached is not None and cached.id != replay_row.id:
+                summary = dict(cached.pytest_summary or {})
+                assertion_failures = [
+                    str(case.get("nodeid"))
+                    for case in summary.get("case_results", [])
+                    if isinstance(case, dict)
+                    and case.get("status") == "failed"
+                    and case.get("failure_type") == "assertion"
+                    and case.get("nodeid")
+                ]
+                capturing = [nodeid for nodeid in assertion_failures if nodeid in clean_passed]
+                replay_row.status = "completed"
+                replay_row.pytest_summary = summary
+                replay_row.executor_metadata = dict(cached.executor_metadata or {})
+                replay_row.workspace_manifest = {
+                    **dict(cached.workspace_manifest or {}),
+                    "reused_from_replay_id": cached.id,
+                    "replay_id": replay_row.id,
+                }
+                replay_row.cache_status = "hit"
+                replay_row.source_replay_id = cached.id
+                replay_row.finished_at = _now()
+                session.commit()
+                session.refresh(replay_row)
+                return replay_row, capturing, assertion_failures
+            stale_reasons = _cache_invalidation_reasons(
+                session,
+                artifact=artifact,
+                target_snapshot=target_snapshot,
+                variant=variant,
+                runtime_snapshot=runtime_snapshot,
+                cache_key=cache_key,
+            )
+            if stale_reasons:
+                replay_row.cache_status = "stale"
+                replay_row.executor_metadata = {
+                    **dict(replay_row.executor_metadata or {}),
+                    "cache_invalidation_reasons": stale_reasons,
+                }
+                session.commit()
         experiment_segment = _safe_path_segment(clean_run.experiment_id, label="experiment_id")
         clean_segment = _safe_path_segment(clean_run.id, label="experiment_clean_run_id")
         replay_segment = _safe_path_segment(replay_id, label="replay_id")
@@ -720,6 +1031,34 @@ def _run_replay(
             target_snapshot,
             EXPERIMENT_WORK_ROOT / experiment_segment / clean_segment / f"replay-{replay_segment}",
         )
+        replay_row.workspace_manifest = _workspace_manifest(
+            replay_id=replay_id,
+            replay_root=replay_root,
+            clean_run=clean_run,
+            artifact=artifact,
+            target_snapshot=target_snapshot,
+            variant=variant,
+            runtime_snapshot=runtime_snapshot,
+        )
+        session.commit()
+        setup_status = _run_setup_stage(
+            session,
+            run_id=clean_run.clean_run_id,
+            work_dir=replay_root,
+            runtime_snapshot=runtime_snapshot,
+            experiment_id=clean_run.experiment_id,
+            clean_run_id=clean_run.id,
+            replay_id=replay_id,
+        )
+        replay_row.workspace_manifest = {**dict(replay_row.workspace_manifest or {}), "setup": setup_status}
+        if setup_status["status"] == "failed":
+            replay_row.status = "failed"
+            replay_row.error_code = "SETUP_FAILED"
+            replay_row.error_message = f"setup command failed with exit code {setup_status.get('exit_code')}"
+            replay_row.finished_at = _now()
+            session.commit()
+            session.refresh(replay_row)
+            return replay_row, [], []
         probe_check = None
         if variant is not None:
             _apply_inline_patch(replay_root, variant)
@@ -728,10 +1067,11 @@ def _run_replay(
                 variant_root=replay_root,
                 variant=variant,
             )
-        out = replay_frozen_tests(replay_root, files, timeout_seconds=timeout_seconds)
+        out = replay_frozen_tests(replay_root, files, timeout_seconds=timeout_seconds, runtime_snapshot=runtime_snapshot)
         summary = _pytest_summary_from_replay(out)
         if probe_check is not None:
             summary["probe_check"] = probe_check
+        executor_metadata = ((summary.get("metadata") or {}).get("executor") or {}) if isinstance(summary.get("metadata"), dict) else {}
         assertion_failures = [
             case.nodeid
             for case in out.case_results
@@ -740,12 +1080,24 @@ def _run_replay(
         capturing = [nodeid for nodeid in assertion_failures if nodeid in clean_passed]
         replay_row.status = "completed" if out.error is None else "failed"
         replay_row.pytest_summary = summary
+        replay_row.executor_metadata = {
+            **dict(replay_row.executor_metadata or {}),
+            **dict(executor_metadata or {}),
+        }
         replay_row.error_code = "PYTEST_REPLAY_ERROR" if out.error else None
         replay_row.error_message = out.error
         replay_row.finished_at = _now()
         session.commit()
         session.refresh(replay_row)
         return replay_row, capturing, assertion_failures
+    except DockerExecutorUnavailable as exc:
+        replay_row.status = "failed"
+        replay_row.error_code = "EXECUTOR_UNAVAILABLE"
+        replay_row.error_message = str(exc)
+        replay_row.finished_at = _now()
+        session.commit()
+        session.refresh(replay_row)
+        return replay_row, [], []
     except Exception as exc:
         replay_row.status = "failed"
         replay_row.error_code = type(exc).__name__
@@ -753,6 +1105,70 @@ def _run_replay(
         replay_row.finished_at = _now()
         session.commit()
         raise
+
+
+def _run_variant_replay_job(job: VariantReplayJob) -> VariantReplayJobOutput:
+    with get_session_factory()() as worker_session:
+        clean_run = worker_session.get(ExperimentCleanRun, job.clean_run_id)
+        artifact = worker_session.get(RunArtifact, job.artifact_id)
+        target_snapshot = worker_session.get(ProjectSnapshot, job.target_snapshot_id)
+        variant = worker_session.get(BugVariant, job.variant_id)
+        if clean_run is None or artifact is None or target_snapshot is None or variant is None:
+            raise ExperimentError("variant replay job references missing database rows")
+        replay_row, capturing, assertion_failures = _run_replay(
+            worker_session,
+            clean_run=clean_run,
+            artifact=artifact,
+            target_snapshot=target_snapshot,
+            variant=variant,
+            clean_passed=set(job.clean_passed),
+            timeout_seconds=job.timeout_seconds,
+        )
+        return VariantReplayJobOutput(
+            replay_id=replay_row.id,
+            bug_variant_id=variant.id,
+            captured_bug=bool(capturing),
+            replay_metrics={
+                "capture_rule": "clean_passed_variant_assertion_failure_same_nodeid",
+                "clean_passed_nodeids": sorted(job.clean_passed),
+                "variant_assertion_failure_nodeids": sorted(assertion_failures),
+                "capturing_nodeids": sorted(capturing),
+                "probe_check": (replay_row.pytest_summary or {}).get("probe_check"),
+            },
+        )
+
+
+def _run_variant_replays_for_clean(
+    session: Session,
+    *,
+    experiment_id: str,
+    clean_run: ExperimentCleanRun,
+    artifact: RunArtifact,
+    target_snapshot: ProjectSnapshot,
+    variants: list[tuple[SeededBug, BugVariant]],
+    clean_replay_id: str,
+    clean_replay_passed: set[str],
+    timeout_seconds: int,
+    concurrency: int,
+) -> None:
+    jobs = build_variant_replay_jobs(
+        clean_run_id=clean_run.id,
+        artifact_id=artifact.id,
+        target_snapshot_id=target_snapshot.id,
+        variants=variants,
+        clean_passed=clean_replay_passed,
+        timeout_seconds=timeout_seconds,
+    )
+    results = run_replay_jobs(jobs, _run_variant_replay_job, config=ReplaySchedulerConfig(concurrency=concurrency))
+    persist_variant_replay_results(
+        session,
+        results=results,
+        experiment_id=experiment_id,
+        clean_run_id=clean_run.id,
+        clean_replay_id=clean_replay_id,
+        cancellation_checker=_raise_if_cancelled,
+        error_cls=ExperimentError,
+    )
 
 
 def _make_llm_for_strategy(provider: str):
@@ -871,6 +1287,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         plan_id=plan.id,
                         snapshot_id=clean_snapshot.id,
                         strategy_version_id=strategy_version_id,
+                        runtime_profile_id=experiment.runtime_profile_id,
                         llm_provider=override.get("provider"),
                         llm_model=override.get("model"),
                         llm_temperature=temperature,
@@ -881,11 +1298,21 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         output_options={"experiment_id": experiment.id, "eval_task_id": task.id},
                     )
                     session.refresh(run)
-                    _raise_if_cancelled(session, experiment.id)
-                    gate = _context_gate(clean_snapshot, task_targets)
-                    if gate["blocking"]:
-                        _mark_run_invalid_context(run, gate)
-                        clean_id = new_id()
+                    clean_id = new_id()
+                    setup_status = _run_setup_stage(
+                        session,
+                        run_id=run.id,
+                        work_dir=Path(clean_snapshot.root_path),
+                        runtime_snapshot=run.runtime_snapshot or {},
+                        experiment_id=experiment.id,
+                        clean_run_id=clean_id,
+                    )
+                    if setup_status["status"] == "failed":
+                        run.status = "failed"
+                        run.stage = None
+                        run.finished_at = _now()
+                        run.error_code = "SETUP_FAILED"
+                        run.error_message = f"setup command failed with exit code {setup_status.get('exit_code')}"
                         artifact = _store_generated_test_set_artifact(
                             session,
                             run_id=run.id,
@@ -902,7 +1329,43 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                             clean_run_id=run.id,
                             generated_test_set_artifact_id=artifact.id,
                             false_positive=False,
-                            clean_metrics=_invalid_clean_metrics(run, gate),
+                            clean_metrics={
+                                "final_cases_total": 0,
+                                "final_passed": 0,
+                                "final_failed": 0,
+                                "final_skipped": 0,
+                                "collection_errors": 0,
+                                "tool_call_count": run.tool_call_count,
+                                "total_tokens": run.total_tokens,
+                                "validity_status": "invalid_test_set",
+                                "invalid_reason": "setup_failed",
+                                "setup": setup_status,
+                            },
+                        )
+                        session.add(clean_row)
+                        session.commit()
+                        continue
+                    _raise_if_cancelled(session, experiment.id)
+                    gate = _context_gate(clean_snapshot, task_targets)
+                    if gate["blocking"]:
+                        _mark_run_invalid_context(run, gate)
+                        artifact = _store_generated_test_set_artifact(
+                            session,
+                            run_id=run.id,
+                            experiment_id=experiment.id,
+                            clean_run_id=clean_id,
+                            final_set=_empty_final_test_set(),
+                        )
+                        clean_row = ExperimentCleanRun(
+                            id=clean_id,
+                            experiment_id=experiment.id,
+                            eval_task_id=task.id,
+                            strategy_version_id=strategy_version_id,
+                            repeat_index=repeat_index,
+                            clean_run_id=run.id,
+                            generated_test_set_artifact_id=artifact.id,
+                            false_positive=False,
+                            clean_metrics={**_invalid_clean_metrics(run, gate), "setup": setup_status},
                         )
                         session.add(clean_row)
                         session.commit()
@@ -925,7 +1388,6 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                     _raise_if_cancelled(session, experiment.id)
                     if run.status != "completed":
                         if run.error_code == "PIPELINE_REJECT":
-                            clean_id = new_id()
                             artifact = _store_generated_test_set_artifact(
                                 session,
                                 run_id=run.id,
@@ -953,6 +1415,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                                     "validity_status": "invalid_test_set",
                                     "invalid_reason": "pipeline_reject",
                                     "pipeline_reject_error": run.error_message,
+                                    "setup": setup_status,
                                 },
                             )
                             session.add(clean_row)
@@ -973,7 +1436,6 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         "total_tokens": run.total_tokens,
                         "validity_status": "evaluable",
                     }
-                    clean_id = new_id()
                     artifact = _store_generated_test_set_artifact(
                         session,
                         run_id=run.id,
@@ -990,7 +1452,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         clean_run_id=run.id,
                         generated_test_set_artifact_id=artifact.id,
                         false_positive=final_set.clean_failed,
-                        clean_metrics=clean_metrics,
+                        clean_metrics={**clean_metrics, "setup": setup_status},
                     )
                     session.add(clean_row)
                     session.commit()
@@ -1066,35 +1528,28 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                     clean_row.clean_metrics = clean_metrics
                     session.commit()
 
-                    for _bug, variant in variants:
-                        _raise_if_cancelled(session, experiment.id)
-                        replay_row, capturing, assertion_failures = _run_replay(
-                            session,
-                            clean_run=clean_row,
-                            artifact=artifact,
-                            target_snapshot=snapshot,
-                            variant=variant,
-                            clean_passed=clean_replay_passed,
-                            timeout_seconds=replay_timeout_seconds,
-                        )
-                        session.add(
-                            ExperimentReplayRun(
-                                id=new_id(),
-                                experiment_clean_run_id=clean_row.id,
-                                bug_variant_id=variant.id,
-                                replay_id=replay_row.id,
-                                captured_bug=bool(capturing),
-                                replay_metrics={
-                                    "capture_rule": "clean_passed_variant_assertion_failure_same_nodeid",
-                                    "clean_passed_nodeids": sorted(clean_replay_passed),
-                                    "variant_assertion_failure_nodeids": sorted(assertion_failures),
-                                    "capturing_nodeids": sorted(capturing),
-                                    "clean_replay_id": clean_replay_row.id,
-                                    "probe_check": (replay_row.pytest_summary or {}).get("probe_check"),
-                                },
-                            )
-                        )
-                        session.commit()
+                    concurrency = _replay_concurrency(run.runtime_snapshot)
+                    clean_metrics = dict(clean_row.clean_metrics or {})
+                    clean_metrics["replay_scheduler"] = {
+                        "variant_concurrency": concurrency,
+                        "variant_job_count": len(variants),
+                        "clean_replay_before_variants": True,
+                        "flaky_gate_before_variants": True,
+                    }
+                    clean_row.clean_metrics = clean_metrics
+                    session.commit()
+                    _run_variant_replays_for_clean(
+                        session,
+                        experiment_id=experiment.id,
+                        clean_run=clean_row,
+                        artifact=artifact,
+                        target_snapshot=snapshot,
+                        variants=variants,
+                        clean_replay_id=clean_replay_row.id,
+                        clean_replay_passed=clean_replay_passed,
+                        timeout_seconds=replay_timeout_seconds,
+                        concurrency=concurrency,
+                    )
 
         experiment.status = "completed"
         experiment.finished_at = _now()

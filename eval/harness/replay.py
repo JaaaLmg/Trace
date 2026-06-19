@@ -6,13 +6,18 @@ from pathlib import Path
 
 from app.schemas.tools import RunPytestInput, RunPytestOutput, WriteTestFileInput
 from app.tools.base import ToolContext
+from app.tools.executor import executor_from_runtime_snapshot
 from app.tools.run_pytest import run_pytest
 from app.tools.write_test import write_test_file
 
 
-def replay(target_root: Path, files: dict, timeout_seconds: int = 60) -> RunPytestOutput:
+def replay(target_root: Path, files: dict, timeout_seconds: int = 60, runtime_snapshot: dict | None = None) -> RunPytestOutput:
     target_root = Path(target_root)
-    ctx = ToolContext(root=target_root, test_write_dir=target_root / "tests" / "generated")
+    ctx = ToolContext(
+        root=target_root,
+        test_write_dir=target_root / "tests" / "generated",
+        executor=executor_from_runtime_snapshot(runtime_snapshot),
+    )
     for relpath, content in files.items():
         write_test_file(ctx, WriteTestFileInput(attempt_id="replay", path=relpath, content=content, reason="replay"))
     return run_pytest(ctx, RunPytestInput(attempt_id="replay", test_paths=list(files.keys()), timeout_seconds=timeout_seconds))

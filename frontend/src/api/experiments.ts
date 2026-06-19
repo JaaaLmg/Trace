@@ -45,3 +45,13 @@ export function listExperimentReplayRuns(experimentId: string): Promise<TestRepl
 export function getExperimentMetrics(experimentId: string): Promise<ExperimentMetricsResponse> {
   return requestJson<ExperimentMetricsResponse>(`/api/v1/experiments/${experimentId}/metrics`);
 }
+
+export function cleanupExperiment(
+  experimentId: string,
+  body: { dry_run?: boolean; keep_failed?: boolean } = {}
+): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>(`/api/v1/experiments/${experimentId}/cleanup`, {
+    method: "POST",
+    body: JSON.stringify({ dry_run: body.dry_run ?? true, keep_failed: body.keep_failed ?? true })
+  });
+}

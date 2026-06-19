@@ -50,6 +50,13 @@ function replaySummary(replay: TestReplayContract): string {
   const summary = replay.pytest_summary;
   return `${summary.passed}/${summary.collected} ${t("summary.passed")} · ${summary.failed} ${t("summary.failed")}`;
 }
+
+function textValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") {
+    return t("common.none");
+  }
+  return String(value);
+}
 </script>
 
 <template>
@@ -141,10 +148,37 @@ function replaySummary(replay: TestReplayContract): string {
               </dd>
             </div>
           </template>
-          <div>
-            <dt>{{ t("experiments.error") }}</dt>
-            <dd>{{ selectedReplay.replay.error_message ?? t("common.none") }}</dd>
-          </div>
+            <div>
+              <dt>Executor</dt>
+              <dd>{{ selectedReplay.replay.runtime_snapshot.executor }}</dd>
+            </div>
+            <div>
+              <dt>Runtime profile</dt>
+              <dd>{{ textValue(selectedReplay.replay.runtime_snapshot.runtime_profile_name ?? selectedReplay.replay.runtime_snapshot.runtime_profile_id) }}</dd>
+            </div>
+            <div>
+              <dt>Timeout</dt>
+              <dd>{{ selectedReplay.replay.runtime_snapshot.timeout_seconds }}s</dd>
+            </div>
+            <div>
+              <dt>Cache</dt>
+              <dd>
+                {{ selectedReplay.replay.cache_status }}
+                <code v-if="selectedReplay.replay.source_replay_id">{{ selectedReplay.replay.source_replay_id }}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Workspace</dt>
+              <dd>{{ textValue(selectedReplay.replay.workspace_manifest.workspace_root) }}</dd>
+            </div>
+            <div>
+              <dt>Artifact hash</dt>
+              <dd>{{ textValue(selectedReplay.replay.workspace_manifest.generated_test_set_hash) }}</dd>
+            </div>
+            <div>
+              <dt>{{ t("experiments.error") }}</dt>
+              <dd>{{ selectedReplay.replay.error_message ?? t("common.none") }}</dd>
+            </div>
         </dl>
       </template>
       <template v-else>

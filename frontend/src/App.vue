@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { BarChart3, Beaker, FolderGit2, MonitorDot, Server } from "@lucide/vue";
+import { BarChart3, Beaker, FolderGit2, MonitorDot, Server, SlidersHorizontal } from "@lucide/vue";
 import ComparisonPage from "./pages/ComparisonPage.vue";
 import DatasetDetailPage from "./pages/DatasetDetailPage.vue";
 import ExperimentDetailPage from "./pages/ExperimentDetailPage.vue";
 import ExperimentListPage from "./pages/ExperimentListPage.vue";
 import ProjectListPage from "./pages/ProjectListPage.vue";
+import RuntimeProfilePage from "./pages/RuntimeProfilePage.vue";
 import RunConsolePage from "./pages/RunConsolePage.vue";
 import { useI18n, type Locale } from "./i18n";
 import type { DataSource } from "./types/ui";
@@ -63,6 +64,9 @@ function demoHashForRoute(name: string, id: string): string {
   }
   if (name === "comparison") {
     return "#/comparison";
+  }
+  if (name === "runtime") {
+    return "#/runtime";
   }
   if (name === "projects") {
     return "#/projects";
@@ -127,6 +131,10 @@ onBeforeUnmount(() => {
         <Beaker :size="16" aria-hidden="true" />
         {{ t("app.experiments") }}
       </a>
+      <a href="#/runtime" :class="{ active: route.name === 'runtime' }">
+        <SlidersHorizontal :size="16" aria-hidden="true" />
+        {{ t("app.runtime") }}
+      </a>
       <a href="#/comparison" :class="{ active: route.name === 'comparison' }">
         <BarChart3 :size="16" aria-hidden="true" />
         {{ t("app.comparison") }}
@@ -163,6 +171,7 @@ onBeforeUnmount(() => {
     @navigate="navigate"
   />
   <ExperimentListPage v-else-if="route.name === 'experiments'" :data-source="dataSource" @navigate="navigate" />
+  <RuntimeProfilePage v-else-if="route.name === 'runtime'" :data-source="dataSource" />
   <ComparisonPage v-else-if="route.name === 'comparison'" :data-source="dataSource" @navigate="navigate" />
   <RunConsolePage v-else :run-id="runId" :data-source="dataSource" @navigate="navigate" />
 </template>

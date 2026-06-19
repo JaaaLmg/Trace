@@ -19,13 +19,18 @@ def run_pytest(ctx: ToolContext, inp: RunPytestInput) -> RunPytestOutput:
     raw = executor.run(ctx.root, safe_paths, inp.timeout_seconds)
 
     if raw.timed_out:
-        return RunPytestOutput(exit_code=-1, error=f"pytest 超时（>{inp.timeout_seconds}s）")
+        return RunPytestOutput(
+            exit_code=-1,
+            error=f"pytest 超时（>{inp.timeout_seconds}s）",
+            metadata={"executor": raw.executor_metadata or {}},
+        )
 
     if raw.report is None:
         # 插件没产出报告：pytest 没起来 / 进程异常
         return RunPytestOutput(
             exit_code=raw.exit_code,
             error=_short(raw.stderr or raw.stdout) or "pytest 未产出结构化报告",
+            metadata={"executor": raw.executor_metadata or {}},
         )
 
     case_results: list[CaseResult] = []
@@ -96,6 +101,7 @@ def run_pytest(ctx: ToolContext, inp: RunPytestInput) -> RunPytestOutput:
         failures=failures,
         collection_errors=collection_errors,
         artifacts=artifacts,
+        metadata={"executor": raw.executor_metadata or {}},
     )
 
 

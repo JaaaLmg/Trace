@@ -3,11 +3,12 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ArrowRight, Beaker, Play, Plus, RefreshCw, ServerCrash } from "@lucide/vue";
 import { createExperiment, listExperiments, runExperiment } from "../api/experiments";
 import { listEvalDatasets } from "../api/evaluation";
+import { getExecutorStatus, listDatasetRuntimeProfiles } from "../api/runtimeProfiles";
 import { listStrategies, listStrategyVersions } from "../api/strategies";
 import { demoExperimentMetrics } from "../demo/staticRunFixture";
 import { useLatestRequest } from "../composables/useLatestRequest";
 import { useI18n } from "../i18n";
-import type { EvalDatasetOut, ExperimentDefinition, StrategyVersionOut } from "../types/api";
+import type { EvalDatasetOut, ExperimentDefinition, RuntimeProfileOut, StrategyVersionOut } from "../types/api";
 import type { DataSource } from "../types/ui";
 
 const props = defineProps<{
@@ -23,6 +24,8 @@ const { t } = useI18n();
 const experiments = ref<ExperimentDefinition[]>([]);
 const datasets = ref<EvalDatasetOut[]>([]);
 const strategyVersions = ref<StrategyVersionOut[]>([]);
+const runtimeProfiles = ref<RuntimeProfileOut[]>([]);
+const dockerAvailable = ref<boolean | null>(null);
 const loading = ref(false);
 const creating = ref(false);
 const startingId = ref<string | null>(null);
@@ -32,6 +35,7 @@ const form = ref({
   id: "",
   name: "local demo experiment",
   datasetId: "",
+  runtimeProfileId: "",
   strategyVersionIds: [] as string[],
   repeatCount: 1,
   provider: "mock",
@@ -46,6 +50,7 @@ const canCreate = computed(
     props.dataSource === "api" &&
     form.value.name.trim() &&
     form.value.datasetId &&
+    form.value.runtimeProfileId &&
     form.value.strategyVersionIds.length > 0 &&
     form.value.repeatCount >= 1
 );
@@ -102,18 +107,32 @@ async function loadCreateOptions() {
     return;
   }
   try {
-    const [nextDatasets, strategies] = await Promise.all([listEvalDatasets(), listStrategies()]);
+    const [nextDatasets, strategies, executorStatus] = await Promise.all([listEvalDatasets(), listStrategies(), getExecutorStatus()]);
     const versionGroups = await Promise.all(strategies.map((strategy) => listStrategyVersions(strategy.id)));
     datasets.value = nextDatasets;
     strategyVersions.value = versionGroups.flat();
+    dockerAvailable.value = Boolean(executorStatus.executors.docker?.available);
     if (!form.value.datasetId && nextDatasets[0]) {
       form.value.datasetId = nextDatasets[0].id;
     }
+    await loadRuntimeProfilesForDataset();
     if (form.value.strategyVersionIds.length === 0) {
       form.value.strategyVersionIds = versionGroups.flat().map((version) => version.id);
     }
   } catch (error) {
     createError.value = error instanceof Error ? error.message : t("experiments.optionsFailed");
+  }
+}
+
+async function loadRuntimeProfilesForDataset() {
+  if (!form.value.datasetId || props.dataSource !== "api") {
+    runtimeProfiles.value = [];
+    form.value.runtimeProfileId = "";
+    return;
+  }
+  runtimeProfiles.value = await listDatasetRuntimeProfiles(form.value.datasetId);
+  if (!runtimeProfiles.value.some((profile) => profile.id === form.value.runtimeProfileId)) {
+    form.value.runtimeProfileId = runtimeProfiles.value[0]?.id ?? "";
   }
 }
 
@@ -145,6 +164,7 @@ async function submitExperiment() {
       id: form.value.id.trim() || null,
       name: form.value.name.trim(),
       dataset_id: form.value.datasetId,
+      runtime_profile_id: form.value.runtimeProfileId,
       strategy_version_ids: form.value.strategyVersionIds,
       repeat_count: Number(form.value.repeatCount) || 1,
       llm_override: override
@@ -185,6 +205,13 @@ watch(
   () => {
     void loadExperiments();
     void loadCreateOptions();
+  }
+);
+
+watch(
+  () => form.value.datasetId,
+  () => {
+    void loadRuntimeProfilesForDataset();
   }
 );
 </script>
@@ -256,6 +283,14 @@ watch(
           </select>
         </label>
         <label>
+          <span>Runtime profile</span>
+          <select v-model="form.runtimeProfileId">
+            <option v-for="profile in runtimeProfiles" :key="profile.id" :value="profile.id">
+              {{ profile.name }} / {{ profile.executor }}
+            </option>
+          </select>
+        </label>
+        <label>
           <span>{{ t("experiments.repeat") }}</span>
           <input v-model.number="form.repeatCount" type="number" min="1" max="20" />
         </label>
@@ -269,6 +304,16 @@ watch(
         </label>
       </div>
       <div class="strategy-picker">
+        <p v-if="form.runtimeProfileId" class="runtime-note">
+          {{
+            runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.executor ?? "local_subprocess"
+          }}
+          · network:
+          {{ runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.network_policy ?? "default" }}
+          · timeout:
+          {{ runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.resource_limits?.timeout_seconds ?? 120 }}s
+          · Docker {{ dockerAvailable ? "available" : "not available" }}
+        </p>
         <span>{{ t("experiments.strategy") }}</span>
         <div class="strategy-options">
           <button
@@ -452,6 +497,16 @@ watch(
   font-family: var(--font-mono);
   font-size: 11px;
   text-transform: uppercase;
+}
+
+.runtime-note {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .create-grid input,
