@@ -515,6 +515,16 @@ def test_mutation_candidate_rejects_unstable_matchers_and_unreproducible_samplin
     ok = MutationCandidateContract.model_validate(_mutation_candidate_payload())
     assert ok.matcher.operator == ok.operator
 
+    windows_paths = MutationCandidateContract.model_validate(
+        _mutation_candidate_payload()
+        | {
+            "patch": _mutation_candidate_payload()["patch"] | {"file": "shop\\pricing.py"},
+            "matcher": _mutation_candidate_payload()["matcher"] | {"source_path": "shop\\pricing.py"},
+        }
+    )
+    assert windows_paths.patch.file == "shop/pricing.py"
+    assert windows_paths.matcher.source_path == "shop/pricing.py"
+
     with pytest.raises(ValidationError):
         MutationCandidateContract.model_validate(
             _mutation_candidate_payload()

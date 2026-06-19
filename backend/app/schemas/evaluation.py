@@ -131,7 +131,7 @@ def _validate_relative_project_path(value: str, *, field_name: str) -> str:
         raise ValueError(f"{field_name} must be relative to the project root")
     if any(part == ".." for part in normalized.split("/")):
         raise ValueError(f"{field_name} must not contain parent-directory traversal")
-    return value
+    return normalized
 
 
 class ContractModel(BaseModel):

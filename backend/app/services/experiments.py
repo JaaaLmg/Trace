@@ -1629,18 +1629,26 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
             .order_by(ExperimentReplayRun.created_at.asc(), ExperimentReplayRun.id.asc())
         )
     )
-    artifacts = list(
-        session.scalars(
-            select(RunArtifact)
-            .where(RunArtifact.artifact_type == "generated_test_set")
-            .order_by(RunArtifact.created_at.asc(), RunArtifact.id.asc())
-        )
+    artifact_ids = {
+        clean.generated_test_set_artifact_id
+        for clean in clean_runs
+        if clean.generated_test_set_artifact_id
+    }
+    artifact_ids.update(
+        replay.generated_test_set_artifact_id
+        for replay in replays
+        if replay.generated_test_set_artifact_id
     )
-    artifacts = [
-        artifact
-        for artifact in artifacts
-        if (artifact.metadata_json or {}).get("experiment_id") == experiment_id
-    ]
+    artifacts = []
+    if artifact_ids:
+        artifacts = list(
+            session.scalars(
+                select(RunArtifact)
+                .where(RunArtifact.artifact_type == "generated_test_set")
+                .where(RunArtifact.id.in_(artifact_ids))
+                .order_by(RunArtifact.created_at.asc(), RunArtifact.id.asc())
+            )
+        )
     evaluation_events = project_evaluation_events(experiment, clean_runs, replays, replay_results)
 
     return {

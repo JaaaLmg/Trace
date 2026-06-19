@@ -49,6 +49,7 @@ logs/
 artifacts/
 output/playwright/
 .playwright-cli/
+/%SystemDrive%/
 
 # Frontend dependency/build caches
 node_modules/

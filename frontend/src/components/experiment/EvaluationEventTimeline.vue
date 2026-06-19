@@ -85,10 +85,10 @@ function decisionClass(event: EvaluationEventContract): string {
     <article class="section-stack">
       <div class="event-heading">
         <div>
-          <p class="eyebrow">EVALUATION EVENTS</p>
+          <p class="eyebrow">{{ t("experiments.eventTimelineEyebrow") }}</p>
           <h2>{{ t("experiments.eventTimeline") }}</h2>
         </div>
-        <div class="event-counters" aria-label="event summary">
+        <div class="event-counters" :aria-label="t('experiments.eventSummaryAria')">
           <span class="counter prompt-safe">
             <ShieldCheck :size="14" aria-hidden="true" />
             {{ includedCount }} {{ t("experiments.promptSafe") }}
@@ -117,7 +117,7 @@ function decisionClass(event: EvaluationEventContract): string {
               <span>{{ event.severity }}</span>
               <span>{{ event.scope }}</span>
               <span v-if="event.strategy_version_id">{{ event.strategy_version_id }}</span>
-              <span v-if="event.repeat_index !== null">rep {{ event.repeat_index }}</span>
+              <span v-if="event.repeat_index !== null">{{ t("experiments.repeatShort") }} {{ event.repeat_index }}</span>
               <span>{{ event.event_id }}</span>
             </div>
           </div>
@@ -141,7 +141,7 @@ function decisionClass(event: EvaluationEventContract): string {
           </span>
           <strong>{{ eventById.get(decision.event_id)?.event_type ?? decision.event_type }}</strong>
           <p>{{ decision.reason }}</p>
-          <small>{{ decision.strategy_version_id }} · rep {{ decision.repeat_index }} · {{ decision.event_id }}</small>
+          <small>{{ decision.strategy_version_id }} · {{ t("experiments.repeatShort") }} {{ decision.repeat_index }} · {{ decision.event_id }}</small>
         </article>
       </div>
       <p v-else class="decision-empty">{{ t("experiments.noBackfeedDecisions") }}</p>
