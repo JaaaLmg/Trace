@@ -108,9 +108,9 @@ def check_generation_contract(
     )
     if route_json_without_schema:
         violations.append("请求 JSON 缺少模型字段证据：" + ", ".join(route_json_without_schema))
-    unknown_fields = _unknown_json_body_fields(tree, allowed_request_fields or [])
+    unknown_fields = _unknown_request_fields(tree, allowed_request_fields or [])
     if unknown_fields:
-        violations.append("请求 JSON 字段缺少模型证据：" + ", ".join(unknown_fields))
+        violations.append("请求字段缺少模型证据：" + ", ".join(unknown_fields))
     unknown_fixtures = _unknown_test_fixtures(tree, allowed_fixtures) if allowed_fixtures is not None else []
     if unknown_fixtures:
         violations.append("测试函数 fixture 缺少项目证据：" + ", ".join(unknown_fixtures))
@@ -1530,7 +1530,7 @@ def _same_value(left: Any, right: Any) -> bool:
     return left == right
 
 
-def _unknown_json_body_fields(tree: ast.AST, allowed_request_fields: Sequence[str]) -> list[str]:
+def _unknown_request_fields(tree: ast.AST, allowed_request_fields: Sequence[str]) -> list[str]:
     allowed = {str(field).strip() for field in allowed_request_fields if str(field).strip()}
     if not allowed:
         return []
@@ -1543,7 +1543,7 @@ def _unknown_json_body_fields(tree: ast.AST, allowed_request_fields: Sequence[st
             if not isinstance(node, ast.Call):
                 continue
             for kw in node.keywords:
-                if kw.arg != "json":
+                if kw.arg not in {"json", "params"}:
                     continue
                 keys = _dict_literal_keys(kw.value)
                 if keys is None and isinstance(kw.value, ast.Name):

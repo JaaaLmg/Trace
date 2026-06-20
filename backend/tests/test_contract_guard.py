@@ -159,6 +159,42 @@ def test_generation_contract_rejects_unknown_json_request_field_from_payload_var
     assert any("ghost" in violation for violation in violations)
 
 
+def test_generation_contract_rejects_unknown_query_param_field():
+    content = (
+        "def test_search(client):\n"
+        "    response = client.get('/prices', params={'sku': 'A', 'made_up': 1})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['sku'] == 'A'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_search", "target_route": "/prices", "assertion_summary": "验证价格查询"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=["sku", "quantity"],
+    )
+
+    assert any("made_up" in violation for violation in violations)
+
+
+def test_generation_contract_accepts_query_param_field_from_request_evidence():
+    content = (
+        "def test_search(client):\n"
+        "    response = client.get('/prices', params={'sku': 'A'})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['sku'] == 'A'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_search", "target_route": "/prices", "assertion_summary": "验证价格查询"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=["sku", "quantity"],
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_accepts_json_request_fields_from_model_schema():
     content = (
         "def test_create(client):\n"
