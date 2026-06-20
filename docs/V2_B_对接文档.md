@@ -24,6 +24,8 @@ A 线负责执行平台和评测尺子：executor、runtime profile、setup/repl
 
 随后将依赖切片实现从 source_context.py 机械拆分到 source_context_dependencies.py，只降低模块复杂度，不改变 source context / retrieval trace 合同。
 
+本轮继续将 support target 收集、去重和 incomplete 判断机械拆到 source_context_support.py；不改变 prompt 内容、snippet 预算、retrieval trace 字段或 completeness 语义。
+
 ## 3. A/B 接口约定
 
 A 线可继续把 source context completeness 作为 clean run gate 使用：

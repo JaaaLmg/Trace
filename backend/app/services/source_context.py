@@ -34,6 +34,13 @@ from app.services.source_context_trace import (
     safe_source_path as _safe_source_path,
     source_context_trace_id as _trace_id,
 )
+from app.services.source_context_support import (
+    dedupe_support_targets as _dedupe_support_targets,
+    is_generated_test_path as _is_generated_test_path,
+    support_context_incomplete as _support_context_incomplete,
+    support_dedup_note as _support_dedup_note,
+    support_targets as _support_targets,
+)
 from app.tools.base import ToolContext
 from app.tools.fs_tools import read_file
 from app.tools.lsp import lsp_definition, lsp_references
@@ -1340,75 +1347,6 @@ def _append_support_context(
     return total_bytes
 
 
-def _support_targets(ctx: ToolContext, analysis: AnalyzeProjectOutput) -> list[_Target]:
-    generated_tests_dir = ctx.relpath(ctx.test_write_dir)
-    targets: list[_Target] = []
-    for model in analysis.models:
-        targets.append(
-            _Target(
-                raw=f"model:{model.name}",
-                rel_path=model.file,
-                symbol=model.name,
-                source_kind="model_schema",
-                retrieval_source="analysis_ast",
-                confidence=0.95,
-            )
-        )
-    for fixture in analysis.fixtures:
-        if _is_generated_test_path(fixture.file, generated_tests_dir):
-            continue
-        targets.append(
-            _Target(
-                raw=f"fixture:{fixture.name}",
-                rel_path=fixture.file,
-                symbol=fixture.name,
-                source_kind="fixture",
-                retrieval_source="pytest_scanner",
-                confidence=0.95,
-            )
-        )
-    for test_file in analysis.existing_tests:
-        if _is_generated_test_path(test_file.path, generated_tests_dir):
-            continue
-        for test in test_file.test_functions:
-            targets.append(
-                _Target(
-                    raw=f"existing_test:{test.estimated_nodeid}",
-                    rel_path=test_file.path,
-                    symbol=test.name,
-                    source_kind="existing_test",
-                    retrieval_source="pytest_scanner",
-                    confidence=0.9,
-                )
-            )
-    return targets
-
-
-def _dedupe_support_targets(
-    targets: list[_Target],
-    seen: set[tuple[str, str | None]],
-) -> tuple[list[_Target], list[tuple[_Target, _Target | None]]]:
-    unique: list[_Target] = []
-    duplicates: list[tuple[_Target, _Target | None]] = []
-    occupied = set(seen)
-    kept_by_key: dict[tuple[str, str | None], _Target] = {}
-    for target in targets:
-        key = (target.rel_path, target.symbol)
-        if key in occupied:
-            duplicates.append((target, kept_by_key.get(key)))
-            continue
-        occupied.add(key)
-        kept_by_key[key] = target
-        unique.append(target)
-    return unique, duplicates
-
-
-def _support_dedup_note(kept: _Target | None) -> str:
-    if kept is None:
-        return "support context deduplicated by evidence key; existing snippet already covers this path/symbol"
-    return f"support context deduplicated by evidence key; kept {kept.raw}"
-
-
 def _sort_targets(targets: list[_Target]) -> list[_Target]:
     return sorted(
         targets,
@@ -1432,11 +1370,6 @@ def _confidence_band(confidence: float) -> int:
     return 2
 
 
-def _support_context_incomplete(retrieval_trace: list[SourceContextRetrievalTrace]) -> bool:
-    support_kinds = {"dependency", "reference", "model_schema", "fixture", "existing_test", "failure_context"}
-    return any(trace.source_kind in support_kinds and trace.status != "resolved" for trace in retrieval_trace)
-
-
 def _lsp_fallback_risk_notes(retrieval_trace: list[SourceContextRetrievalTrace]) -> list[str]:
     notes: list[str] = []
     seen: set[str] = set()
@@ -1450,9 +1383,3 @@ def _lsp_fallback_risk_notes(retrieval_trace: list[SourceContextRetrievalTrace])
         seen.add(note)
         notes.append(note)
     return notes
-
-
-def _is_generated_test_path(path: str, generated_tests_dir: str) -> bool:
-    norm = path.replace("\\", "/").strip("/")
-    generated = generated_tests_dir.replace("\\", "/").strip("/")
-    return bool(generated) and (norm == generated or norm.startswith(generated + "/"))
