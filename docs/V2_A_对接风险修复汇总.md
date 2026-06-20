@@ -28,11 +28,29 @@
 - 新增疑似 secret value 检测，例如 `bearer `、`sk-`、`ghp_`、`github_pat_`、`xoxb-`、`xoxp-`、`eyj`。
 - Docker executor 不再从 runtime snapshot 的 value 注入环境变量。
 - Docker executor 现在只按 `env_template` 的 key 从宿主进程环境读取，并使用 `docker -e KEY` 形式透传，避免 value 出现在 command/evidence 中。
+- 针对后续审查发现的历史数据风险，新增统一清洗逻辑：
+  - `sanitize_env_template()` 会保留 `null`、空字符串、`${NAME}`、`<NAME>`。
+  - 旧库中已存在的非法 value 会在输出和快照构造时替换为 `<REDACTED>`。
+  - 旧库中已存在的敏感 key，例如 `API_TOKEN`，会从输出和快照中移除。
+- runtime profile API 输出现在统一清洗 `env_template`。
+- 创建 run 时，`runtime_snapshot.env_template` 和 `runtime_snapshot.env_keys` 统一基于清洗后的模板生成。
+- 读取历史 run 时，`TestRunOut.runtime_snapshot.env_template` 也会在响应层清洗，避免旧 snapshot 继续经 API 泄露。
+- 读取 experiment replay runs 时，`TestReplayOut.runtime_snapshot.env_template` 也会在响应层清洗。
+- 新增 Alembic 迁移 `20260620_0007_sanitize_env_templates.py`，用于清洗既有：
+  - `runtime_profiles.env_template`
+  - `test_runs.runtime_snapshot.env_template`
+  - `test_replays.runtime_snapshot.env_template`
 
 涉及文件：
 
+- `backend/app/core/env_templates.py`
 - `backend/app/services/runtime_profiles.py`
+- `backend/app/services/test_runs.py`
+- `backend/app/schemas/api_runtime_profile.py`
+- `backend/app/schemas/api_run.py`
+- `backend/app/schemas/api_evaluation.py`
 - `backend/app/tools/executor.py`
+- `backend/alembic/versions/20260620_0007_sanitize_env_templates.py`
 - `backend/tests/test_stage1_versioning_runtime_profiles.py`
 - `backend/tests/test_executor_runtime_command.py`
 
@@ -40,12 +58,18 @@
 
 - `test_runtime_profile_rejects_secret_env_key`
 - `test_runtime_profile_rejects_secret_like_env_value`
+- `test_runtime_profile_api_redacts_legacy_secret_env_value`
+- `test_create_run_sanitizes_legacy_runtime_profile_snapshot`
+- `test_run_detail_redacts_legacy_frozen_runtime_snapshot`
 - `test_docker_executor_env_template_reads_host_environment`
 
 当前合同：
 
 - `env_template` 是“允许注入哪些环境变量”的模板，不是 secret 存储。
-- DB、runtime snapshot、executor metadata 中不应出现真实 secret value。
+- 新写入数据不允许保存真实 secret value。
+- 旧数据在迁移后会被持久清洗；即使未执行迁移，API 输出和新建 run 的 runtime snapshot 也会清洗。
+- runtime snapshot、executor metadata、API response 中不应出现真实 secret value。
+- `<REDACTED>` 只表示历史数据曾包含不可接受 value，不会被 executor 当作真实环境变量值注入。
 - 如后续需要更完整的运行时 secret 注入，应接入单独 secret provider，而不是扩展 `env_template` 保存真实值。
 
 ## 2. Dataset scoped runtime profile API 静默取首个 task
@@ -183,6 +207,20 @@ python -m pytest --basetemp <TRACE_ROOT>\.pytest_tmp_codex `
 20 passed
 ```
 
+本轮针对历史 `env_template` secret value 遗留风险追加执行：
+
+```powershell
+python -m pytest --basetemp <TRACE_ROOT>\.pytest_tmp_codex backend/tests/test_stage1_versioning_runtime_profiles.py -q
+python -m pytest --basetemp <TRACE_ROOT>\.pytest_tmp_codex backend/tests/test_executor_runtime_command.py::test_docker_executor_env_template_reads_host_environment -q
+```
+
+结果：
+
+```text
+15 passed
+1 passed
+```
+
 已执行前端类型检查：
 
 ```powershell
@@ -211,5 +249,6 @@ passed
 
 - `docs/V2_A_对接风险审查.md` 是审查输入文档，本次未修改。
 - Docker runtime profile 的 `env_template` 现在不负责保存 secret。后续如需要真实 secret 注入，应设计单独的安全注入机制。
+- 本次迁移不可逆恢复 secret-looking value；downgrade 不会还原已经被 `<REDACTED>` 替换或被移除的历史敏感 key。
 - Dataset scoped runtime profile API 当前明确只支持单 project dataset。多 project dataset 的交互设计应留到后续产品/API 设计中处理。
 - false positive warning 目前是前端派生展示；后续如果需要 API 级风险摘要，可以再加 `metric_warning` 或 `warnings` 字段。

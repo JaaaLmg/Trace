@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+from app.core.env_templates import sanitize_env_template
 
 
 class RuntimeProfileCreate(BaseModel):
@@ -61,3 +63,7 @@ class RuntimeProfileOut(BaseModel):
     archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer("env_template")
+    def serialize_env_template(self, env_template: dict) -> dict:
+        return sanitize_env_template(env_template)

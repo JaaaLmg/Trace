@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import platform
-import re
 from typing import Any
 
+from app.core.env_templates import reject_secret_env_template, sanitize_env_template
 from app.core.ids import new_id
 from app.models.runtime_profile import RuntimeProfile
 from datetime import datetime, timezone
@@ -20,38 +20,10 @@ from sqlalchemy.orm import Session
 # V2 §6.1：network_policy 至少支持这三种。
 _ALLOWED_NETWORK_POLICIES = {"default", "disabled", "install_only"}
 _ALLOWED_EXECUTORS = {"local_subprocess", "docker"}
-_SECRET_ENV_TOKENS = ("api_key", "apikey", "secret", "token", "password", "authorization")
-_PLACEHOLDER_RE = re.compile(r"^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|<[A-Za-z_][A-Za-z0-9_]*>)$")
-_SECRET_VALUE_TOKENS = (
-    "bearer ",
-    "sk-",
-    "ghp_",
-    "github_pat_",
-    "xoxb-",
-    "xoxp-",
-    "eyj",
-)
 
 
 def _default_test_command() -> str:
     return "python -m pytest tests -q --rootdir . -p no:cacheprovider"
-
-
-def _reject_secret_env(env_template: dict[str, Any]) -> None:
-    for key, value in env_template.items():
-        normalized = str(key).lower().replace("-", "_")
-        if any(token in normalized for token in _SECRET_ENV_TOKENS):
-            raise ValueError(f"env_template key {key!r} looks like a secret and must not be persisted")
-        if value is None or value == "":
-            continue
-        if not isinstance(value, str):
-            raise ValueError(f"env_template value for {key!r} must be empty or a placeholder")
-        if _PLACEHOLDER_RE.fullmatch(value):
-            continue
-        lowered = value.lower()
-        if any(token in lowered for token in _SECRET_VALUE_TOKENS):
-            raise ValueError(f"env_template value for {key!r} looks like a secret and must not be persisted")
-        raise ValueError(f"env_template value for {key!r} must be empty or a placeholder")
 
 
 def _validate_profile_config(
@@ -69,7 +41,7 @@ def _validate_profile_config(
         raise ValueError(f"network_policy must be one of {sorted(_ALLOWED_NETWORK_POLICIES)}")
     if timeout_seconds is not None and int(timeout_seconds) < 1:
         raise ValueError("timeout_seconds must be positive")
-    _reject_secret_env(dict(env_template or {}))
+    reject_secret_env_template(dict(env_template or {}))
     limits = dict(resource_limits or {})
     if executor == "docker" and not (image or "").strip():
         raise ValueError("docker runtime profile requires image")

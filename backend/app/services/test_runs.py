@@ -8,6 +8,7 @@ from app.agents.llm_config import load_llm_config
 from app.agents.llm_factory import create_llm
 from app.agents.orchestrator import execute_run
 from app.agents.runtime import PlanInput
+from app.core.env_templates import sanitize_env_template
 from app.core.errors import ErrorCode
 from app.core.ids import new_id
 from app.models.trace import RunEvent
@@ -252,6 +253,7 @@ def _runtime_snapshot(
     output_options: dict | None = None,
 ) -> dict:
     runtime_base = get_runtime_profile_snapshot(runtime_profile) if runtime_profile is not None else {}
+    env_template = sanitize_env_template(runtime_base.get("env_template"))
     profile_timeout = (runtime_base.get("resource_limits") or {}).get("timeout_seconds")
     timeout_seconds = int((budget_override or {}).get("timeout_seconds") or profile_timeout or 120)
     snap = RuntimeSnapshotContract(
@@ -265,11 +267,11 @@ def _runtime_snapshot(
         test_command=runtime_base.get("test_command", "python -m pytest tests -q --rootdir . -p no:cacheprovider"),
         network_policy=runtime_base.get("network_policy", "default"),
         timeout_seconds=timeout_seconds,
-        env_template=dict(runtime_base.get("env_template") or {}),
+        env_template=env_template,
         resource_limits=dict(runtime_base.get("resource_limits") or {}),
         artifact_policy=dict(runtime_base.get("artifact_policy") or {}),
         cleanup_policy=dict(runtime_base.get("cleanup_policy") or {}),
-        env_keys=sorted((runtime_base.get("env_template") or {}).keys()),
+        env_keys=sorted(env_template.keys()),
     ).model_dump()
     snap["budget_override"] = dict(budget_override or {})
     snap["output_options"] = dict(output_options or {})
@@ -453,7 +455,7 @@ def get_runtime_profile_snapshot(profile) -> dict:
         "install_command": profile.install_command,
         "test_command": profile.test_command,
         "network_policy": profile.network_policy,
-        "env_template": dict(profile.env_template or {}),
+        "env_template": sanitize_env_template(profile.env_template),
         "resource_limits": dict(profile.resource_limits or {}),
         "artifact_policy": dict(profile.artifact_policy or {}),
         "cleanup_policy": dict(profile.cleanup_policy or {}),
