@@ -36,6 +36,7 @@ from app.services.source_context_trace import (
 )
 from app.services.source_context_routes import (
     looks_like_route_target as _looks_like_route_target,
+    route_handler_for_path as _route_handler_for_path,
     route_path_without_method as _route_path_without_method,
     route_target_parts as _route_target_parts,
     route_with_method as _route_with_method,
@@ -845,41 +846,6 @@ def _rg_candidate_trace(raw: str, match: RgSearchMatch, note: str) -> SourceCont
         content_hash=match.content_hash,
         risk_notes=[note],
     )
-
-
-def _route_handler_for_path(content: str, method: str | None, path: str) -> str | None:
-    try:
-        tree = ast.parse(content)
-    except SyntaxError:
-        return None
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for decorator in node.decorator_list:
-            route = _route_decorator_parts(decorator)
-            if route is None:
-                continue
-            decorator_method, decorator_path = route
-            if decorator_path == path and (method is None or decorator_method == method):
-                return node.name
-    return None
-
-
-def _route_decorator_parts(decorator: ast.AST) -> tuple[str, str] | None:
-    if not isinstance(decorator, ast.Call):
-        return None
-    func = decorator.func
-    if not isinstance(func, ast.Attribute):
-        return None
-    method = func.attr.upper()
-    if method not in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
-        return None
-    if not decorator.args:
-        return None
-    first_arg = decorator.args[0]
-    if not isinstance(first_arg, ast.Constant) or not isinstance(first_arg.value, str):
-        return None
-    return method, first_arg.value
 
 
 def _slice_symbol(content: str, symbol: str) -> tuple[int, int, str] | None:
