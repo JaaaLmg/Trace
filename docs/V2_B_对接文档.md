@@ -49,6 +49,8 @@ Dataset UI 已接入后端已有 task / seeded bug / variant / mutation discover
 
 Dataset UI 也提供普通 authoring 入口，用于创建 eval task、seeded bug 和 `source=seeded_bug` 的 patch variant；前端会拒绝 `ground_truth.source=auto_mutation`，后端普通 variant API 仍是最终防线。
 
+Dataset UI 的结构状态只基于当前 API 返回体派生，检查 task、target scope、seeded bug、variant 和 ground truth 是否缺口；它不是 replay 结果，也不把 incomplete/provider_failure 等审计状态解释为 0 捕获。
+
 ## 4. 当前测试证据
 
 已验证：

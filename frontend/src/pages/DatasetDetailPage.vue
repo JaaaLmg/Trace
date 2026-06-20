@@ -10,6 +10,7 @@ import type {
   EvalDatasetDetailOut,
   EvalTaskDetailOut,
   JsonObject,
+  SeededBugDetailOut,
   JsonValue,
   MutationCandidateContract,
   MutationDiscoveryAuditReportContract,
@@ -105,6 +106,101 @@ const variantCount = computed<number>(() => {
   return current
     ? current.tasks.reduce((count, task) => count + task.seeded_bugs.reduce((inner, bug) => inner + bug.variants.length, 0), 0)
     : 0;
+});
+
+type ReadinessStatus = "ready" | "incomplete";
+
+type DatasetReadinessIssue = {
+  id: string;
+  label: string;
+  detail: string;
+};
+
+function hasEvidence(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (value && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).length > 0;
+  }
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  return value !== null && value !== undefined;
+}
+
+function readinessStatus(issues: DatasetReadinessIssue[]): ReadinessStatus {
+  return issues.length === 0 ? "ready" : "incomplete";
+}
+
+function bugReadinessIssues(bug: SeededBugDetailOut): DatasetReadinessIssue[] {
+  const issues: DatasetReadinessIssue[] = [];
+  if (bug.variants.length === 0) {
+    issues.push({
+      id: `bug:${bug.id}:variants`,
+      label: t("datasets.issueBugNoVariantsLabel"),
+      detail: t("datasets.issueBugNoVariantsDetail", { id: bug.id })
+    });
+  }
+  for (const variant of bug.variants) {
+    if (!hasEvidence(variant.ground_truth)) {
+      issues.push({
+        id: `variant:${variant.id}:ground_truth`,
+        label: t("datasets.issueVariantNoGroundTruthLabel"),
+        detail: t("datasets.issueVariantNoGroundTruthDetail", { id: variant.id })
+      });
+    }
+  }
+  return issues;
+}
+
+function taskReadinessIssues(task: EvalTaskDetailOut): DatasetReadinessIssue[] {
+  const issues: DatasetReadinessIssue[] = [];
+  if (!hasEvidence(task.target_scope)) {
+    issues.push({
+      id: `task:${task.id}:target_scope`,
+      label: t("datasets.issueMissingScopeLabel"),
+      detail: t("datasets.issueMissingScopeDetail", { id: task.id })
+    });
+  }
+  if (task.seeded_bugs.length === 0) {
+    issues.push({
+      id: `task:${task.id}:seeded_bugs`,
+      label: t("datasets.issueTaskNoBugsLabel"),
+      detail: t("datasets.issueTaskNoBugsDetail", { id: task.id })
+    });
+  }
+  for (const bug of task.seeded_bugs) {
+    issues.push(...bugReadinessIssues(bug));
+  }
+  return issues;
+}
+
+function taskReadinessStatus(task: EvalTaskDetailOut): ReadinessStatus {
+  return readinessStatus(taskReadinessIssues(task));
+}
+
+function bugReadinessStatus(bug: SeededBugDetailOut): ReadinessStatus {
+  return readinessStatus(bugReadinessIssues(bug));
+}
+
+const datasetReadiness = computed(() => {
+  const current = dataset.value;
+  const issues: DatasetReadinessIssue[] = [];
+  if (!current) {
+    return { status: "incomplete" as ReadinessStatus, issues };
+  }
+  if (current.tasks.length === 0) {
+    issues.push({
+      id: "dataset:tasks",
+      label: t("datasets.issueNoTasksLabel"),
+      detail: t("datasets.issueNoTasksDetail")
+    });
+  }
+  for (const task of current.tasks) {
+    issues.push(...taskReadinessIssues(task));
+  }
+  return { status: readinessStatus(issues), issues };
 });
 
 const selectedMutationCandidates = computed<MutationCandidateContract[]>(() =>
@@ -520,6 +616,33 @@ watch(
         </article>
       </section>
 
+      <section class="subtle-panel readiness-panel" :data-status="datasetReadiness.status">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">DATASET READINESS</p>
+            <h2>{{ t("datasets.readiness") }}</h2>
+          </div>
+          <span class="status-chip" :data-status="datasetReadiness.status">
+            {{ datasetReadiness.status === "ready" ? t("datasets.readinessReady") : t("datasets.readinessIncomplete") }}
+          </span>
+        </div>
+        <p v-if="datasetReadiness.status === 'ready'" class="mode-note compact-note">{{ t("datasets.readinessReadyBody") }}</p>
+        <div v-else class="readiness-issues">
+          <p class="mode-note compact-note">
+            <strong>{{ datasetReadiness.issues.length }}</strong> {{ t("datasets.readinessIssueCount") }}
+          </p>
+          <ul>
+            <li v-for="issue in datasetReadiness.issues.slice(0, 8)" :key="issue.id">
+              <strong>{{ issue.label }}</strong>
+              <span>{{ issue.detail }}</span>
+            </li>
+          </ul>
+          <small v-if="datasetReadiness.issues.length > 8">
+            {{ t("datasets.readinessMore", { count: datasetReadiness.issues.length - 8 }) }}
+          </small>
+        </div>
+      </section>
+
       <section v-if="props.dataSource === 'api'" class="subtle-panel authoring-panel">
         <div class="panel-head">
           <div>
@@ -652,7 +775,12 @@ watch(
               <strong>{{ task.id }}</strong>
               <small>{{ task.project_snapshot_id }}</small>
             </span>
-            <small>{{ task.seeded_bugs.length }} {{ t("datasets.seededBugs") }}</small>
+            <small class="task-row-meta">
+              <span>{{ task.seeded_bugs.length }} {{ t("datasets.seededBugs") }}</span>
+              <i class="status-chip" :data-status="taskReadinessStatus(task)">
+                {{ taskReadinessStatus(task) === "ready" ? t("datasets.readinessReady") : t("datasets.readinessIncomplete") }}
+              </i>
+            </small>
           </button>
         </aside>
 
@@ -798,6 +926,7 @@ watch(
             </div>
           </article>
           <section class="bug-stack">
+            <p v-if="selectedTask.seeded_bugs.length === 0" class="empty-state subtle-panel">{{ t("datasets.noSeededBugs") }}</p>
             <article v-for="bug in selectedTask.seeded_bugs" :key="bug.id" class="subtle-panel bug-card">
               <header class="bug-head">
                 <div>
@@ -805,7 +934,12 @@ watch(
                   <h3>{{ bug.id }}</h3>
                   <p>{{ bug.description }}</p>
                 </div>
-                <Bug :size="18" aria-hidden="true" />
+                <div class="bug-tools">
+                  <span class="status-chip" :data-status="bugReadinessStatus(bug)">
+                    {{ bugReadinessStatus(bug) === "ready" ? t("datasets.readinessReady") : t("datasets.readinessIncomplete") }}
+                  </span>
+                  <Bug :size="18" aria-hidden="true" />
+                </div>
               </header>
               <dl>
                 <div>
@@ -813,7 +947,8 @@ watch(
                   <dd>{{ bug.expected_detection }}</dd>
                 </div>
               </dl>
-              <div class="table-shell variant-table">
+              <p v-if="bug.variants.length === 0" class="mode-note compact-note">{{ t("datasets.noVariants") }}</p>
+              <div v-else class="table-shell variant-table">
                 <table>
                   <thead>
                     <tr>
@@ -850,6 +985,7 @@ watch(
 .detail-head,
 .hero-band,
 .metadata-grid,
+.readiness-panel,
 .dataset-grid,
 .create-dataset-panel,
 .authoring-panel {
@@ -907,9 +1043,65 @@ watch(
   font-size: 11px;
 }
 
+.readiness-panel,
 .authoring-panel {
   display: grid;
   gap: 14px;
+}
+
+.readiness-issues {
+  display: grid;
+  gap: 10px;
+}
+
+.readiness-issues ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.readiness-issues li {
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(251, 250, 247, 0.72);
+}
+
+.readiness-issues li span,
+.readiness-issues small {
+  color: var(--muted);
+}
+
+.status-chip {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 24px;
+  align-items: center;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.status-chip[data-status="ready"] {
+  border-color: rgba(49, 95, 125, 0.28);
+  background: var(--tool-bg);
+  color: var(--tool);
+}
+
+.status-chip[data-status="incomplete"] {
+  border-color: rgba(145, 93, 38, 0.28);
+  background: rgba(145, 93, 38, 0.08);
+  color: #795125;
 }
 
 .authoring-grid {
@@ -969,6 +1161,7 @@ watch(
 
 .meta-tile,
 .create-dataset-panel,
+.readiness-panel,
 .authoring-panel,
 .task-list,
 .task-overview,
@@ -1077,6 +1270,19 @@ watch(
   border-color: var(--tool);
   background: rgba(49, 95, 125, 0.08);
   box-shadow: inset 3px 0 0 var(--tool);
+}
+
+.task-row-meta span {
+  display: inline;
+}
+
+.task-row-meta,
+.bug-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .task-overview {
