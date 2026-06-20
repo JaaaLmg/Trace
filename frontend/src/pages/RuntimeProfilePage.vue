@@ -9,7 +9,7 @@ import {
   listRuntimeProfiles,
   updateRuntimeProfile
 } from "../api/runtimeProfiles";
-import type { ProjectOut, RuntimeProfileOut } from "../types/api";
+import type { JsonObject, ProjectOut, RuntimeProfileOut, RuntimeProfileUpsertRequest } from "../types/api";
 import type { DataSource } from "../types/ui";
 import { useI18n } from "../i18n";
 
@@ -27,6 +27,9 @@ const saving = ref(false);
 const errorMessage = ref<string | null>(null);
 const executorStatus = ref<Record<string, { available: boolean; warning?: string; unavailable_reason?: string | null }>>({});
 
+const DEFAULT_ARTIFACT_POLICY: JsonObject = { retain: "evidence" };
+const DEFAULT_CLEANUP_POLICY: JsonObject = { mode: "manual", keep_failed: true };
+
 const form = reactive({
   name: t("runtime.defaultName"),
   executor: "local_subprocess" as "local_subprocess" | "docker",
@@ -35,7 +38,9 @@ const form = reactive({
   installCommand: "",
   testCommand: "python -m pytest tests -q --rootdir . -p no:cacheprovider",
   networkPolicy: "default" as "default" | "disabled" | "install_only",
-  timeoutSeconds: 120
+  timeoutSeconds: 120,
+  artifactPolicyText: formatJsonObject(DEFAULT_ARTIFACT_POLICY),
+  cleanupPolicyText: formatJsonObject(DEFAULT_CLEANUP_POLICY)
 });
 
 const selectedProfile = computed(() => profiles.value.find((profile) => profile.id === selectedProfileId.value) ?? null);
@@ -47,6 +52,18 @@ function capabilityMessage(status: { warning?: string; unavailable_reason?: stri
   return status.warning || status.unavailable_reason || t("runtime.capabilitiesReported");
 }
 
+function formatJsonObject(value: JsonObject | null | undefined, fallback?: JsonObject): string {
+  return JSON.stringify(value ?? fallback ?? {}, null, 2);
+}
+
+function parseJsonObjectField(value: string, fieldName: string): JsonObject {
+  const parsed = JSON.parse(value.trim() || "{}");
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${fieldName} must be a JSON object`);
+  }
+  return parsed as JsonObject;
+}
+
 function applyProfile(profile: RuntimeProfileOut | null) {
   form.name = profile?.name ?? t("runtime.defaultName");
   form.executor = profile?.executor ?? "local_subprocess";
@@ -56,6 +73,8 @@ function applyProfile(profile: RuntimeProfileOut | null) {
   form.testCommand = profile?.test_command ?? "python -m pytest tests -q --rootdir . -p no:cacheprovider";
   form.networkPolicy = profile?.network_policy ?? "default";
   form.timeoutSeconds = Number(profile?.resource_limits?.timeout_seconds ?? 120);
+  form.artifactPolicyText = formatJsonObject(profile?.artifact_policy, DEFAULT_ARTIFACT_POLICY);
+  form.cleanupPolicyText = formatJsonObject(profile?.cleanup_policy, DEFAULT_CLEANUP_POLICY);
 }
 
 async function loadAll() {
@@ -97,9 +116,19 @@ async function saveProfile() {
   if (!selectedProjectId.value) {
     return;
   }
-  saving.value = true;
   errorMessage.value = null;
-  const body = {
+  let artifactPolicy: JsonObject;
+  let cleanupPolicy: JsonObject;
+  try {
+    artifactPolicy = parseJsonObjectField(form.artifactPolicyText, "artifact_policy");
+    cleanupPolicy = parseJsonObjectField(form.cleanupPolicyText, "cleanup_policy");
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("runtime.saveFailed");
+    return;
+  }
+
+  saving.value = true;
+  const body: RuntimeProfileUpsertRequest = {
     name: form.name.trim(),
     executor: form.executor,
     image: form.image.trim() || null,
@@ -107,7 +136,9 @@ async function saveProfile() {
     install_command: form.installCommand.trim() || null,
     test_command: form.testCommand.trim(),
     network_policy: form.networkPolicy,
-    timeout_seconds: Number(form.timeoutSeconds) || 120
+    timeout_seconds: Number(form.timeoutSeconds) || 120,
+    artifact_policy: artifactPolicy,
+    cleanup_policy: cleanupPolicy
   };
   try {
     const saved = selectedProfile.value
@@ -274,6 +305,14 @@ onMounted(() => {
               <span>{{ t("runtime.timeoutSeconds") }}</span>
               <input v-model.number="form.timeoutSeconds" min="1" type="number" />
             </label>
+            <label class="wide">
+              <span>Artifact policy</span>
+              <textarea v-model="form.artifactPolicyText" class="policy-textarea" rows="4" spellcheck="false"></textarea>
+            </label>
+            <label class="wide">
+              <span>Cleanup policy</span>
+              <textarea v-model="form.cleanupPolicyText" class="policy-textarea" rows="4" spellcheck="false"></textarea>
+            </label>
           </div>
         </section>
       </section>
@@ -399,7 +438,8 @@ label.wide {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 36px;
   padding: 7px 9px;
@@ -407,6 +447,17 @@ select {
   border-radius: 6px;
   background: var(--panel);
   color: var(--ink);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.policy-textarea {
+  min-height: 96px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .empty-panel {
@@ -430,3 +481,4 @@ select {
   }
 }
 </style>
+

@@ -57,6 +57,63 @@ function textValue(value: unknown): string {
   }
   return String(value);
 }
+
+function recordValue(source: unknown, key: string): unknown {
+  if (typeof source !== "object" || source === null) {
+    return undefined;
+  }
+  return (source as Record<string, unknown>)[key];
+}
+
+function setupManifest(replay: TestReplayContract): Record<string, unknown> | null {
+  const setup = recordValue(replay.workspace_manifest, "setup");
+  return typeof setup === "object" && setup !== null ? (setup as Record<string, unknown>) : null;
+}
+
+function runtimeSnapshotHash(replay: TestReplayContract): string {
+  return textValue(recordValue(replay.workspace_manifest, "runtime_snapshot_hash"));
+}
+
+function hasSetupError(replay: TestReplayContract): boolean {
+  const code = (replay.error_code ?? "").toUpperCase();
+  const setup = setupManifest(replay);
+  return code === "SETUP_FAILED" || setup?.status === "failed";
+}
+
+function hasExecutorError(replay: TestReplayContract): boolean {
+  if (hasSetupError(replay)) {
+    return false;
+  }
+  const code = (replay.error_code ?? "").toUpperCase();
+  return code === "EXECUTOR_UNAVAILABLE" || code === "EXECUTOR_TIMEOUT" || code.includes("EXECUTOR") || code.includes("DOCKER");
+}
+
+function setupErrorMessage(replay: TestReplayContract): string {
+  if (!hasSetupError(replay)) {
+    return t("common.none");
+  }
+  const setup = setupManifest(replay);
+  const details = [
+    replay.error_message ?? replay.error_code,
+    setup?.exit_code !== undefined ? `exit_code=${setup.exit_code}` : null,
+    setup?.timed_out === true ? "timed_out=true" : null
+  ].filter(Boolean);
+  return textValue(details.join(" · "));
+}
+
+function executorErrorMessage(replay: TestReplayContract): string {
+  if (!hasExecutorError(replay)) {
+    return t("common.none");
+  }
+  return textValue(replay.error_message ?? replay.error_code);
+}
+
+function replayErrorMessage(replay: TestReplayContract): string {
+  if (hasSetupError(replay) || hasExecutorError(replay)) {
+    return t("common.none");
+  }
+  return textValue(replay.error_message ?? replay.error_code);
+}
 </script>
 
 <template>
@@ -148,37 +205,49 @@ function textValue(value: unknown): string {
               </dd>
             </div>
           </template>
-            <div>
-              <dt>Executor</dt>
-              <dd>{{ selectedReplay.replay.runtime_snapshot.executor }}</dd>
-            </div>
-            <div>
-              <dt>Runtime profile</dt>
-              <dd>{{ textValue(selectedReplay.replay.runtime_snapshot.runtime_profile_name ?? selectedReplay.replay.runtime_snapshot.runtime_profile_id) }}</dd>
-            </div>
-            <div>
-              <dt>Timeout</dt>
-              <dd>{{ selectedReplay.replay.runtime_snapshot.timeout_seconds }}s</dd>
-            </div>
-            <div>
-              <dt>Cache</dt>
-              <dd>
-                {{ selectedReplay.replay.cache_status }}
-                <code v-if="selectedReplay.replay.source_replay_id">{{ selectedReplay.replay.source_replay_id }}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>Workspace</dt>
-              <dd>{{ textValue(selectedReplay.replay.workspace_manifest.workspace_root) }}</dd>
-            </div>
-            <div>
-              <dt>Artifact hash</dt>
-              <dd>{{ textValue(selectedReplay.replay.workspace_manifest.generated_test_set_hash) }}</dd>
-            </div>
-            <div>
-              <dt>{{ t("experiments.error") }}</dt>
-              <dd>{{ selectedReplay.replay.error_message ?? t("common.none") }}</dd>
-            </div>
+          <div>
+            <dt>Executor</dt>
+            <dd>{{ selectedReplay.replay.runtime_snapshot.executor }}</dd>
+          </div>
+          <div>
+            <dt>Runtime profile</dt>
+            <dd>{{ textValue(selectedReplay.replay.runtime_snapshot.runtime_profile_name ?? selectedReplay.replay.runtime_snapshot.runtime_profile_id) }}</dd>
+          </div>
+          <div>
+            <dt>Timeout</dt>
+            <dd>{{ selectedReplay.replay.runtime_snapshot.timeout_seconds }}s</dd>
+          </div>
+          <div>
+            <dt>Cache</dt>
+            <dd>
+              {{ selectedReplay.replay.cache_status }}
+              <code v-if="selectedReplay.replay.source_replay_id">{{ selectedReplay.replay.source_replay_id }}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Workspace</dt>
+            <dd>{{ textValue(selectedReplay.replay.workspace_manifest.workspace_root) }}</dd>
+          </div>
+          <div>
+            <dt>Runtime hash</dt>
+            <dd>{{ runtimeSnapshotHash(selectedReplay.replay) }}</dd>
+          </div>
+          <div>
+            <dt>Artifact hash</dt>
+            <dd>{{ textValue(selectedReplay.replay.workspace_manifest.generated_test_set_hash) }}</dd>
+          </div>
+          <div>
+            <dt>Setup error</dt>
+            <dd>{{ setupErrorMessage(selectedReplay.replay) }}</dd>
+          </div>
+          <div>
+            <dt>Executor error</dt>
+            <dd>{{ executorErrorMessage(selectedReplay.replay) }}</dd>
+          </div>
+          <div>
+            <dt>Replay error</dt>
+            <dd>{{ replayErrorMessage(selectedReplay.replay) }}</dd>
+          </div>
         </dl>
       </template>
       <template v-else>
