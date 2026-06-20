@@ -35,6 +35,10 @@ function costText(row: ExperimentMetricRow): string {
   }
   return row.cost_per_captured_bug_status === "ok" ? numberText(row.cost_per_captured_bug) : t("experiments.noBugCaptured");
 }
+
+function hasFalsePositiveWarning(row: ExperimentMetricRow): boolean {
+  return row.metric_status === "ok" && row.false_positive_rate > 0;
+}
 </script>
 
 <template>
@@ -68,6 +72,9 @@ function costText(row: ExperimentMetricRow): string {
             <td>{{ percent(row.false_positive_rate) }}</td>
             <td>
               <span :class="['metric-status', row.metric_status]">{{ metricStatus(row) }}</span>
+              <small v-if="hasFalsePositiveWarning(row)" class="metric-warning">
+                {{ t("comparison.falsePositiveWarning") }}
+              </small>
             </td>
             <td>{{ numberText(row.capture_rate_std) }}</td>
             <td class="mono">{{ numberText(row.avg_tokens) }}</td>
@@ -127,5 +134,14 @@ function costText(row: ExperimentMetricRow): string {
 .metric-status.evaluable_zero_capture {
   background: var(--running-bg);
   color: var(--running);
+}
+
+.metric-warning {
+  display: block;
+  margin-top: 4px;
+  max-width: 180px;
+  color: var(--fail);
+  font-size: 11px;
+  line-height: 1.35;
 }
 </style>

@@ -387,9 +387,9 @@ class DockerPytestExecutor:
             "-e", f"PYTHONPATH=/trace-tools:{self.working_dir}",
             "-e", "PYTHONDONTWRITEBYTECODE=1",
         ]
-        for key, value in self.env_template.items():
-            if value is not None:
-                cmd += ["-e", f"{key}={value}"]
+        for key in self.env_template:
+            if str(key) in os.environ:
+                cmd += ["-e", str(key)]
         cmd.append(self.image)
         cmd += self._build_pytest_args(junit_path, test_paths)
         return cmd

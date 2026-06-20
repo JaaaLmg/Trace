@@ -117,6 +117,22 @@ def test_docker_executor_pull_policy_never_requires_local_image(monkeypatch):
     assert calls == [["docker", "image", "inspect", "missing:test"]]
 
 
+def test_docker_executor_env_template_reads_host_environment(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("SERVICE_URL", "https://service.example")
+    executor = DockerPytestExecutor(
+        image="trace-pytest:3.12",
+        env_template={"SERVICE_URL": "${SERVICE_URL}", "MISSING_VALUE": "${MISSING_VALUE}"},
+        network_policy="disabled",
+    )
+    cmd = executor._docker_run_cmd(tmp_path, ["tests/generated"])
+
+    assert "SERVICE_URL=${SERVICE_URL}" not in cmd
+    assert "MISSING_VALUE=${MISSING_VALUE}" not in cmd
+    assert "SERVICE_URL=https://service.example" not in cmd
+    assert "SERVICE_URL" in cmd
+    assert "MISSING_VALUE" not in cmd
+
+
 def test_docker_executor_runs_pytest_with_local_docker(tmp_path: Path):
     if shutil.which("docker") is None:
         import pytest
