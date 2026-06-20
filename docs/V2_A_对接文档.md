@@ -1,4 +1,4 @@
-# TRACE V2.2 A 线对接文档
+﻿# TRACE V2.2 A 线对接文档
 
 ## 1. 对接范围
 
@@ -139,19 +139,19 @@ Docker executor 不可用时，后端应返回 `executor_unavailable` 或在 exe
 
 ## 6. 推荐联调步骤
 
-以下命令以仓库根目录 `D:\17524\MyCode\Trace` 为例。
+以下命令以仓库根目录 `<TRACE_ROOT>` 为例。
 
 ### 6.1 启动依赖
 
 ```powershell
-cd D:\17524\MyCode\Trace
+cd <TRACE_ROOT>
 docker compose up -d
 ```
 
 ### 6.2 初始化数据库和 demo 数据
 
 ```powershell
-cd D:\17524\MyCode\Trace\backend
+cd <TRACE_ROOT>\backend
 conda activate trace
 python scripts/init_db.py
 python scripts/seed_strategies.py
@@ -161,7 +161,7 @@ python scripts/seed_eval_demo.py
 ### 6.3 启动后端 API
 
 ```powershell
-cd D:\17524\MyCode\Trace\backend
+cd <TRACE_ROOT>\backend
 conda activate trace
 python scripts/run_api.py
 ```
@@ -181,7 +181,7 @@ Invoke-RestMethod http://127.0.0.1:8000/healthz
 ### 6.4 启动 Worker
 
 ```powershell
-cd D:\17524\MyCode\Trace\backend
+cd <TRACE_ROOT>\backend
 conda activate trace
 python scripts/run_worker.py
 ```
@@ -191,7 +191,7 @@ python scripts/run_worker.py
 ### 6.5 启动前端
 
 ```powershell
-cd D:\17524\MyCode\Trace\frontend
+cd <TRACE_ROOT>\frontend
 npm install
 npm run dev
 ```
@@ -239,7 +239,7 @@ Invoke-RestMethod `
 后端完整测试：
 
 ```powershell
-cd D:\17524\MyCode\Trace
+cd <TRACE_ROOT>
 conda activate trace
 python -m pytest backend/tests -q
 ```
@@ -247,7 +247,7 @@ python -m pytest backend/tests -q
 A 线重点测试：
 
 ```powershell
-cd D:\17524\MyCode\Trace
+cd <TRACE_ROOT>
 conda activate trace
 python -m pytest `
   backend/tests/test_stage1_versioning_runtime_profiles.py `
@@ -261,7 +261,7 @@ python -m pytest `
 Docker 可用时可单独跑 Docker integration：
 
 ```powershell
-cd D:\17524\MyCode\Trace
+cd <TRACE_ROOT>
 conda activate trace
 python -m pytest `
   backend/tests/test_executor_runtime_command.py::test_docker_executor_runs_pytest_with_local_docker `
@@ -272,7 +272,7 @@ python -m pytest `
 前端类型检查：
 
 ```powershell
-cd D:\17524\MyCode\Trace
+cd <TRACE_ROOT>
 npm --prefix frontend run typecheck
 ```
 
@@ -366,7 +366,7 @@ RUN pip install --no-cache-dir pytest fastapi httpx
 本地重新构建镜像：
 
 ```powershell
-cd D:\17524\MyCode\Trace
+cd <TRACE_ROOT>
 docker build -f backend\tests\fixtures\docker\pytest.Dockerfile -t trace-pytest:3.12 .
 ```
 
@@ -376,7 +376,7 @@ docker build -f backend\tests\fixtures\docker\pytest.Dockerfile -t trace-pytest:
 - 后端 Docker executor integration 测试通过：
 
 ```powershell
-python -m pytest --basetemp D:\17524\MyCode\Trace\.pytest_tmp_codex `
+python -m pytest --basetemp <TRACE_ROOT>\.pytest_tmp_codex `
   backend/tests/test_executor_runtime_command.py::test_docker_executor_runs_pytest_with_local_docker `
   backend/tests/test_executor_runtime_command.py::test_docker_executor_replays_frozen_tests_clean_and_variant `
   -q -rs

@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from app.db.session import get_engine
 from app.main import create_app
 from app.models.runtime_profile import RuntimeProfile
+from app.models.evaluation import EvalDataset, EvalTask
+from app.models.project import ProjectSnapshot
 from app.models.versioning import PromptVersion, Strategy, ToolSchemaVersion
 from app.services.evaluation_seed import DEMO_DATASET_ID, seed_demo_dataset
 
@@ -251,6 +253,87 @@ def test_runtime_profile_rejects_secret_env_key(tmp_path, clean_db):
         )
         assert response.status_code == 400
         assert "secret" in response.json()["detail"]
+
+
+def test_runtime_profile_rejects_secret_like_env_value(tmp_path, clean_db):
+    app = create_app()
+    with TestClient(app) as client:
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project = client.post("/api/v1/projects", json={"name": "demo-project", "local_path": str(project_root)}).json()
+
+        response = client.post(
+            f"/api/v1/projects/{project['id']}/runtime-profiles",
+            json={
+                "name": "secret-value",
+                "env_template": {"SERVICE_URL": "sk-live-secret-value"},
+            },
+        )
+        assert response.status_code == 400
+        assert "secret" in response.json()["detail"]
+
+        ok = client.post(
+            f"/api/v1/projects/{project['id']}/runtime-profiles",
+            json={
+                "name": "placeholder-value",
+                "env_template": {"SERVICE_URL": "${SERVICE_URL}", "OPTIONAL_FLAG": ""},
+            },
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["env_template"] == {"SERVICE_URL": "${SERVICE_URL}", "OPTIONAL_FLAG": ""}
+
+
+def test_dataset_scoped_runtime_profiles_reject_multi_project_dataset(tmp_path, clean_db):
+    app = create_app()
+    with TestClient(app) as client:
+        root_a = tmp_path / "a"
+        root_b = tmp_path / "b"
+        root_a.mkdir()
+        root_b.mkdir()
+        project_a = client.post("/api/v1/projects", json={"name": "project-a", "local_path": str(root_a)}).json()
+        project_b = client.post("/api/v1/projects", json={"name": "project-b", "local_path": str(root_b)}).json()
+
+        with Session(get_engine()) as session:
+            snap_a = ProjectSnapshot(id="snapshot-a", project_id=project_a["id"], source_kind="local_path", root_path=str(root_a))
+            snap_b = ProjectSnapshot(id="snapshot-b", project_id=project_b["id"], source_kind="local_path", root_path=str(root_b))
+            dataset = EvalDataset(
+                id="dataset-multi-project",
+                name="multi project",
+                version="v1",
+                project_snapshot_ids=[snap_a.id, snap_b.id],
+            )
+            session.add_all([snap_a, snap_b, dataset])
+            session.commit()
+
+            task_a = EvalTask(
+                id="task-a",
+                dataset_id=dataset.id,
+                project_snapshot_id=snap_a.id,
+                target_scope={},
+                goal="a",
+                expected_capabilities=[],
+            )
+            task_b = EvalTask(
+                id="task-b",
+                dataset_id=dataset.id,
+                project_snapshot_id=snap_b.id,
+                target_scope={},
+                goal="b",
+                expected_capabilities=[],
+            )
+            session.add_all([task_a, task_b])
+            session.commit()
+
+        listed = client.get("/api/v1/eval-datasets/dataset-multi-project/runtime-profiles")
+        assert listed.status_code == 409
+        assert "multiple projects" in listed.json()["detail"]
+
+        created = client.post(
+            "/api/v1/eval-datasets/dataset-multi-project/runtime-profiles",
+            json={"name": "ambiguous", "executor": "docker", "image": "trace-pytest:3.12"},
+        )
+        assert created.status_code == 409
+        assert "multiple projects" in created.json()["detail"]
 
 
 def test_runtime_profile_update_and_archive_routes(tmp_path, clean_db):

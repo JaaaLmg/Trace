@@ -45,17 +45,24 @@ def create_project_runtime_profile_route(project_id: str, body: RuntimeProfileCr
 
 
 def _project_id_for_dataset(db: Session, dataset_id: str) -> str:
-    snapshot_id = db.scalar(
-        select(EvalTask.project_snapshot_id)
-        .where(EvalTask.dataset_id == dataset_id)
-        .order_by(EvalTask.created_at.asc(), EvalTask.id.asc())
+    project_ids = sorted(
+        {
+            project_id
+            for project_id in db.scalars(
+                select(ProjectSnapshot.project_id)
+                .join(EvalTask, EvalTask.project_snapshot_id == ProjectSnapshot.id)
+                .where(EvalTask.dataset_id == dataset_id)
+            )
+        }
     )
-    if not snapshot_id:
+    if not project_ids:
         raise HTTPException(status_code=404, detail="dataset has no eval tasks")
-    snapshot = db.get(ProjectSnapshot, snapshot_id)
-    if snapshot is None:
-        raise HTTPException(status_code=404, detail="dataset project snapshot not found")
-    return snapshot.project_id
+    if len(project_ids) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="dataset spans multiple projects; project-scoped runtime profile selection is ambiguous",
+        )
+    return project_ids[0]
 
 
 @router.post("/api/v1/eval-datasets/{dataset_id}/runtime-profiles", response_model=RuntimeProfileOut)
