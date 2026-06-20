@@ -4,6 +4,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.env_templates import sanitize_env_template
 from app.schemas.tools import FailureType
 
 
@@ -228,6 +229,13 @@ class RuntimeSnapshotContract(ContractModel):
     executor_capabilities: dict[str, Any] = Field(default_factory=dict)
     env_keys: list[str] = Field(default_factory=list)
     secret_included: Literal[False] = False
+
+    @model_validator(mode="after")
+    def _sanitize_env_template(self) -> RuntimeSnapshotContract:
+        sanitized = sanitize_env_template(self.env_template)
+        self.env_template = sanitized
+        self.env_keys = sorted(sanitized.keys())
+        return self
 
 
 class DataSourceLabel(ContractModel):

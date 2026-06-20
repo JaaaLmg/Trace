@@ -171,6 +171,38 @@ def test_invalid_clean_replay_collection_error_is_not_false_positive_contract_fa
     assert response.clean_runs[0].clean_metrics.validity_status == "invalid_test_set"
 
 
+def test_metrics_runtime_snapshots_sanitize_legacy_env_templates():
+    payload = _fixture_data()
+    legacy_snapshot = {
+        "executor": "docker",
+        "test_command": "python -m pytest tests -q",
+        "network_policy": "default",
+        "timeout_seconds": 30,
+        "env_template": {
+            "SERVICE_URL": "sk-live-secret-value",
+            "OPTIONAL_FLAG": "",
+            "API_TOKEN": "legacy-token",
+        },
+        "env_keys": ["API_TOKEN", "OPTIONAL_FLAG", "SERVICE_URL"],
+    }
+    payload["clean_runs"][0]["runtime_snapshot"] = legacy_snapshot
+    payload["replay_runs"][0]["runtime_snapshot"] = legacy_snapshot
+
+    response = ExperimentMetricsResponse.model_validate(payload)
+
+    clean_snapshot = response.clean_runs[0].runtime_snapshot.model_dump()
+    replay_snapshot = response.replay_runs[0].runtime_snapshot.model_dump()
+    expected_env = {"SERVICE_URL": "<REDACTED>", "OPTIONAL_FLAG": ""}
+    assert clean_snapshot["env_template"] == expected_env
+    assert replay_snapshot["env_template"] == expected_env
+    assert clean_snapshot["env_keys"] == ["OPTIONAL_FLAG", "SERVICE_URL"]
+    assert replay_snapshot["env_keys"] == ["OPTIONAL_FLAG", "SERVICE_URL"]
+
+    dumped = json.dumps(response.model_dump(), ensure_ascii=False)
+    assert "sk-live-secret-value" not in dumped
+    assert "legacy-token" not in dumped
+
+
 def test_metric_row_rejects_repeat_and_mean_drift():
     base = {
         "strategy_id": "sv-drift",
