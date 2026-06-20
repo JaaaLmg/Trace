@@ -132,6 +132,9 @@ def check_generation_contract(
     route_call_mismatches = _route_call_target_mismatches(tree, declared_by_name, target_type, target_ref)
     if route_call_mismatches:
         violations.append("路由测试请求路径不匹配目标路由：" + ", ".join(route_call_mismatches))
+    route_method_mismatches = _route_call_method_mismatches(tree, declared_by_name, target_type, target_ref)
+    if route_method_mismatches:
+        violations.append("路由测试请求方法不匹配目标路由：" + ", ".join(route_method_mismatches))
     empty_path_param_routes = _empty_path_param_route_tests(tree, source_context or "")
     if empty_path_param_routes:
         violations.append("路由测试使用空 path 参数，无法命中目标 handler：" + ", ".join(empty_path_param_routes))
@@ -195,13 +198,17 @@ def _target_matches(target_type: str | None, target_ref: str | None, target_func
 
 
 def _route_path_without_method(value: str) -> str:
+    return _route_method_and_path(value)[1]
+
+
+def _route_method_and_path(value: str) -> tuple[str | None, str]:
     normalized = value.strip()
     if normalized.lower().startswith("route:"):
         normalized = normalized.split(":", 1)[1].strip()
     parts = normalized.split(maxsplit=1)
     if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
-        return parts[1].strip()
-    return normalized
+        return parts[0].lower(), parts[1].strip()
+    return None, normalized
 
 
 def _route_call_target_mismatches(
@@ -230,17 +237,54 @@ def _route_call_target_mismatches(
     return sorted(offenders)
 
 
+def _route_call_method_mismatches(
+    tree: ast.AST,
+    declared_by_name: dict[str, Any],
+    target_type: str | None,
+    target_ref: str | None,
+) -> list[str]:
+    if target_type != "route":
+        return []
+
+    offenders: set[str] = set()
+    plan_method, plan_route = _route_method_and_path(target_ref or "")
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        case = declared_by_name.get(fn.name)
+        if case is None:
+            continue
+        case_method, case_route = _route_method_and_path(str(_field(case, "target_route") or "").strip())
+        expected_method = case_method or plan_method
+        expected_route = case_route or plan_route
+        if expected_method is None or not expected_route:
+            continue
+        methods_for_target_path = {
+            method
+            for method, path in _static_route_calls(fn)
+            if _route_path_matches_template(path, expected_route)
+        }
+        if methods_for_target_path and expected_method not in methods_for_target_path:
+            offenders.add(fn.name)
+    return sorted(offenders)
+
+
 def _static_route_call_paths(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
-    paths: list[str] = []
+    return [path for _method, path in _static_route_calls(fn)]
+
+
+def _static_route_calls(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
     for node in ast.walk(fn):
-        if not isinstance(node, ast.Call) or _last(node.func).lower() not in _HTTP_VERBS:
+        method = _last(node.func).lower() if isinstance(node, ast.Call) else ""
+        if method not in _HTTP_VERBS:
             continue
         if not node.args:
             continue
         path = _static_route_path(node.args[0])
         if path is not None:
-            paths.append(path)
-    return paths
+            calls.append((method, path))
+    return calls
 
 
 def _static_route_path(node: ast.AST) -> str | None:

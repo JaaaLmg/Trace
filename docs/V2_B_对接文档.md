@@ -68,6 +68,7 @@ conda run -n trace pytest backend/tests/test_contract_guard.py -q
 - route oracle 使用不存在的 path 参数值时，在有常量证据的情况下被 Contract Guard 拒绝。
 - route oracle 使用存在的 path 参数值时继续放行。
 - route case 的真实 HTTP 请求路径必须命中声明的目标 route template，避免 cases 元数据绑定目标路由但测试实际请求其它 endpoint。
+- 当目标 route 合同显式带 `GET/POST/...` 时，Contract Guard 会拒绝请求路径命中但 HTTP method 不匹配的 route case。
 - audit-only EvaluationEvent 不进入 source context prompt，只留下过滤风险说明。
 - mutation confirmation 拒绝伪造/过期 audit report 中的 selected candidate。
 - mutation confirmation 拒绝非 `auto_mutation` 的 bug_type。

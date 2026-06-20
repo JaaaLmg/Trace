@@ -331,6 +331,24 @@ def test_generation_contract_rejects_route_call_that_misses_target_route():
     assert any("请求路径不匹配目标路由" in violation for violation in violations)
 
 
+def test_generation_contract_rejects_route_call_method_that_misses_target_method():
+    content = (
+        "def test_price(client):\n"
+        "    response = client.post('/price/book')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['item'] == 'book'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_price", "target_route": "GET /price/{item}", "assertion_summary": "验证价格查询"}],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_fixtures=["client"],
+    )
+
+    assert any("请求方法不匹配目标路由" in violation for violation in violations)
+
+
 PRICE_ROUTE_SOURCE_CONTEXT = """## shop/api.py:11-15 (get_price)
 ```python
 @app.get("/price/{item}")
