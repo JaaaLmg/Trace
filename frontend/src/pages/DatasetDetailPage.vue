@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { ArrowLeft, Bug, CheckCircle2, Database, FlaskConical, GitBranch, RefreshCw } from "@lucide/vue";
-import { confirmSelectedMutationCandidate, createEvalDataset, dryRunTaskMutationDiscovery, getEvalDataset } from "../api/evaluation";
+import { confirmSelectedMutationCandidate, createBugVariant, createEvalDataset, createEvalTask, createSeededBug, dryRunTaskMutationDiscovery, getEvalDataset } from "../api/evaluation";
 import JsonViewer from "../components/JsonViewer.vue";
 import { demoEvalDataset } from "../demo/staticRunFixture";
 import { useLatestRequest } from "../composables/useLatestRequest";
@@ -61,6 +61,30 @@ const confirmForm = ref({
   expectedDetection: "",
   variantName: "",
   probeJson: '{\n  "target_kind": "function",\n  "probe": "",\n  "clean_value": null,\n  "buggy_value": null\n}'
+});
+const authoring = ref(false);
+const taskForm = ref({
+  id: "",
+  projectSnapshotId: "",
+  goal: "",
+  expectedCapabilities: "",
+  targetScopeJson: "{}"
+});
+const bugForm = ref({
+  id: "",
+  bugType: "semantic",
+  description: "",
+  expectedDetection: ""
+});
+const variantForm = ref({
+  seededBugId: "",
+  id: "",
+  variantName: "",
+  patchFile: "",
+  patchOld: "",
+  patchNew: "",
+  mutatedSnapshotId: "",
+  groundTruthJson: "{}"
 });
 const datasetRequest = useLatestRequest();
 
@@ -232,6 +256,105 @@ function capabilityText(task: EvalTaskDetailOut): string {
   return task.expected_capabilities.length > 0 ? task.expected_capabilities.map((item) => String(item)).join(", ") : t("common.none");
 }
 
+function parseJsonObject(value: string, messageKey: string): JsonObject {
+  const parsed = JSON.parse(value || "{}") as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(t(messageKey));
+  }
+  return parsed as JsonObject;
+}
+
+function commaList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function submitTask() {
+  if (props.dataSource !== "api" || !dataset.value) {
+    return;
+  }
+  creating.value = true;
+  errorMessage.value = null;
+  createMessage.value = null;
+  try {
+    const targetScope = parseJsonObject(taskForm.value.targetScopeJson, "datasets.targetScopeJsonInvalid");
+    const created = await createEvalTask(dataset.value.id, {
+      id: taskForm.value.id.trim() || null,
+      project_snapshot_id: taskForm.value.projectSnapshotId.trim(),
+      target_scope: targetScope,
+      goal: taskForm.value.goal.trim(),
+      expected_capabilities: commaList(taskForm.value.expectedCapabilities)
+    });
+    createMessage.value = `${t("datasets.createdTask")}: ${created.id}`;
+    await loadDataset();
+    selectedTaskId.value = created.id;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("datasets.createTaskFailed");
+  } finally {
+    creating.value = false;
+  }
+}
+
+async function submitSeededBug() {
+  const task = selectedTask.value;
+  if (props.dataSource !== "api" || !task) {
+    return;
+  }
+  creating.value = true;
+  errorMessage.value = null;
+  createMessage.value = null;
+  try {
+    const created = await createSeededBug(task.id, {
+      id: bugForm.value.id.trim() || null,
+      bug_type: bugForm.value.bugType.trim(),
+      description: bugForm.value.description.trim(),
+      expected_detection: bugForm.value.expectedDetection.trim()
+    });
+    createMessage.value = `${t("datasets.createdSeededBug")}: ${created.id}`;
+    await loadDataset();
+    selectedTaskId.value = task.id;
+    variantForm.value.seededBugId = created.id;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("datasets.createSeededBugFailed");
+  } finally {
+    creating.value = false;
+  }
+}
+
+async function submitVariant() {
+  if (props.dataSource !== "api") {
+    return;
+  }
+  creating.value = true;
+  errorMessage.value = null;
+  createMessage.value = null;
+  try {
+    const groundTruth = parseJsonObject(variantForm.value.groundTruthJson, "datasets.groundTruthJsonInvalid");
+    if (groundTruth.source === "auto_mutation") {
+      throw new Error(t("datasets.autoMutationVariantBlocked"));
+    }
+    const created = await createBugVariant(variantForm.value.seededBugId.trim(), {
+      id: variantForm.value.id.trim() || null,
+      variant_name: variantForm.value.variantName.trim(),
+      canonical_kind: "patch",
+      patch: {
+        file: variantForm.value.patchFile.trim(),
+        old: variantForm.value.patchOld,
+        new: variantForm.value.patchNew
+      },
+      mutated_snapshot_id: variantForm.value.mutatedSnapshotId.trim() || null,
+      ground_truth: groundTruth
+    });
+    createMessage.value = `${t("datasets.createdVariant")}: ${created.id}`;
+    await loadDataset();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("datasets.createVariantFailed");
+  } finally {
+    creating.value = false;
+  }
+}
 async function loadDataset() {
   const requestSeq = datasetRequest.next();
   if (isCreateOnly.value) {
@@ -395,6 +518,117 @@ watch(
           <strong>{{ dataset.project_snapshot_ids.length }}</strong>
           <small>{{ dataset.project_snapshot_ids.join(", ") || t("common.none") }}</small>
         </article>
+      </section>
+
+      <section v-if="props.dataSource === 'api'" class="subtle-panel authoring-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">DATASET AUTHORING</p>
+            <h2>{{ t("datasets.authoring") }}</h2>
+          </div>
+          <button class="text-button" type="button" @click="authoring = !authoring">
+            {{ authoring ? t("json.collapse") : t("json.expand") }}
+          </button>
+        </div>
+
+        <div v-if="authoring" class="authoring-grid">
+          <form class="authoring-form" @submit.prevent="submitTask">
+            <div class="form-title">
+              <strong>{{ t("datasets.createTask") }}</strong>
+              <small>{{ t("datasets.task") }}</small>
+            </div>
+            <label>
+              <span>{{ t("experiments.optionalId") }}</span>
+              <input v-model="taskForm.id" type="text" placeholder="task-local-pricing" />
+            </label>
+            <label>
+              <span>{{ t("datasets.snapshot") }}</span>
+              <input v-model="taskForm.projectSnapshotId" type="text" placeholder="snapshot id" required />
+            </label>
+            <label>
+              <span>{{ t("projects.goal") }}</span>
+              <input v-model="taskForm.goal" type="text" required />
+            </label>
+            <label>
+              <span>{{ t("datasets.capabilities") }}</span>
+              <input v-model="taskForm.expectedCapabilities" type="text" placeholder="boundary, validation" />
+            </label>
+            <label class="wide-field">
+              <span>{{ t("datasets.targetScope") }}</span>
+              <textarea v-model="taskForm.targetScopeJson" rows="5" spellcheck="false" />
+            </label>
+            <button class="text-button" type="submit" :disabled="creating">{{ t("datasets.createTask") }}</button>
+          </form>
+
+          <form class="authoring-form" @submit.prevent="submitSeededBug">
+            <div class="form-title">
+              <strong>{{ t("datasets.createSeededBug") }}</strong>
+              <small>{{ selectedTask?.id ?? t("common.none") }}</small>
+            </div>
+            <label>
+              <span>{{ t("experiments.optionalId") }}</span>
+              <input v-model="bugForm.id" type="text" placeholder="bug-local-pricing" />
+            </label>
+            <label>
+              <span>{{ t("datasets.bugType") }}</span>
+              <input v-model="bugForm.bugType" type="text" required />
+            </label>
+            <label>
+              <span>{{ t("projects.description") }}</span>
+              <input v-model="bugForm.description" type="text" required />
+            </label>
+            <label>
+              <span>{{ t("datasets.expectedDetection") }}</span>
+              <input v-model="bugForm.expectedDetection" type="text" required />
+            </label>
+            <button class="text-button" type="submit" :disabled="creating || !selectedTask">{{ t("datasets.createSeededBug") }}</button>
+          </form>
+
+          <form class="authoring-form variant-authoring" @submit.prevent="submitVariant">
+            <div class="form-title">
+              <strong>{{ t("datasets.createVariant") }}</strong>
+              <small>{{ t("datasets.canonicalKind") }} patch</small>
+            </div>
+            <label>
+              <span>{{ t("datasets.seededBugId") }}</span>
+              <select v-model="variantForm.seededBugId" required>
+                <option value="">{{ t("common.none") }}</option>
+                <option v-for="bug in selectedTask?.seeded_bugs ?? []" :key="bug.id" :value="bug.id">{{ bug.id }}</option>
+              </select>
+            </label>
+            <label>
+              <span>{{ t("experiments.optionalId") }}</span>
+              <input v-model="variantForm.id" type="text" placeholder="variant-local-pricing" />
+            </label>
+            <label>
+              <span>{{ t("datasets.variantName") }}</span>
+              <input v-model="variantForm.variantName" type="text" required />
+            </label>
+            <label>
+              <span>{{ t("datasets.snapshot") }}</span>
+              <input v-model="variantForm.mutatedSnapshotId" type="text" placeholder="optional mutated snapshot" />
+            </label>
+            <label>
+              <span>{{ t("datasets.patchFile") }}</span>
+              <input v-model="variantForm.patchFile" type="text" placeholder="shop/pricing.py" required />
+            </label>
+            <label>
+              <span>{{ t("datasets.patchOld") }}</span>
+              <textarea v-model="variantForm.patchOld" rows="4" spellcheck="false" required />
+            </label>
+            <label>
+              <span>{{ t("datasets.patchNew") }}</span>
+              <textarea v-model="variantForm.patchNew" rows="4" spellcheck="false" />
+            </label>
+            <label>
+              <span>{{ t("datasets.groundTruthJson") }}</span>
+              <textarea v-model="variantForm.groundTruthJson" rows="4" spellcheck="false" />
+            </label>
+            <button class="text-button" type="submit" :disabled="creating || !variantForm.seededBugId.trim()">
+              {{ t("datasets.createVariant") }}
+            </button>
+          </form>
+        </div>
       </section>
 
       <section class="dataset-grid">
@@ -617,7 +851,8 @@ watch(
 .hero-band,
 .metadata-grid,
 .dataset-grid,
-.create-dataset-panel {
+.create-dataset-panel,
+.authoring-panel {
   margin-top: 18px;
 }
 
@@ -672,6 +907,60 @@ watch(
   font-size: 11px;
 }
 
+.authoring-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.authoring-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.authoring-form {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.authoring-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.authoring-form label span,
+.form-title small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.authoring-form textarea {
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.form-title {
+  display: grid;
+  gap: 2px;
+}
+
+.variant-authoring {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.variant-authoring .form-title,
+.variant-authoring button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -680,6 +969,7 @@ watch(
 
 .meta-tile,
 .create-dataset-panel,
+.authoring-panel,
 .task-list,
 .task-overview,
 .json-panel,
@@ -712,6 +1002,9 @@ watch(
 }
 
 .dataset-form-grid input,
+.authoring-form input,
+.authoring-form select,
+.authoring-form textarea,
 .confirm-grid input,
 .confirm-grid textarea,
 .mutation-controls input {
@@ -939,7 +1232,9 @@ watch(
   .hero-band,
   .metadata-grid,
   .dataset-grid,
-  .dataset-form-grid {
+  .dataset-form-grid,
+  .authoring-grid,
+  .variant-authoring {
     grid-template-columns: 1fr;
   }
 

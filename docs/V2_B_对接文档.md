@@ -47,6 +47,8 @@ Mutation confirmation 入口不再信任客户端回传的 audit candidate。con
 
 Dataset UI 已接入后端已有 task / seeded bug / variant / mutation discovery API 合同。UI 目前只做最小链路：对选中 task 发起 mutation dry-run、展示 selected/excluded candidate、由用户选择 selected candidate 并提交 probe JSON 调用 `confirm-selected`。由于 dry-run API 返回 discovery 而不是完整 audit report，UI 会基于当前 task、dry-run 参数和 discovery 组装 `v2.mutation_discovery_audit`；这不是信任前端授权，服务端 confirm 仍会按 audit report 参数重新 discovery 并逐字段比对 candidate。UI 不提供绕过 confirmation 的 `auto_mutation` variant 自由创建入口。
 
+Dataset UI 也提供普通 authoring 入口，用于创建 eval task、seeded bug 和 `source=seeded_bug` 的 patch variant；前端会拒绝 `ground_truth.source=auto_mutation`，后端普通 variant API 仍是最终防线。
+
 ## 4. 当前测试证据
 
 已验证：
