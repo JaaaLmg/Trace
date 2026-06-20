@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 _SKIP_NAMES = {"skip", "skipif", "xfail"}
 _BROAD_EXC = {"Exception", "BaseException"}
 _HTTP_VERBS = {"get", "post", "put", "delete", "patch", "options", "head"}
+_REQUEST_FIELD_PAYLOAD_KWARGS = {"json", "params", "data"}
 _EXCEPTION_BASES_ENV_KEY = "__trace_contract_guard_exception_bases__"
 _RESPONSE_MODEL_LIST_CONTAINERS = {"list", "List", "Sequence"}
 _PYTEST_BUILTIN_FIXTURES = {
@@ -1543,7 +1544,7 @@ def _unknown_request_fields(tree: ast.AST, allowed_request_fields: Sequence[str]
             if not isinstance(node, ast.Call):
                 continue
             for kw in node.keywords:
-                if kw.arg not in {"json", "params"}:
+                if kw.arg not in _REQUEST_FIELD_PAYLOAD_KWARGS:
                     continue
                 keys = _dict_literal_keys(kw.value)
                 if keys is None and isinstance(kw.value, ast.Name):
@@ -1594,7 +1595,7 @@ def _route_tests_with_request_fields(tree: ast.AST, declared_by_name: dict[str, 
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name not in route_tests:
             continue
         for node in ast.walk(fn):
-            if isinstance(node, ast.Call) and any(kw.arg in {"json", "params"} for kw in node.keywords):
+            if isinstance(node, ast.Call) and any(kw.arg in _REQUEST_FIELD_PAYLOAD_KWARGS for kw in node.keywords):
                 offenders.add(fn.name)
     return sorted(offenders)
 

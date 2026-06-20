@@ -177,6 +177,23 @@ def test_generation_contract_rejects_unknown_query_param_field():
     assert any("made_up" in violation for violation in violations)
 
 
+def test_generation_contract_rejects_unknown_form_data_request_field():
+    content = (
+        "def test_create(client):\n"
+        "    response = client.post('/prices', data={'sku': 'A', 'made_up': 1})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['sku'] == 'A'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/prices", "assertion_summary": "验证创建价格"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=["sku", "quantity"],
+    )
+
+    assert any("made_up" in violation for violation in violations)
+
 def test_generation_contract_accepts_query_param_field_from_request_evidence():
     content = (
         "def test_search(client):\n"
@@ -250,6 +267,24 @@ def test_generation_contract_rejects_query_params_without_request_field_evidence
 
     assert any("请求字段缺少证据" in violation for violation in violations)
 
+
+def test_generation_contract_rejects_form_data_without_request_field_evidence():
+    content = (
+        "def test_create(client):\n"
+        "    response = client.post('/prices', data={'sku': 'A'})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['sku'] == 'A'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/prices", "assertion_summary": "验证创建价格"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=[],
+        allowed_fixtures=["client"],
+    )
+
+    assert any("请求字段缺少证据" in violation for violation in violations)
 
 def test_generation_contract_allows_route_without_json_body_when_model_schema_missing():
     content = (
