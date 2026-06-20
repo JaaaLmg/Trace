@@ -14,11 +14,11 @@ def test_create_runtime_profile_and_list_includes_it(tmp_path, clean_db):
 
         created = client.post(
             f"/api/v1/projects/{project['id']}/runtime-profiles",
-            json={"name": "custom", "test_command": "python -m pytest -q -k pricing", "network_policy": "disabled"},
+            json={"name": "custom", "test_command": "python -m pytest -q -k pricing"},
         )
         assert created.status_code == 200
         profile = created.json()
-        assert profile["network_policy"] == "disabled"
+        assert profile["network_policy"] == "default"
         assert profile["test_command"] == "python -m pytest -q -k pricing"
 
         listed = client.get(f"/api/v1/projects/{project['id']}/runtime-profiles").json()
