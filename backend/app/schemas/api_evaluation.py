@@ -4,8 +4,9 @@ from typing import Any
 from datetime import datetime
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from app.core.env_templates import sanitize_env_template
 from app.schemas.evaluation import LlmOverride, MutationDiscoveryAuditReportContract
 
 
@@ -282,6 +283,14 @@ class TestReplayOut(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     created_at: datetime
+
+    @field_serializer("runtime_snapshot")
+    def serialize_runtime_snapshot(self, runtime_snapshot: dict) -> dict:
+        snapshot = dict(runtime_snapshot or {})
+        if "env_template" in snapshot:
+            snapshot["env_template"] = sanitize_env_template(snapshot.get("env_template"))
+            snapshot["env_keys"] = sorted(snapshot["env_template"].keys())
+        return snapshot
 
 
 class ExperimentCleanupRequest(BaseModel):

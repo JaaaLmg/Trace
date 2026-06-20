@@ -4,11 +4,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+import app.models.test_plan as test_plan_models
+import app.models.test_run as test_run_models
 from app.db.session import get_engine
 from app.main import create_app
 from app.models.runtime_profile import RuntimeProfile
 from app.models.evaluation import EvalDataset, EvalTask
-from app.models.project import ProjectSnapshot
+from app.models.project import Project, ProjectSnapshot
 from app.models.versioning import PromptVersion, Strategy, ToolSchemaVersion
 from app.services.evaluation_seed import DEMO_DATASET_ID, seed_demo_dataset
 
@@ -281,6 +283,162 @@ def test_runtime_profile_rejects_secret_like_env_value(tmp_path, clean_db):
         )
         assert ok.status_code == 200, ok.text
         assert ok.json()["env_template"] == {"SERVICE_URL": "${SERVICE_URL}", "OPTIONAL_FLAG": ""}
+
+
+def test_runtime_profile_api_redacts_legacy_secret_env_value(tmp_path, clean_db):
+    app = create_app()
+    with TestClient(app) as client:
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project = client.post("/api/v1/projects", json={"name": "demo-project", "local_path": str(project_root)}).json()
+
+        with Session(get_engine()) as session:
+            profile = RuntimeProfile(
+                id="legacy-secret-profile",
+                project_id=project["id"],
+                name="legacy secret",
+                executor="docker",
+                image="trace-pytest:3.12",
+                test_command="python -m pytest tests -q",
+                env_template={
+                    "SERVICE_URL": "sk-live-secret-value",
+                    "OPTIONAL_FLAG": "",
+                    "API_TOKEN": "legacy-token",
+                },
+                resource_limits={"timeout_seconds": 30},
+                network_policy="disabled",
+                artifact_policy={"retain": "evidence"},
+                cleanup_policy={"mode": "manual"},
+            )
+            session.add(profile)
+            session.commit()
+
+        detail = client.get("/api/v1/runtime-profiles/legacy-secret-profile")
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["env_template"] == {
+            "SERVICE_URL": "<REDACTED>",
+            "OPTIONAL_FLAG": "",
+        }
+
+        listed = client.get(f"/api/v1/projects/{project['id']}/runtime-profiles")
+        assert listed.status_code == 200, listed.text
+        [profile_out] = [item for item in listed.json() if item["id"] == "legacy-secret-profile"]
+        assert profile_out["env_template"] == {"SERVICE_URL": "<REDACTED>", "OPTIONAL_FLAG": ""}
+
+
+def test_create_run_sanitizes_legacy_runtime_profile_snapshot(monkeypatch, tmp_path, clean_db):
+    calls = []
+
+    class DummyTask:
+        def delay(self, run_id, budget_override):
+            calls.append((run_id, budget_override))
+
+    import app.workers.tasks as task_module
+
+    monkeypatch.setattr(task_module, "execute_run_task", DummyTask())
+
+    app = create_app()
+    with TestClient(app) as client:
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        (project_root / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+        project = client.post("/api/v1/projects", json={"name": "demo-project", "local_path": str(project_root)}).json()
+        snapshot = client.post(f"/api/v1/projects/{project['id']}/snapshots", json={}).json()
+        direct = client.get("/api/v1/strategy-versions/sv-direct-v1").json()
+        plan = client.post(
+            "/api/v1/test-plans",
+            json={
+                "project_id": project["id"],
+                "name": "demo-plan",
+                "target_scope": [],
+                "goal": "测试 calc 模块",
+                "budget": {"timeout_seconds": 60, "allow_reflection": False},
+                "default_strategy_version_id": direct["id"],
+            },
+        ).json()
+
+        with Session(get_engine()) as session:
+            profile = RuntimeProfile(
+                id="legacy-run-profile",
+                project_id=project["id"],
+                name="legacy run secret",
+                executor="docker",
+                image="trace-pytest:3.12",
+                working_dir="/workspace",
+                test_command="python -m pytest tests -q",
+                env_template={"SERVICE_URL": "sk-live-secret-value", "OPTIONAL_FLAG": "", "API_TOKEN": "legacy-token"},
+                resource_limits={"timeout_seconds": 30},
+                network_policy="disabled",
+                artifact_policy={"retain": "evidence", "image_pull_policy": "never"},
+                cleanup_policy={"mode": "manual"},
+            )
+            session.add(profile)
+            session.commit()
+
+        response = client.post(
+            f"/api/v1/test-plans/{plan['id']}/runs",
+            json={
+                "snapshot_id": snapshot["id"],
+                "runtime_profile_id": "legacy-run-profile",
+                "budget_override": {"timeout_seconds": 45},
+            },
+        )
+        assert response.status_code == 200, response.text
+        runtime_snapshot = response.json()["runtime_snapshot"]
+        assert runtime_snapshot["env_template"] == {"SERVICE_URL": "<REDACTED>", "OPTIONAL_FLAG": ""}
+        assert runtime_snapshot["env_keys"] == ["OPTIONAL_FLAG", "SERVICE_URL"]
+        assert "sk-live-secret-value" not in response.text
+        assert "legacy-token" not in response.text
+        assert calls
+
+
+def test_run_detail_redacts_legacy_frozen_runtime_snapshot(tmp_path, clean_db):
+    app = create_app()
+    with TestClient(app) as client:
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        with Session(get_engine()) as session:
+            project = Project(id="project-legacy-run", name="legacy", local_path=str(project_root))
+            snapshot = ProjectSnapshot(
+                id="snapshot-legacy-run",
+                project_id=project.id,
+                source_kind="local_path",
+                root_path=str(project_root),
+            )
+            plan = test_plan_models.TestPlan(
+                id="plan-legacy-run",
+                project_id=project.id,
+                name="legacy plan",
+                target_scope=[],
+                goal="legacy",
+                budget={},
+                default_strategy_version_id="sv-direct-v1",
+            )
+            run = test_run_models.TestRun(
+                id="run-legacy-secret-snapshot",
+                test_plan_id=plan.id,
+                project_snapshot_id=snapshot.id,
+                strategy_version_id="sv-direct-v1",
+                runtime_snapshot={
+                    "executor": "docker",
+                    "test_command": "python -m pytest tests -q",
+                    "network_policy": "disabled",
+                    "timeout_seconds": 30,
+                    "env_template": {"SERVICE_URL": "sk-live-secret-value", "API_TOKEN": "legacy-token"},
+                    "env_keys": ["API_TOKEN", "SERVICE_URL"],
+                },
+                strategy_snapshot={},
+            )
+            session.add_all([project, snapshot, plan, run])
+            session.commit()
+
+        response = client.get("/api/v1/test-runs/run-legacy-secret-snapshot")
+        assert response.status_code == 200, response.text
+        assert response.json()["runtime_snapshot"]["env_template"] == {"SERVICE_URL": "<REDACTED>"}
+        assert response.json()["runtime_snapshot"]["env_keys"] == ["SERVICE_URL"]
+        assert "sk-live-secret-value" not in response.text
+        assert "legacy-token" not in response.text
 
 
 def test_dataset_scoped_runtime_profiles_reject_multi_project_dataset(tmp_path, clean_db):
