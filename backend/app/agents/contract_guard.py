@@ -101,13 +101,13 @@ def check_generation_contract(
         violations.append("生成测试没有任何测试函数")
     if _count_checks(tree) == 0:
         violations.append("生成测试没有任何断言/pytest.raises（疑似空测试）")
-    route_json_without_schema = (
-        _route_tests_with_json_body(tree, declared_by_name)
+    route_fields_without_evidence = (
+        _route_tests_with_request_fields(tree, declared_by_name)
         if allowed_request_fields is not None and not list(allowed_request_fields)
         else []
     )
-    if route_json_without_schema:
-        violations.append("请求 JSON 缺少模型字段证据：" + ", ".join(route_json_without_schema))
+    if route_fields_without_evidence:
+        violations.append("请求字段缺少证据：" + ", ".join(route_fields_without_evidence))
     unknown_fields = _unknown_request_fields(tree, allowed_request_fields or [])
     if unknown_fields:
         violations.append("请求字段缺少模型证据：" + ", ".join(unknown_fields))
@@ -1581,7 +1581,7 @@ def _dict_literal_keys(node: ast.AST | None) -> set[str] | None:
     return keys
 
 
-def _route_tests_with_json_body(tree: ast.AST, declared_by_name: dict[str, Any]) -> list[str]:
+def _route_tests_with_request_fields(tree: ast.AST, declared_by_name: dict[str, Any]) -> list[str]:
     route_tests = {
         name
         for name, case in declared_by_name.items()
@@ -1594,7 +1594,7 @@ def _route_tests_with_json_body(tree: ast.AST, declared_by_name: dict[str, Any])
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name not in route_tests:
             continue
         for node in ast.walk(fn):
-            if isinstance(node, ast.Call) and any(kw.arg == "json" for kw in node.keywords):
+            if isinstance(node, ast.Call) and any(kw.arg in {"json", "params"} for kw in node.keywords):
                 offenders.add(fn.name)
     return sorted(offenders)
 

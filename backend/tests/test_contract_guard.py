@@ -229,7 +229,26 @@ def test_generation_contract_rejects_json_body_without_model_schema():
         allowed_fixtures=["client"],
     )
 
-    assert any("请求 JSON 缺少模型字段证据" in violation for violation in violations)
+    assert any("请求字段缺少证据" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_query_params_without_request_field_evidence():
+    content = (
+        "def test_search(client):\n"
+        "    response = client.get('/prices', params={'sku': 'A'})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['sku'] == 'A'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_search", "target_route": "/prices", "assertion_summary": "验证价格查询"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=[],
+        allowed_fixtures=["client"],
+    )
+
+    assert any("请求字段缺少证据" in violation for violation in violations)
 
 
 def test_generation_contract_allows_route_without_json_body_when_model_schema_missing():
