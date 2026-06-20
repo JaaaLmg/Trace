@@ -521,6 +521,9 @@ def _data_source(experiment: Experiment, rows: list[dict]) -> dict:
         models.append(display.get("model"))
     provider = next((p for p in providers if p), None)
     model = next((m for m in models if m), None)
+    override = experiment.llm_override or {}
+    provider = provider or override.get("provider")
+    model = model or override.get("model")
     kind = "mock" if provider == "mock" else "real_llm"
     return {
         "kind": kind,
@@ -669,6 +672,7 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
             "id": experiment.id,
             "name": experiment.name,
             "dataset_id": experiment.dataset_id,
+            "runtime_profile_id": experiment.runtime_profile_id,
             "strategy_version_ids": _experiment_strategy_ids(session, experiment.id),
             "repeat_count": experiment.repeat_count,
             "llm_override": experiment.llm_override,

@@ -248,14 +248,25 @@ def create_experiment(
     llm_override: LlmOverride | dict | None = None,
     experiment_id: str | None = None,
 ) -> dict:
-    if session.get(EvalDataset, dataset_id) is None:
+    dataset = session.get(EvalDataset, dataset_id)
+    if dataset is None:
         raise ExperimentNotFoundError("dataset not found")
+    dataset_project_ids = {
+        snapshot.project_id
+        for snapshot in session.scalars(
+            select(ProjectSnapshot)
+            .join(EvalTask, EvalTask.project_snapshot_id == ProjectSnapshot.id)
+            .where(EvalTask.dataset_id == dataset_id)
+        )
+    }
     if runtime_profile_id is not None:
         profile = get_runtime_profile(session, runtime_profile_id)
         if profile is None:
             raise ExperimentNotFoundError("runtime profile not found")
         if profile.archived_at is not None:
             raise ExperimentConflictError("archived runtime profile cannot be used for a new experiment")
+        if dataset_project_ids and profile.project_id not in dataset_project_ids:
+            raise ExperimentConflictError("runtime profile does not belong to the selected dataset project")
     if experiment_id is not None and session.get(Experiment, experiment_id) is not None:
         raise ExperimentConflictError("experiment id already exists")
     for strategy_version_id in strategy_version_ids:

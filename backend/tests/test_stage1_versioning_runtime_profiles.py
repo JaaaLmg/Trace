@@ -8,6 +8,7 @@ from app.db.session import get_engine
 from app.main import create_app
 from app.models.runtime_profile import RuntimeProfile
 from app.models.versioning import PromptVersion, Strategy, ToolSchemaVersion
+from app.services.evaluation_seed import DEMO_DATASET_ID, seed_demo_dataset
 
 
 def test_stage1_seed_creates_versioning_records(clean_db):
@@ -152,6 +153,87 @@ def test_runtime_profile_accepts_docker_profile_with_image(tmp_path, clean_db):
         assert profile["executor"] == "docker"
         assert profile["image"] == "python:3.12-slim"
         assert profile["resource_limits"]["timeout_seconds"] == 30
+
+
+def test_dataset_scoped_runtime_profile_create_targets_dataset_project(clean_db):
+    app = create_app()
+    with TestClient(app) as client:
+        with Session(get_engine()) as session:
+            seed_demo_dataset(session)
+
+        response = client.post(
+            f"/api/v1/eval-datasets/{DEMO_DATASET_ID}/runtime-profiles",
+            json={
+                "name": "dataset docker",
+                "executor": "docker",
+                "image": "trace-pytest:3.12",
+                "working_dir": "/workspace",
+                "test_command": "python -m pytest tests -q",
+                "network_policy": "disabled",
+                "timeout_seconds": 120,
+                "artifact_policy": {"retain": "evidence", "image_pull_policy": "never"},
+            },
+        )
+        assert response.status_code == 200, response.text
+        created = response.json()
+        assert created["executor"] == "docker"
+
+        profiles = client.get(f"/api/v1/eval-datasets/{DEMO_DATASET_ID}/runtime-profiles")
+        assert profiles.status_code == 200, profiles.text
+        assert any(profile["id"] == created["id"] for profile in profiles.json())
+
+        experiment = client.post(
+            "/api/v1/experiments",
+            json={
+                "id": "exp-dataset-docker-profile",
+                "name": "dataset docker profile",
+                "dataset_id": DEMO_DATASET_ID,
+                "runtime_profile_id": created["id"],
+                "strategy_version_ids": ["sv-direct-v1"],
+                "repeat_count": 1,
+                "llm_override": {"provider": "mock", "model": "mock-1"},
+            },
+        )
+        assert experiment.status_code == 200, experiment.text
+
+        metrics = client.get("/api/v1/experiments/exp-dataset-docker-profile/metrics")
+        assert metrics.status_code == 200, metrics.text
+        assert metrics.json()["experiment"]["runtime_profile_id"] == created["id"]
+
+
+def test_experiment_rejects_runtime_profile_from_other_project(tmp_path, clean_db):
+    app = create_app()
+    with TestClient(app) as client:
+        with Session(get_engine()) as session:
+            seed_demo_dataset(session)
+
+        other_root = tmp_path / "other"
+        other_root.mkdir()
+        other_project = client.post("/api/v1/projects", json={"name": "other-project", "local_path": str(other_root)}).json()
+        other_profile = client.post(
+            f"/api/v1/projects/{other_project['id']}/runtime-profiles",
+            json={
+                "name": "other docker",
+                "executor": "docker",
+                "image": "trace-pytest:3.12",
+                "network_policy": "disabled",
+            },
+        ).json()
+
+        response = client.post(
+            "/api/v1/experiments",
+            json={
+                "id": "exp-wrong-profile",
+                "name": "wrong profile",
+                "dataset_id": DEMO_DATASET_ID,
+                "runtime_profile_id": other_profile["id"],
+                "strategy_version_ids": ["sv-direct-v1"],
+                "repeat_count": 1,
+                "llm_override": {"provider": "mock", "model": "mock-1"},
+            },
+        )
+        assert response.status_code == 409
+        assert "selected dataset project" in response.json()["detail"]
 
 
 def test_runtime_profile_rejects_secret_env_key(tmp_path, clean_db):

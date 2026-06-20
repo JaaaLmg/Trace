@@ -44,6 +44,45 @@ def create_project_runtime_profile_route(project_id: str, body: RuntimeProfileCr
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+def _project_id_for_dataset(db: Session, dataset_id: str) -> str:
+    snapshot_id = db.scalar(
+        select(EvalTask.project_snapshot_id)
+        .where(EvalTask.dataset_id == dataset_id)
+        .order_by(EvalTask.created_at.asc(), EvalTask.id.asc())
+    )
+    if not snapshot_id:
+        raise HTTPException(status_code=404, detail="dataset has no eval tasks")
+    snapshot = db.get(ProjectSnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="dataset project snapshot not found")
+    return snapshot.project_id
+
+
+@router.post("/api/v1/eval-datasets/{dataset_id}/runtime-profiles", response_model=RuntimeProfileOut)
+def create_dataset_runtime_profile_route(dataset_id: str, body: RuntimeProfileCreate, db: Session = Depends(get_db)):
+    project_id = _project_id_for_dataset(db, dataset_id)
+    try:
+        return create_runtime_profile(
+            db,
+            project_id=project_id,
+            name=body.name,
+            executor=body.executor,
+            image=body.image,
+            working_dir=body.working_dir,
+            test_command=body.test_command,
+            python_version=body.python_version,
+            install_command=body.install_command,
+            env_template=body.env_template,
+            resource_limits=body.resource_limits,
+            network_policy=body.network_policy,
+            timeout_seconds=body.timeout_seconds,
+            artifact_policy=body.artifact_policy,
+            cleanup_policy=body.cleanup_policy,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/api/v1/projects/{project_id}/runtime-profiles", response_model=list[RuntimeProfileOut])
 def list_project_runtime_profiles_route(project_id: str, db: Session = Depends(get_db)):
     try:
@@ -59,21 +98,10 @@ def list_project_runtime_profiles_route(project_id: str, db: Session = Depends(g
 
 @router.get("/api/v1/eval-datasets/{dataset_id}/runtime-profiles", response_model=list[RuntimeProfileOut])
 def list_dataset_runtime_profiles_route(dataset_id: str, db: Session = Depends(get_db)):
-    snapshot_ids = list(
-        db.scalars(
-            select(EvalTask.project_snapshot_id)
-            .where(EvalTask.dataset_id == dataset_id)
-            .order_by(EvalTask.created_at.asc(), EvalTask.id.asc())
-        )
-    )
-    if not snapshot_ids:
-        raise HTTPException(status_code=404, detail="dataset has no eval tasks")
-    snapshot = db.get(ProjectSnapshot, snapshot_ids[0])
-    if snapshot is None:
-        raise HTTPException(status_code=404, detail="dataset project snapshot not found")
-    profiles = list_active_runtime_profiles_for_project(db, snapshot.project_id)
+    project_id = _project_id_for_dataset(db, dataset_id)
+    profiles = list_active_runtime_profiles_for_project(db, project_id)
     if not profiles:
-        return [ensure_default_runtime_profile(db, project_id=snapshot.project_id)]
+        return [ensure_default_runtime_profile(db, project_id=project_id)]
     return profiles
 
 

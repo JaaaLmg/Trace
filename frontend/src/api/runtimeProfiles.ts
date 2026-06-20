@@ -34,6 +34,13 @@ export function createRuntimeProfile(projectId: string, body: RuntimeProfileUpse
   });
 }
 
+export function createDatasetRuntimeProfile(datasetId: string, body: RuntimeProfileUpsertRequest): Promise<RuntimeProfileOut> {
+  return requestJson<RuntimeProfileOut>(`/api/v1/eval-datasets/${datasetId}/runtime-profiles`, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
 export function updateRuntimeProfile(profileId: string, body: Partial<RuntimeProfileUpsertRequest>): Promise<RuntimeProfileOut> {
   return requestJson<RuntimeProfileOut>(`/api/v1/runtime-profiles/${profileId}`, {
     method: "PATCH",

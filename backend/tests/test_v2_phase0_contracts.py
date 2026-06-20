@@ -147,6 +147,30 @@ def test_metric_row_separates_invalid_test_set_from_zero_capture():
     assert row.metric_status == "invalid_test_set"
 
 
+def test_invalid_clean_replay_collection_error_is_not_false_positive_contract_failure():
+    payload = _fixture_data()
+    clean = payload["clean_runs"][0]
+    clean["false_positive"] = False
+    clean["clean_metrics"]["validity_status"] = "invalid_test_set"
+    clean["clean_metrics"]["invalid_reason"] = "clean_replay_collection_error"
+    clean["clean_metrics"]["clean_replay"] = {
+        "collected": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "collection_errors": 1,
+        "duration_ms": 10,
+        "exit_code": 2,
+        "error": None,
+    }
+    clean["clean_metrics"]["clean_replay_matches_generation"] = False
+
+    response = ExperimentMetricsResponse.model_validate(payload)
+
+    assert response.clean_runs[0].false_positive is False
+    assert response.clean_runs[0].clean_metrics.validity_status == "invalid_test_set"
+
+
 def test_metric_row_rejects_repeat_and_mean_drift():
     base = {
         "strategy_id": "sv-drift",

@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ArrowRight, Beaker, Play, Plus, RefreshCw, ServerCrash } from "@lucide/vue";
 import { createExperiment, listExperiments, runExperiment } from "../api/experiments";
 import { listEvalDatasets } from "../api/evaluation";
-import { getExecutorStatus, listDatasetRuntimeProfiles } from "../api/runtimeProfiles";
+import { createDatasetRuntimeProfile, getExecutorStatus, listDatasetRuntimeProfiles } from "../api/runtimeProfiles";
 import { listStrategies, listStrategyVersions } from "../api/strategies";
 import { demoExperimentMetrics } from "../demo/staticRunFixture";
 import { useLatestRequest } from "../composables/useLatestRequest";
@@ -28,6 +28,7 @@ const runtimeProfiles = ref<RuntimeProfileOut[]>([]);
 const dockerAvailable = ref<boolean | null>(null);
 const loading = ref(false);
 const creating = ref(false);
+const creatingRuntime = ref(false);
 const startingId = ref<string | null>(null);
 const errorMessage = ref<string | null>(null);
 const createError = ref<string | null>(null);
@@ -40,6 +41,14 @@ const form = ref({
   repeatCount: 1,
   provider: "mock",
   model: "mock-1"
+});
+const dockerProfileForm = ref({
+  name: "Docker pytest 3.12",
+  image: "trace-pytest:3.12",
+  workingDir: "/workspace",
+  testCommand: "python -m pytest tests -q",
+  networkPolicy: "disabled" as "default" | "disabled" | "install_only",
+  timeoutSeconds: 120
 });
 
 const listRequest = useLatestRequest();
@@ -178,6 +187,33 @@ async function submitExperiment() {
   }
 }
 
+async function createDockerRuntimeProfile() {
+  if (!form.value.datasetId || creatingRuntime.value) {
+    return;
+  }
+  creatingRuntime.value = true;
+  createError.value = null;
+  try {
+    const saved = await createDatasetRuntimeProfile(form.value.datasetId, {
+      name: dockerProfileForm.value.name.trim() || "Docker pytest 3.12",
+      executor: "docker",
+      image: dockerProfileForm.value.image.trim(),
+      working_dir: dockerProfileForm.value.workingDir.trim() || "/workspace",
+      test_command: dockerProfileForm.value.testCommand.trim() || "python -m pytest tests -q",
+      network_policy: dockerProfileForm.value.networkPolicy,
+      timeout_seconds: Number(dockerProfileForm.value.timeoutSeconds) || 120,
+      artifact_policy: { retain: "evidence", image_pull_policy: "never" },
+      cleanup_policy: { mode: "manual", keep_failed: true }
+    });
+    await loadRuntimeProfilesForDataset();
+    form.value.runtimeProfileId = saved.id;
+  } catch (error) {
+    createError.value = error instanceof Error ? error.message : t("runtime.saveFailed");
+  } finally {
+    creatingRuntime.value = false;
+  }
+}
+
 async function startExperiment(experiment: ExperimentDefinition) {
   if (props.dataSource !== "api") {
     openExperiment(experiment.id);
@@ -283,7 +319,7 @@ watch(
           </select>
         </label>
         <label>
-          <span>Runtime profile</span>
+          <span>{{ t("runtime.profileContract") }}</span>
           <select v-model="form.runtimeProfileId">
             <option v-for="profile in runtimeProfiles" :key="profile.id" :value="profile.id">
               {{ profile.name }} / {{ profile.executor }}
@@ -314,6 +350,46 @@ watch(
           {{ runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.resource_limits?.timeout_seconds ?? 120 }}s
           · Docker {{ dockerAvailable ? "available" : "not available" }}
         </p>
+        <div class="docker-profile-box">
+          <div class="docker-profile-head">
+            <span>{{ t("experiments.createDockerProfile") }}</span>
+            <button class="text-button" type="button" :disabled="!form.datasetId || creatingRuntime" @click="createDockerRuntimeProfile">
+              <Plus :size="15" aria-hidden="true" />
+              {{ creatingRuntime ? t("experiments.creatingDockerProfile") : t("experiments.createDockerProfileAction") }}
+            </button>
+          </div>
+          <p class="runtime-note">{{ t("experiments.datasetRuntimeHint") }}</p>
+          <div class="docker-profile-grid">
+            <label>
+              <span>{{ t("runtime.name") }}</span>
+              <input v-model="dockerProfileForm.name" type="text" />
+            </label>
+            <label>
+              <span>{{ t("runtime.dockerImage") }}</span>
+              <input v-model="dockerProfileForm.image" type="text" placeholder="trace-pytest:3.12" />
+            </label>
+            <label>
+              <span>{{ t("runtime.workingDirectory") }}</span>
+              <input v-model="dockerProfileForm.workingDir" type="text" placeholder="/workspace" />
+            </label>
+            <label>
+              <span>{{ t("runtime.pytestCommand") }}</span>
+              <input v-model="dockerProfileForm.testCommand" type="text" />
+            </label>
+            <label>
+              <span>{{ t("runtime.networkPolicy") }}</span>
+              <select v-model="dockerProfileForm.networkPolicy">
+                <option value="default">default</option>
+                <option value="disabled">disabled</option>
+                <option value="install_only">install_only</option>
+              </select>
+            </label>
+            <label>
+              <span>{{ t("runtime.timeoutSeconds") }}</span>
+              <input v-model.number="dockerProfileForm.timeoutSeconds" type="number" min="1" />
+            </label>
+          </div>
+        </div>
         <span>{{ t("experiments.strategy") }}</span>
         <div class="strategy-options">
           <button
@@ -486,13 +562,16 @@ watch(
 }
 
 .create-grid label,
-.strategy-picker {
+.strategy-picker,
+.docker-profile-grid label {
   display: grid;
   gap: 6px;
 }
 
 .create-grid span,
-.strategy-picker > span {
+.strategy-picker > span,
+.docker-profile-head span,
+.docker-profile-grid span {
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -510,7 +589,9 @@ watch(
 }
 
 .create-grid input,
-.create-grid select {
+.create-grid select,
+.docker-profile-grid input,
+.docker-profile-grid select {
   width: 100%;
   min-height: 34px;
   padding: 6px 9px;
@@ -518,6 +599,28 @@ watch(
   border-radius: 6px;
   background: var(--panel);
   color: var(--ink);
+}
+
+.docker-profile-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.docker-profile-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.docker-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .strategy-options {
@@ -621,6 +724,7 @@ watch(
   .experiment-head,
   .summary-strip,
   .create-grid,
+  .docker-profile-grid,
   .strategy-options {
     grid-template-columns: 1fr;
   }

@@ -678,6 +678,8 @@ class CleanRunContract(ContractModel):
     def _repeat_index_matches_snapshot(self) -> CleanRunContract:
         if self.strategy_snapshot.resolved_llm.repeat_index != self.repeat_index:
             raise ValueError("clean run repeat_index must match strategy_snapshot.resolved_llm.repeat_index")
+        if self.clean_metrics.validity_status == "invalid_test_set":
+            return self
         if self.clean_metrics.clean_replay:
             replay = self.clean_metrics.clean_replay
             clean_failed = (
