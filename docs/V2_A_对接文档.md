@@ -293,3 +293,240 @@ npm --prefix frontend run typecheck
 - 当前 replay scheduler 是单机并发，不是跨机器分布式调度。
 - `experiments.py` 仍保留部分兼容 facade 和 clean-run 逻辑，后续可继续做机械拆分。
 - Docker executor MVP 仍需在更多宿主系统和 image 类型上扩展兼容性测试。
+
+## 10. Docker runner 真实联调问题复盘与可用性评估
+
+本节记录 2026-06-20 使用本地 Docker runner 与真实大模型 API 进行前后端联调时暴露的问题、修复过程、验证结果和当前可用性边界。后续优化 Docker runtime、prompt/source context 或指标口径时，应优先参考本节。
+
+### 10.1 初始现象：Docker 实验全部 0% 捕获
+
+现象：
+
+- 前端实验详情页中，Direct、Plan-and-Execute、ReAct+Reflection 三个策略捕获率均显示 `0% (0/6)`。
+- 三个策略状态均为 `不可评价 (1)`，单捕获成本显示 `不可评价`。
+- Runtime execution summary 显示 executor 为 `docker`，setup 为 `skipped`，replay cache 为 `miss`。
+- 本机可观察到 `trace-pytest` 容器每次启动不到 1 秒即停止。
+
+结论：
+
+- 容器短时间启动后退出本身不一定异常。当前 Docker executor 使用 `docker run --rm`，pytest 执行完成后容器会自动删除。
+- 真正需要判断的是 pytest 在容器退出前是正常跑完、测试失败、collection error，还是 executor failure。
+- 初始 0% 的根因不是策略没有捕获 bug，而是 clean baseline 阶段 pytest collection 失败，导致测试集被评为 `invalid_test_set`。
+
+### 10.2 根因：默认 Docker 镜像缺少被测项目依赖
+
+定位证据：
+
+- `exp-real-api` 的 clean/replay 工作目录中，`.trace_pytest_report.json` 和 `.trace_junit.xml` 均显示：
+
+```text
+ModuleNotFoundError: No module named 'fastapi'
+```
+
+- 生成测试中包含：
+
+```python
+from fastapi.testclient import TestClient
+```
+
+- Runtime profile 配置为：
+
+```text
+executor = docker
+image = trace-pytest:3.12
+network_policy = disabled
+install_command = None
+artifact_policy.image_pull_policy = never
+```
+
+- 当时 `backend/tests/fixtures/docker/pytest.Dockerfile` 只安装了 pytest：
+
+```dockerfile
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir pytest
+```
+
+因此，Docker 容器能够启动，但容器内 Python 环境缺少 FastAPI/httpx/starlette。pytest 在收集测试文件时 import 失败，clean replay 无法形成可评价测试集，前端最终显示 `不可评价` 与 `0%`。
+
+### 10.3 修复：补齐默认 pytest 镜像依赖
+
+已完成修复：
+
+- 更新 `backend/tests/fixtures/docker/pytest.Dockerfile`，默认 `trace-pytest:3.12` 镜像安装 `pytest fastapi httpx`。
+
+当前内容：
+
+```dockerfile
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir pytest fastapi httpx
+```
+
+本地重新构建镜像：
+
+```powershell
+cd D:\17524\MyCode\Trace
+docker build -f backend\tests\fixtures\docker\pytest.Dockerfile -t trace-pytest:3.12 .
+```
+
+验证结果：
+
+- 容器内 `pytest`、`fastapi`、`httpx`、`starlette` 均可 import。
+- 后端 Docker executor integration 测试通过：
+
+```powershell
+python -m pytest --basetemp D:\17524\MyCode\Trace\.pytest_tmp_codex `
+  backend/tests/test_executor_runtime_command.py::test_docker_executor_runs_pytest_with_local_docker `
+  backend/tests/test_executor_runtime_command.py::test_docker_executor_replays_frozen_tests_clean_and_variant `
+  -q -rs
+```
+
+结果：
+
+```text
+2 passed
+```
+
+### 10.4 修复后的第一次复验：环境问题消失，但旧生成测试仍有质量问题
+
+在同一个旧失败目录中手动复跑 Docker pytest 后：
+
+- 不再出现 `No module named 'fastapi'`。
+- pytest 能正常 collection 并执行测试。
+- 旧测试仍出现 clean 版本断言失败，例如测试了不存在或不符合 demo clean 数据的 `/price/apple`、`/price/laptop`、`/price/widget/`。
+
+这说明修复后问题从“Docker 环境不可运行”变成了“LLM 生成测试质量不稳定”。旧实验的 frozen evidence 不会因镜像修复自动改变，必须重新创建并运行新实验。
+
+### 10.5 最新真实 API 实验评估：工程链路可用，策略质量仍需优化
+
+最新实验：
+
+```text
+experiment_id = docker-real-api-2
+provider = openai_chat_compat
+model = gpt-5.4
+dataset = dataset-demo-v2
+repeat_count = 1
+runtime_profile = Docker pytest 3.12
+executor = docker
+image = trace-pytest:3.12
+network_policy = disabled
+```
+
+前端结果：
+
+- Direct v1：捕获率 `100% (6/6)`，状态 `可评价`。
+- Plan-and-Execute v1：捕获率 `100% (6/6)`，状态 `可评价`。
+- ReAct+Reflection v1：捕获率 `100% (6/6)`，状态 `可评价`。
+- replay work 显示 `27 observed / 0 reused`。
+- executor summary 显示 `docker: 30`。
+
+后端核对结果：
+
+- 实验状态为 `completed`。
+- `ExperimentReplayRun` 为 18 条，即 3 个策略 x 6 个 bug variant。
+- `TestReplay` 为 27 条，即每个策略 3 次 clean/flaky replay + 6 次 variant replay，共 3 x 9 = 27。
+- 所有 replay 均为 `completed`，`cache_status = miss`，`error_code = None`。
+- Docker executor metadata 中记录了 `docker run --rm`、workspace mount、`--network none`、`trace-pytest:3.12`、JUnit/JSON artifact path 等证据。
+- replay 不调用 LLM，`llm_calls = 0` 符合契约。
+
+因此，从工程链路看：
+
+- Docker runner 已能被前端 runtime profile 选择并用于真实实验。
+- Docker 镜像、workspace mount、pytest plugin、JUnit/JSON report、clean replay、flaky gate、variant replay、metrics 聚合均已跑通。
+- 真实大模型 API 生成测试、后端 worker 执行、前端详情展示三者已经完成闭环。
+
+### 10.6 为什么 27 replays 是合理的
+
+该实验选择了 3 个策略，每个策略 repeat 为 1。每个策略对应：
+
+- 1 次 baseline clean replay。
+- flaky gate 额外 2 次 clean replay，用于确认 clean 上失败/通过模式是否稳定。
+- 6 次 bug variant replay。
+
+所以每个策略产生 9 条 `TestReplay`：
+
+```text
+3 clean/flaky replay + 6 variant replay = 9
+```
+
+三个策略合计：
+
+```text
+3 strategies x 9 replay = 27 TestReplay
+```
+
+前端 `27 observed` 是 `TestReplay` 口径；策略矩阵中的 `6/6` 是 `ExperimentReplayRun` 的 bug variant 口径。这两个数字口径不同，但彼此一致。
+
+### 10.7 结果是否合理：可评价但假阳性偏高
+
+最新实验从系统角度是“可评价”的，因为：
+
+- pytest collection 成功率为 100%。
+- clean/replay 都有结构化 pytest 报告。
+- bug variant replay 都能在 Docker 中执行。
+- 每个 variant replay 中都能看到与 seeded bug 对应的 probe/failure，例如：
+  - `shipping_fee(5)` 在边界运费变体上失败。
+  - `loyalty_points(3)` 在积分边界变体上失败。
+  - `clamp_discount_rate(1.5)` 在折扣率 clamp 缺失变体上失败。
+  - `/price/unknown` 在错误状态码变体上失败。
+
+但当前结果不适合直接作为“策略质量很高”的结论，因为三个策略的 `false_positive_rate` 均为 `1.0`。含义是：生成测试在 clean 版本上也存在稳定失败。
+
+示例：
+
+- Direct clean replay：`10 collected, 9 passed, 1 failed`。
+- ReAct clean replay：`10 collected, 8 passed, 2 failed`。
+- 失败主要来自模型臆造了 demo clean 项目不存在的商品或不匹配的路由数据，例如 `/price/laptop`、`/price/apple`。
+
+因此当前结果应这样解读：
+
+- `100% 捕获率`：说明生成测试在 seeded bug replay 上确实触发了失败。
+- `100% 假阳性`：说明测试集本身不够干净，clean 项目上也会失败。
+- 两者同时存在时，不能直接得出“策略优秀”的结论，只能说明执行链路完整且能产出证据。
+
+### 10.8 当前可用性结论
+
+当前状态：
+
+- Docker 执行容器功能：可用。
+- 前端选择 Docker runtime profile：可用。
+- 真实大模型 API 端到端实验：可用。
+- metrics/replay evidence 展示：可用。
+- seeded bug 捕获链路：可用。
+- 作为严肃策略对比评测：暂不充分，主要受 clean false positive 影响。
+
+建议验收口径：
+
+```text
+A 线执行平台能力：通过。
+Docker runner 联调：通过。
+真实 API 端到端跑通：通过。
+策略效果结论：仅作 smoke/evidence，不作正式横向排名。
+```
+
+### 10.9 后续优化建议
+
+优先级较高：
+
+- Prompt/source context 应显式暴露 demo clean 项目的合法商品、路由和业务常量，降低 `/price/apple`、`/price/laptop` 这类臆造测试。
+- 在 prompt 中强调：生成测试必须先基于源码可见事实，不得编造不存在的 fixture、商品、路由或状态码。
+- metrics 页面应更醒目展示 `false_positive_rate`，当其大于 0 时，应提示“捕获率受 clean baseline failure 污染”。
+- 策略对比表可以增加“clean failed / clean total”列，避免用户只看到 `100% (6/6)`。
+- 对 `metric_status = ok` 但 `false_positive_rate > 0` 的情况，考虑引入 `warning` 级状态，而不是仅显示 `可评价`。
+
+中期优化：
+
+- 为 demo dataset 提供一个更强的 source context 摘要，包含 `_PRICES = {"book": 30.0, "pen": 2.5}` 等关键事实。
+- 在 clean replay 后，对 false positive 节点做自动剔除或单独标记，再计算“净捕获率”。该能力需要谨慎设计，避免掩盖真实策略问题。
+- Docker runtime profile UI 增加镜像依赖提示：默认 `trace-pytest:3.12` 适用于当前 demo FastAPI 数据集；真实项目应使用包含项目依赖的镜像或配置 `install_command`。
+- 当 `network_policy = disabled` 且 `install_command` 非空时，前端和后端均应提示安装命令无法访问网络，除非依赖来自本地 wheel/cache。
+
+排障建议：
+
+- 若前端显示 `不可评价`，优先查看 clean run 的 `clean_metrics.invalid_reason`。
+- 若容器一闪而过，优先查看工作目录中的 `.trace_pytest_report.json` 和 `.trace_junit.xml`。
+- 若出现 `ModuleNotFoundError`，检查 Docker image 是否包含被测项目依赖。
+- 若出现 `collection_errors > 0`，不要将其解释为 0 捕获，应归类为测试集不可评价。
+- 若出现 `false_positive_rate > 0`，说明测试集在 clean 版本上失败，需要优化 prompt/source context 或测试过滤口径。

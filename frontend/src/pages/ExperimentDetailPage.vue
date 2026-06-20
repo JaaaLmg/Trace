@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
 import { ArrowLeft, Database, RefreshCw } from "@lucide/vue";
-import { cleanupExperiment, getExperimentMetrics } from "../api/experiments";
+import { cleanupExperiment, getExperiment, getExperimentMetrics } from "../api/experiments";
 import CaptureMatrix from "../components/experiment/CaptureMatrix.vue";
 import CleanRunTable from "../components/experiment/CleanRunTable.vue";
 import EvaluationEventTimeline from "../components/experiment/EvaluationEventTimeline.vue";
@@ -10,7 +10,7 @@ import ReplayEvidencePanel from "../components/experiment/ReplayEvidencePanel.vu
 import { demoExperimentMetrics } from "../demo/staticRunFixture";
 import { useLatestRequest } from "../composables/useLatestRequest";
 import { useI18n } from "../i18n";
-import type { ExperimentMetricsResponse } from "../types/api";
+import type { ExperimentDefinition, ExperimentMetricsResponse } from "../types/api";
 import type { DataSource } from "../types/ui";
 
 const props = defineProps<{
@@ -25,6 +25,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const metrics = ref<ExperimentMetricsResponse | null>(null);
+const experiment = ref<ExperimentDefinition | null>(null);
 const loading = ref(false);
 const errorMessage = ref<string | null>(null);
 const selectedReplayId = ref<string | null>(null);
@@ -53,17 +54,28 @@ async function loadMetrics() {
   errorMessage.value = null;
   selectedReplayId.value = null;
   try {
-    const next = props.dataSource === "demo" ? demoExperimentMetrics : await getExperimentMetrics(props.experimentId);
+    const [nextExperiment, nextMetrics] =
+      props.dataSource === "demo"
+        ? [demoExperimentMetrics.experiment, demoExperimentMetrics]
+        : await Promise.all([getExperiment(props.experimentId), getExperimentMetrics(props.experimentId)]);
     if (!metricsRequest.isCurrent(requestSeq)) {
       return;
     }
-    metrics.value = next;
+    experiment.value = nextExperiment;
+    metrics.value = nextMetrics;
   } catch (error) {
     if (!metricsRequest.isCurrent(requestSeq)) {
       return;
     }
     metrics.value = null;
     errorMessage.value = error instanceof Error ? error.message : t("experiments.metricsFailed");
+    if (props.dataSource === "api") {
+      try {
+        experiment.value = await getExperiment(props.experimentId);
+      } catch {
+        experiment.value = null;
+      }
+    }
   } finally {
     if (metricsRequest.isCurrent(requestSeq)) {
       loading.value = false;
@@ -125,6 +137,21 @@ watch(
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
     <p v-if="cleanupMessage" class="mode-note">{{ cleanupMessage }}</p>
     <p v-if="loading" class="mode-note">{{ t("experiments.loadingMetrics") }}</p>
+
+    <section v-if="!metrics && experiment" class="hero-band subtle-panel">
+      <div>
+        <p class="eyebrow">TRACE / EXPERIMENT DETAIL</p>
+        <h1>{{ experiment.name }}</h1>
+        <p>{{ experiment.error_message || t("experiments.detailSubtitle") }}</p>
+      </div>
+      <div class="source-card">
+        <Database :size="18" aria-hidden="true" />
+        <span>
+          <strong>{{ t(`status.${experiment.status}`) }}</strong>
+          <small>{{ experiment.runtime_profile_id ?? t("common.none") }}</small>
+        </span>
+      </div>
+    </section>
 
     <template v-if="metrics">
       <section class="hero-band subtle-panel">
