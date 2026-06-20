@@ -49,7 +49,7 @@ B 线已把 prompt-safe 事件类型策略抽到 `evaluation_event_policy.py`，
 
 Mutation confirmation 入口不再信任客户端回传的 audit candidate。confirm 时会按 audit report 的 `sample_seed`、`max_selected`、`target_scope` 在服务端重新 dry-run discovery，并要求候选内容与服务端当前 selected candidate 完全一致，避免伪造/过期 audit 把未选中 mutant 入库。该入口只允许创建 `bug_type=auto_mutation`，不允许客户端把 auto mutation 伪装成普通 seeded bug。普通 `create_bug_variant` 入口也拒绝 `ground_truth.source=auto_mutation`，防止绕过 probe confirmation 污染 sampled mutation score。
 
-Dataset UI 已接入后端已有 task / seeded bug / variant / mutation discovery API 合同。UI 目前只做最小链路：对选中 task 发起 mutation dry-run、展示 selected/excluded candidate、由用户选择 selected candidate 并提交 probe JSON 调用 `confirm-selected`。由于 dry-run API 返回 discovery 而不是完整 audit report，UI 会基于当前 task、dry-run 参数和 discovery 组装 `v2.mutation_discovery_audit`；这不是信任前端授权，服务端 confirm 仍会按 audit report 参数重新 discovery 并逐字段比对 candidate。UI 不提供绕过 confirmation 的 `auto_mutation` variant 自由创建入口。
+Dataset UI 已接入后端已有 task / seeded bug / variant / mutation discovery API 合同。UI 目前只做最小链路：对选中 task 发起 mutation dry-run、展示 selected/excluded candidate、展示 discovery exclusion 的 reason / target / message 明细，由用户选择 selected candidate 并提交 probe JSON 调用 `confirm-selected`。由于 dry-run API 返回 discovery 而不是完整 audit report，UI 会基于当前 task、dry-run 参数和 discovery 组装 `v2.mutation_discovery_audit`；这不是信任前端授权，服务端 confirm 仍会按 audit report 参数重新 discovery 并逐字段比对 candidate。UI 不提供绕过 confirmation 的 `auto_mutation` variant 自由创建入口。
 
 Dataset UI 也提供普通 authoring 入口，用于创建 eval task、seeded bug 和 `source=seeded_bug` 的 patch variant；前端会拒绝 `ground_truth.source=auto_mutation`，后端普通 variant API 仍是最终防线。
 
@@ -100,11 +100,24 @@ conda run -n trace pytest backend/tests/test_stage3_evaluation_seed_and_api.py -
 6 passed
 ```
 
+当前收束验证：
+
+```powershell
+conda run -n trace pytest backend/tests/test_source_context.py backend/tests/test_contract_guard.py backend/tests/test_context_builder_guard_inputs.py backend/tests/test_reflection_prompt_context.py backend/tests/test_evaluation_events.py backend/tests/test_stage3_evaluation_seed_and_api.py -q
+conda run -n trace pytest backend/tests/test_stage4_experiment_runner.py backend/tests/test_v2_phase0_contracts.py -q
+cd frontend; npm run build
+```
+
+```text
+138 passed, 1 warning
+45 passed, 3 warnings
+frontend build passed
+```
 ## 5. 后续 B 线候选
 
 这些是 B 线候选，不是 A 线阻塞项：
 
 - 继续机械拆分 `source_context.py`，优先拆 dependency/support context 和 retrieval provider glue。
-- Dataset UI 接后端已有 task / seeded bug / variant / mutation discovery confirm API。
+- Dataset UI 继续补状态可见性和过滤体验，例如按 exclusion reason 筛选或展开 probe/audit 摘要。
 - Contract Guard 继续围绕源码证据补窄规则，先写失败测试再实现。
 - mutation discovery v0 保持最小链路，不宣传为完整 mutation engine。
