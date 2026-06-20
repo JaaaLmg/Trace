@@ -1541,7 +1541,7 @@ def _unknown_request_fields(tree: ast.AST, allowed_request_fields: Sequence[str]
             continue
         dict_vars = _dict_literal_assignments(fn)
         for node in ast.walk(fn):
-            if not isinstance(node, ast.Call):
+            if not _is_http_request_call(node):
                 continue
             for kw in node.keywords:
                 if kw.arg not in _REQUEST_FIELD_PAYLOAD_KWARGS:
@@ -1595,9 +1595,13 @@ def _route_tests_with_request_fields(tree: ast.AST, declared_by_name: dict[str, 
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name not in route_tests:
             continue
         for node in ast.walk(fn):
-            if isinstance(node, ast.Call) and any(kw.arg in _REQUEST_FIELD_PAYLOAD_KWARGS for kw in node.keywords):
+            if _is_http_request_call(node) and any(kw.arg in _REQUEST_FIELD_PAYLOAD_KWARGS for kw in node.keywords):
                 offenders.add(fn.name)
     return sorted(offenders)
+
+
+def _is_http_request_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and _last(node.func).lower() in _HTTP_VERBS
 
 
 def _unknown_test_fixtures(tree: ast.AST, allowed_fixtures: Sequence[str]) -> list[str]:

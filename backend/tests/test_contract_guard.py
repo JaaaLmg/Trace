@@ -194,6 +194,28 @@ def test_generation_contract_rejects_unknown_form_data_request_field():
 
     assert any("made_up" in violation for violation in violations)
 
+
+def test_generation_contract_ignores_non_request_data_keyword_with_field_evidence():
+    content = (
+        "def normalize(**kwargs):\n"
+        "    return kwargs\n"
+        "def test_create(client):\n"
+        "    normalize(data={'made_up': 1})\n"
+        "    response = client.post('/prices', json={'sku': 'A'})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['sku'] == 'A'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_create", "target_route": "/prices", "assertion_summary": "验证创建价格"}],
+        target_type="route",
+        target_ref="/prices",
+        allowed_request_fields=["sku", "quantity"],
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_accepts_query_param_field_from_request_evidence():
     content = (
         "def test_search(client):\n"
@@ -285,6 +307,29 @@ def test_generation_contract_rejects_form_data_without_request_field_evidence():
     )
 
     assert any("请求字段缺少证据" in violation for violation in violations)
+
+
+def test_generation_contract_ignores_non_request_data_keyword_without_field_evidence():
+    content = (
+        "def normalize(**kwargs):\n"
+        "    return kwargs\n"
+        "def test_health(client):\n"
+        "    normalize(data={'sku': 'A'})\n"
+        "    response = client.get('/health')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['ok'] is True\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [{"test_name": "test_health", "target_route": "/health", "assertion_summary": "验证健康检查"}],
+        target_type="route",
+        target_ref="/health",
+        allowed_request_fields=[],
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
 
 def test_generation_contract_allows_route_without_json_body_when_model_schema_missing():
     content = (
