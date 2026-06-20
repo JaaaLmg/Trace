@@ -894,6 +894,30 @@ watch(
             </div>
             <p v-else-if="mutationDiscovery" class="mode-note compact-note">{{ t("datasets.noCandidates") }}</p>
 
+            <div v-if="mutationDiscovery?.exclusions.length" class="table-shell mutation-exclusion-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{{ t("datasets.exclusionReason") }}</th>
+                    <th>{{ t("datasets.exclusionTarget") }}</th>
+                    <th>{{ t("datasets.exclusionMessage") }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(exclusion, index) in mutationDiscovery.exclusions" :key="`${exclusion.reason_code}:${index}`">
+                    <td>
+                      <span class="mutation-status" data-status="excluded">{{ exclusion.reason_code }}</span>
+                    </td>
+                    <td>
+                      <strong>{{ exclusion.target_ref ?? t("common.none") }}</strong>
+                      <small class="block-mono">{{ exclusion.source_path ?? t("common.none") }}:{{ exclusion.line ?? "-" }}</small>
+                    </td>
+                    <td>{{ exclusion.message }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
             <div v-if="selectedCandidate" class="confirm-grid">
               <label>
                 <span>{{ t("datasets.seededBugId") }}</span>
@@ -1420,6 +1444,12 @@ watch(
   border-color: rgba(49, 95, 125, 0.28);
   background: rgba(49, 95, 125, 0.08);
   color: var(--tool);
+}
+
+.mutation-status[data-status="excluded"] {
+  border-color: rgba(145, 93, 38, 0.28);
+  background: rgba(145, 93, 38, 0.08);
+  color: #795125;
 }
 
 .mutation-table code,
