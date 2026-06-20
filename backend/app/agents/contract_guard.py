@@ -129,6 +129,9 @@ def check_generation_contract(
     weak_route_oracles = _success_status_only_route_tests(tree, declared_by_name)
     if weak_route_oracles:
         violations.append("路由测试缺少业务 oracle（只有 2xx status_code 断言）：" + ", ".join(weak_route_oracles))
+    route_call_mismatches = _route_call_target_mismatches(tree, declared_by_name, target_type, target_ref)
+    if route_call_mismatches:
+        violations.append("路由测试请求路径不匹配目标路由：" + ", ".join(route_call_mismatches))
     empty_path_param_routes = _empty_path_param_route_tests(tree, source_context or "")
     if empty_path_param_routes:
         violations.append("路由测试使用空 path 参数，无法命中目标 handler：" + ", ".join(empty_path_param_routes))
@@ -200,6 +203,70 @@ def _route_path_without_method(value: str) -> str:
         return parts[1].strip()
     return normalized
 
+
+def _route_call_target_mismatches(
+    tree: ast.AST,
+    declared_by_name: dict[str, Any],
+    target_type: str | None,
+    target_ref: str | None,
+) -> list[str]:
+    if target_type != "route":
+        return []
+
+    offenders: set[str] = set()
+    plan_route = _route_path_without_method(target_ref or "")
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        case = declared_by_name.get(fn.name)
+        if case is None:
+            continue
+        expected_route = _route_path_without_method(str(_field(case, "target_route") or "").strip()) or plan_route
+        if not expected_route:
+            continue
+        call_paths = _static_route_call_paths(fn)
+        if call_paths and not any(_route_path_matches_template(path, expected_route) for path in call_paths):
+            offenders.add(fn.name)
+    return sorted(offenders)
+
+
+def _static_route_call_paths(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    paths: list[str] = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call) or _last(node.func).lower() not in _HTTP_VERBS:
+            continue
+        if not node.args:
+            continue
+        path = _static_route_path(node.args[0])
+        if path is not None:
+            paths.append(path)
+    return paths
+
+
+def _static_route_path(node: ast.AST) -> str | None:
+    raw: str | None = None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        raw = node.value
+    elif isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                parts.append("{expr}")
+            else:
+                return None
+        raw = "".join(parts)
+    if raw is None:
+        return None
+    return urlsplit(raw).path or raw
+
+
+def _route_path_matches_template(path: str, template: str) -> bool:
+    normalized_path = urlsplit(path).path.rstrip("/") or "/"
+    normalized_template = urlsplit(template).path.rstrip("/") or "/"
+    pattern = "^" + re.sub(r"\\{[^/{}]+\\}", r"[^/]+", re.escape(normalized_template)) + "$"
+    return re.fullmatch(pattern, normalized_path) is not None
 
 def _empty_path_param_route_tests(tree: ast.AST, source_context: str) -> list[str]:
     empty_paths = _empty_path_param_routes(source_context)
