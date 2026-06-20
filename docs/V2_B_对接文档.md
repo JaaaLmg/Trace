@@ -28,6 +28,8 @@ A 线负责执行平台和评测尺子：executor、runtime profile、setup/repl
 
 随后将 route target 字符串解析 helper 机械拆到 source_context_routes.py；不改变 route handler 定位、fallback 顺序或 source context 输出。
 
+随后将 source context target query helper 机械拆到 source_context_targets.py；不改变 LSP / ast-grep / rg fallback 查询口径或 target 解析语义。
+
 ## 3. A/B 接口约定
 
 A 线可继续把 source context completeness 作为 clean run gate 使用：
@@ -124,11 +126,23 @@ conda run -n trace pytest backend/tests/test_contract_guard.py -q
 75 passed
 ```
 
+本轮 source context 机械拆分验证：
+
+```powershell
+conda run -n trace pytest backend/tests/test_source_context.py -q
+conda run -n trace python -m py_compile backend/app/services/source_context.py backend/app/services/source_context_targets.py
+```
+
+```text
+48 passed
+py_compile passed
+```
+
 ## 5. 后续 B 线候选
 
 这些是 B 线候选，不是 A 线阻塞项：
 
-- 继续机械拆分 `source_context.py`，优先拆 dependency/support context 和 retrieval provider glue。
+- 继续机械拆分 `source_context.py` 剩余宽口，优先只动 retrieval provider glue 这类低行为风险边界。
 - Dataset UI 继续补状态可见性和过滤体验，例如按 exclusion reason 筛选或展开 probe/audit 摘要。
 - Contract Guard 继续围绕源码证据补窄规则，先写失败测试再实现。
 - mutation discovery v0 保持最小链路，不宣传为完整 mutation engine。
