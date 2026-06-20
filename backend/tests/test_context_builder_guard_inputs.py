@@ -55,3 +55,50 @@ def test_model_field_names_keep_broad_fields_without_focused_item():
     )
 
     assert _model_field_names(analysis, None) == ["sku", "role"]
+
+
+def test_model_field_names_include_route_query_params_from_handler_signature():
+    analysis = AnalyzeProjectOutput(
+        routes=[RouteInfo(method="GET", path="/prices", handler="search_prices", file="api.py")],
+        functions=[FunctionInfo(name="search_prices", signature="search_prices(sku: str, limit: int = 10)", file="api.py")],
+        models=[ModelInfo(name="PriceRequest", file="api.py", fields=[ModelFieldInfo(name="role")])],
+    )
+    item = PlanItemDraft(
+        index=0,
+        target_type="route",
+        target_ref="GET /prices",
+        goal="test price search",
+        planned_assertions=[],
+    )
+
+    assert _model_field_names(analysis, item) == ["sku", "limit"]
+
+
+def test_model_field_names_exclude_route_dependency_and_request_model_params():
+    analysis = AnalyzeProjectOutput(
+        routes=[RouteInfo(method="POST", path="/prices", handler="create_price", file="api.py")],
+        functions=[
+            FunctionInfo(
+                name="create_price",
+                signature=(
+                    "create_price("
+                    "req: PriceRequest, "
+                    "db=Depends(get_db), "
+                    "cache: Annotated[Cache, Depends(get_cache)] = None, "
+                    "request: Request = None"
+                    ")"
+                ),
+                file="api.py",
+            )
+        ],
+        models=[ModelInfo(name="PriceRequest", file="api.py", fields=[ModelFieldInfo(name="sku")])],
+    )
+    item = PlanItemDraft(
+        index=0,
+        target_type="route",
+        target_ref="POST /prices",
+        goal="test price creation",
+        planned_assertions=[],
+    )
+
+    assert _model_field_names(analysis, item) == ["sku"]

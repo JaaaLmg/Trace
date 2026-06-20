@@ -2,6 +2,7 @@
 # ReAct+Reflection 单任务带一次反思。落库/映射/契约校验都收在这里，策略文件保持很薄。
 from __future__ import annotations
 
+import ast
 import hashlib
 import re
 from typing import Optional
@@ -301,9 +302,12 @@ def _as_draft(item) -> PlanItemDraft:
 
 def _model_field_names(analysis, item=None) -> list[str]:
     selected_models = _models_for_target(analysis, item)
-    if item is not None:
-        return _field_names(selected_models)
-    return _field_names(getattr(analysis, "models", []) or [])
+    if item is None:
+        return _field_names(getattr(analysis, "models", []) or [])
+    names = _field_names(selected_models)
+    if getattr(item, "target_type", None) == "route":
+        names.extend(_route_query_param_names(analysis, item, selected_models))
+    return _unique_names(names)
 
 
 def _field_names(models) -> list[str]:
@@ -314,6 +318,88 @@ def _field_names(models) -> list[str]:
             if name:
                 names.append(str(name))
     return names
+
+
+def _unique_names(names: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        unique.append(name)
+    return unique
+
+
+def _route_query_param_names(analysis, item, selected_models) -> list[str]:
+    fn_name = _target_function_name(analysis, getattr(item, "target_type", None), getattr(item, "target_ref", None))
+    if not fn_name:
+        return []
+    signature = next((getattr(fn, "signature", "") for fn in getattr(analysis, "functions", []) or [] if fn.name == fn_name), "")
+    if not signature:
+        return []
+    model_names = {str(getattr(model, "name", "")) for model in selected_models if getattr(model, "name", None)}
+    return [
+        name
+        for name, annotation, default in _signature_params(signature)
+        if not _is_non_query_route_param(name, annotation, default, model_names)
+    ]
+
+
+def _signature_params(signature: str) -> list[tuple[str, str, str | None]]:
+    open_paren = signature.find("(")
+    close_paren = signature.rfind(")")
+    if open_paren < 0 or close_paren <= open_paren:
+        return []
+    args_src = signature[open_paren + 1 : close_paren]
+    try:
+        parsed = ast.parse(f"def __trace_signature__({args_src}):\n    pass\n")
+    except SyntaxError:
+        return []
+    fn = parsed.body[0]
+    if not isinstance(fn, ast.FunctionDef):
+        return []
+    params: list[tuple[str, str, str | None]] = []
+    positional = [*fn.args.posonlyargs, *fn.args.args]
+    positional_defaults: list[ast.expr | None] = [None] * (len(positional) - len(fn.args.defaults)) + list(fn.args.defaults)
+    for arg, default in zip(positional, positional_defaults):
+        params.append((arg.arg, _annotation_text(arg.annotation), _default_text(default)))
+    for arg, default in zip(fn.args.kwonlyargs, fn.args.kw_defaults):
+        params.append((arg.arg, _annotation_text(arg.annotation), _default_text(default)))
+    return params
+
+
+def _annotation_text(node: ast.AST | None) -> str:
+    if node is None:
+        return ""
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return ""
+
+
+def _default_text(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return ""
+
+
+def _is_non_query_route_param(name: str, annotation: str, default: str | None, model_names: set[str]) -> bool:
+    if name in {"self", "cls"}:
+        return True
+    annotation_tail = annotation.rsplit(".", 1)[-1]
+    if annotation_tail in model_names:
+        return True
+    if annotation_tail in {"Request", "Response", "BackgroundTasks"}:
+        return True
+    if re.search(r"\bDepends\s*\(", annotation):
+        return True
+    if default and re.search(r"\bDepends\s*\(", default):
+        return True
+    return False
 
 
 def _models_for_target(analysis, item) -> list:

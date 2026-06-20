@@ -76,6 +76,7 @@ conda run -n trace pytest backend/tests/test_contract_guard.py -q
 - route case 的真实 HTTP 请求路径必须命中声明的目标 route template，避免 cases 元数据绑定目标路由但测试实际请求其它 endpoint。
 - 当目标 route 合同显式带 `GET/POST/...` 时，Contract Guard 会拒绝请求路径命中但 HTTP method 不匹配的 route case。
 - 当已有请求字段证据时，Contract Guard 会拒绝 route test 在 `params=` 中使用无证 query 字段。
+- route handler 签名中的普通 query 参数会作为请求字段证据传给 Guard；`Depends`、Request/Response 和请求模型入参不会被误当成 query 字段。
 - audit-only EvaluationEvent 不进入 source context prompt，只留下过滤风险说明。
 - mutation confirmation 拒绝伪造/过期 audit report 中的 selected candidate。
 - mutation confirmation 拒绝非 `auto_mutation` 的 bug_type。
