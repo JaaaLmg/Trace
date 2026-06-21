@@ -41,6 +41,8 @@ const creatingRuntime = ref(false);
 const startingId = ref<string | null>(null);
 const errorMessage = ref<string | null>(null);
 const createError = ref<string | null>(null);
+const loadingCreateOptions = ref(false);
+const dockerProfileBox = ref<HTMLElement | null>(null);
 const form = ref({
   id: "",
   name: "local demo experiment",
@@ -70,6 +72,7 @@ const selectedLlmOption = computed(() => llmOptions.value.find((option) => optio
 const canCreate = computed(
   () =>
     props.dataSource === "api" &&
+    !loadingCreateOptions.value &&
     form.value.name.trim() &&
     form.value.datasetId &&
     (isMultiProjectDataset.value
@@ -79,6 +82,45 @@ const canCreate = computed(
     form.value.repeatCount >= 1 &&
     Boolean(selectedLlmOption.value?.selectable)
 );
+
+type CreateBlockerId = "loading" | "name" | "dataset" | "runtime" | "strategy" | "repeat" | "llm";
+
+type CreateBlocker = {
+  id: CreateBlockerId;
+  message: string;
+};
+
+const createBlockers = computed<CreateBlocker[]>(() => {
+  if (props.dataSource !== "api") {
+    return [];
+  }
+  if (loadingCreateOptions.value) {
+    return [{ id: "loading", message: t("experiments.blockerLoadingOptions") }];
+  }
+  const blockers: CreateBlocker[] = [];
+  if (!form.value.name.trim()) {
+    blockers.push({ id: "name", message: t("experiments.blockerName") });
+  }
+  if (!form.value.datasetId || datasets.value.length === 0) {
+    blockers.push({ id: "dataset", message: t("experiments.blockerDataset") });
+  } else if (
+    isMultiProjectDataset.value
+      ? datasetProjectIds.value.some((projectId) => !runtimeProfileBindings.value[`project:${projectId}`])
+      : !form.value.runtimeProfileId
+  ) {
+    blockers.push({ id: "runtime", message: t("experiments.blockerRuntime") });
+  }
+  if (form.value.strategyVersionIds.length === 0) {
+    blockers.push({ id: "strategy", message: t("experiments.blockerStrategy") });
+  }
+  if (form.value.repeatCount < 1) {
+    blockers.push({ id: "repeat", message: t("experiments.blockerRepeat") });
+  }
+  if (!selectedLlmOption.value?.selectable) {
+    blockers.push({ id: "llm", message: t("experiments.blockerLlm") });
+  }
+  return blockers;
+});
 
 // llm_override is only the override layer; the resolved final provider/model is
 // frozen per clean run's strategy_snapshot (see Experiment Detail). On the list we
@@ -104,6 +146,10 @@ function openExperiment(experimentId: string) {
 
 function openDataset(datasetId: string) {
   emit("navigate", `#/datasets/${datasetId}`);
+}
+
+function showRuntimeProfileBox() {
+  dockerProfileBox.value?.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function applyInitialDatasetId(nextDatasets: EvalDatasetOut[]): boolean {
@@ -154,8 +200,10 @@ async function loadCreateOptions() {
     llmOptions.value = [];
     llmConfigStatus.value = "missing";
     llmConfigError.value = null;
+    loadingCreateOptions.value = false;
     return;
   }
+  loadingCreateOptions.value = true;
   try {
     const [nextDatasets, strategies, executorStatus, llmOptionResponse] = await Promise.all([
       listEvalDatasets(),
@@ -188,6 +236,8 @@ async function loadCreateOptions() {
     }
   } catch (error) {
     createError.value = error instanceof Error ? error.message : t("experiments.optionsFailed");
+  } finally {
+    loadingCreateOptions.value = false;
   }
 }
 
@@ -436,6 +486,23 @@ watch(
       <p v-if="llmConfigStatus === 'error' && llmConfigError" class="runtime-note llm-note">
         {{ t("experiments.llmConfigError") }}: {{ llmConfigError }}
       </p>
+      <div v-if="createBlockers.length" class="create-checklist" role="status">
+        <strong>{{ t("experiments.createBlockedTitle") }}</strong>
+        <ul>
+          <li v-for="blocker in createBlockers" :key="blocker.id">
+            <span>{{ blocker.message }}</span>
+            <button v-if="blocker.id === 'dataset'" class="inline-link" type="button" @click="emit('navigate', '#/datasets/new')">
+              {{ t("datasets.create") }}
+            </button>
+            <button v-else-if="blocker.id === 'runtime' && form.datasetId" class="inline-link" type="button" @click="showRuntimeProfileBox">
+              {{ t("experiments.createDockerProfileAction") }}
+            </button>
+            <button v-else-if="blocker.id === 'strategy' || blocker.id === 'llm' || blocker.id === 'loading'" class="inline-link" type="button" @click="loadCreateOptions">
+              {{ t("projects.refresh") }}
+            </button>
+          </li>
+        </ul>
+      </div>
       <div class="strategy-picker">
         <p v-if="!isMultiProjectDataset && form.runtimeProfileId" class="runtime-note">
           {{
@@ -462,7 +529,7 @@ watch(
             </label>
           </div>
         </div>
-        <div class="docker-profile-box">
+        <div ref="dockerProfileBox" class="docker-profile-box">
           <div class="docker-profile-head">
             <span>{{ t("experiments.createDockerProfile") }}</span>
             <button class="text-button" type="button" :disabled="!form.datasetId || creatingRuntime" @click="createDockerRuntimeProfile">
@@ -691,6 +758,36 @@ watch(
 
 .llm-note {
   margin: 0;
+}
+
+.create-checklist {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.create-checklist strong {
+  font-size: 13px;
+}
+
+.create-checklist ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.create-checklist li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--muted-strong);
+  font-size: 13px;
 }
 
 .create-grid span,
