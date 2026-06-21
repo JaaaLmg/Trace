@@ -880,6 +880,7 @@ def test_confirm_selected_comparison_negation_mutation_candidate(tmp_path, clean
         assert session.scalar(select(func.count()).select_from(SeededBug)) == 1
         assert session.scalar(select(func.count()).select_from(BugVariant)) == 1
 
+
 def test_confirm_selected_arithmetic_mutation_candidate(tmp_path, clean_db):
     app = create_app()
     project_root = tmp_path / "proj"
@@ -964,6 +965,93 @@ def test_confirm_selected_arithmetic_mutation_candidate(tmp_path, clean_db):
     with Session(get_engine()) as session:
         assert session.scalar(select(func.count()).select_from(SeededBug)) == 1
         assert session.scalar(select(func.count()).select_from(BugVariant)) == 1
+
+
+def test_confirm_selected_boolean_negation_mutation_candidate(tmp_path, clean_db):
+    app = create_app()
+    project_root = tmp_path / "proj"
+    package = project_root / "shop"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "flags.py").write_text(
+        "def is_enabled(flag):\n"
+        "    return flag\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        snapshot = _create_project_and_snapshot(client, project_root)
+        dataset = client.post(
+            "/api/v1/eval-datasets",
+            json={
+                "id": "dataset-mutation-boolean-confirm",
+                "name": "mutation boolean confirm",
+                "version": "v1",
+                "project_snapshot_ids": [snapshot["id"]],
+            },
+        ).json()
+        task = client.post(
+            f"/api/v1/eval-datasets/{dataset['id']}/tasks",
+            json={
+                "id": "task-mutation-boolean-confirm",
+                "project_snapshot_id": snapshot["id"],
+                "target_scope": {"targets": ["is_enabled"]},
+                "goal": "confirm boolean negation mutants",
+            },
+        ).json()
+
+        dry_run = client.post(
+            f"/api/v1/eval-tasks/{task['id']}/mutation-discovery/dry-run",
+            json={"sample_seed": 5, "max_selected": 10},
+        ).json()
+        [candidate] = dry_run["candidates"]
+        assert candidate["operator"] == "boolean_negation"
+        assert candidate["patch"] == {"file": "shop/flags.py", "old": "return flag", "new": "return not flag"}
+        assert candidate["selection"]["status"] == "selected"
+        assert candidate["selection"]["reason"]
+
+        with Session(get_engine()) as session:
+            audit_report = build_task_mutation_discovery_audit_report(
+                session,
+                task["id"],
+                sample_seed=5,
+                max_selected=10,
+            )
+
+        response = client.post(
+            f"/api/v1/eval-tasks/{task['id']}/mutation-discovery/confirm-selected",
+            json={
+                "audit_report": audit_report.model_dump(mode="json"),
+                "candidate_id": candidate["candidate_id"],
+                "probe": {
+                    "target_kind": "function",
+                    "probe": "is_enabled(True)",
+                    "clean_value": True,
+                    "buggy_value": False,
+                },
+                "seeded_bug_id": "bug-boolean-confirmed",
+                "variant_id": "variant-boolean-confirmed",
+                "description": "confirmed boolean negation mutation",
+                "expected_detection": "tests should catch boolean return inversion",
+                "variant_name": "confirmed boolean negation mutation",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    confirmed = response.json()
+    assert confirmed["bug_type"] == "auto_mutation"
+    [variant] = confirmed["variants"]
+    assert variant["id"] == "variant-boolean-confirmed"
+    assert variant["ground_truth"]["source"] == "auto_mutation"
+    assert variant["ground_truth"]["mutation"]["operator"] == "boolean_negation"
+    assert variant["ground_truth"]["mutation"]["selection"]["status"] == "selected"
+    assert variant["ground_truth"]["probe"]["probe_check"]["status"] == "passed"
+    assert variant["ground_truth"]["patch_unique_hit"]["hit_count"] == 1
+
+    with Session(get_engine()) as session:
+        assert session.scalar(select(func.count()).select_from(SeededBug)) == 1
+        assert session.scalar(select(func.count()).select_from(BugVariant)) == 1
+
 
 def test_seed_demo_dataset_is_repeatable_and_keeps_patch_metadata(clean_db):
     with Session(get_engine()) as session:

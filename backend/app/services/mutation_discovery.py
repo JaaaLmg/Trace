@@ -28,6 +28,7 @@ _ARITHMETIC_MUTATIONS = {
     ast.Add: ("+", "-"),
     ast.Sub: ("-", "+"),
 }
+_BOOLEAN_FUNCTION_PREFIXES = ("is_", "has_", "can_", "should_", "needs_", "supports_", "allows_")
 
 
 def discover_mutation_candidates(
@@ -78,6 +79,16 @@ def discover_mutation_candidates(
             )
             raw_candidates.extend(
                 _function_arithmetic_candidates(
+                    text=text,
+                    rel_path=rel,
+                    function=function,
+                    eval_task_id=eval_task_id,
+                    source_snapshot_id=source_snapshot_id,
+                    exclusions=exclusions,
+                )
+            )
+            raw_candidates.extend(
+                _function_boolean_candidates(
                     text=text,
                     rel_path=rel,
                     function=function,
@@ -280,6 +291,90 @@ def _function_arithmetic_candidates(
             )
         )
     return candidates
+
+
+def _function_boolean_candidates(
+    *,
+    text: str,
+    rel_path: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    eval_task_id: str,
+    source_snapshot_id: str,
+    exclusions: list[MutationDiscoveryExclusionContract],
+) -> list[MutationCandidateContract]:
+    candidates: list[MutationCandidateContract] = []
+    if not _function_has_boolean_evidence(function):
+        return candidates
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Name):
+            continue
+        source_segment = ast.get_source_segment(text, node)
+        if not source_segment:
+            exclusions.append(
+                _mutation_exclusion(
+                    reason_code="source_segment_unavailable",
+                    message="could not recover exact source segment for boolean return",
+                    rel_path=rel_path,
+                    node=node,
+                    target_ref=function.name,
+                )
+            )
+            continue
+        if "\n" in source_segment or text.count(source_segment) != 1:
+            exclusions.append(
+                _mutation_exclusion(
+                    reason_code="non_unique_patch",
+                    message="boolean return source segment is not unique in file",
+                    rel_path=rel_path,
+                    node=node,
+                    target_ref=function.name,
+                )
+            )
+            continue
+
+        replacement = f"return not {node.value.id}"
+        operator = "boolean_negation"
+        candidate_id = _candidate_id(
+            source_snapshot_id=source_snapshot_id,
+            rel_path=rel_path,
+            line=node.lineno,
+            old=source_segment,
+            new=replacement,
+        )
+        candidates.append(
+            MutationCandidateContract(
+                candidate_id=candidate_id,
+                eval_task_id=eval_task_id,
+                source_snapshot_id=source_snapshot_id,
+                operator=operator,
+                patch=MutantPatchContract(file=rel_path, old=source_segment, new=replacement),
+                matcher=MutantMatcherContract(
+                    matcher_kind="source_location_hash",
+                    source_path=rel_path,
+                    start_line=node.lineno,
+                    end_line=getattr(node, "end_lineno", node.lineno),
+                    original_content_hash=_sha256(source_segment),
+                    operator=operator,
+                    target_symbol=function.name,
+                    context_hash=_sha256(_line_range_text(text, node.lineno, getattr(node, "end_lineno", node.lineno))),
+                ),
+                selection=MutantSelectionContract(
+                    status="not_selected",
+                    selected_by="auto_sampler",
+                    reason="candidate discovered but not selected yet",
+                ),
+            )
+        )
+    return candidates
+
+
+def _function_has_boolean_evidence(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    annotation = function.returns
+    if isinstance(annotation, ast.Name) and annotation.id == "bool":
+        return True
+    if isinstance(annotation, ast.Attribute) and annotation.attr == "bool":
+        return True
+    return function.name.lower().startswith(_BOOLEAN_FUNCTION_PREFIXES)
 
 
 def _apply_deterministic_selection(

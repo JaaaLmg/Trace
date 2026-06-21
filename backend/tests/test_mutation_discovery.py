@@ -86,6 +86,43 @@ def test_mutation_discovery_dry_run_finds_arithmetic_candidates(tmp_path):
     assert all(candidate.matcher.operator == candidate.operator for candidate in result.candidates)
     assert all(candidate.selection.status == "selected" for candidate in result.candidates)
 
+
+def test_mutation_discovery_dry_run_finds_boolean_negation_candidates(tmp_path):
+    project = tmp_path / "proj"
+    package = project / "shop"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "flags.py").write_text(
+        "def is_enabled(flag):\n"
+        "    return flag\n\n"
+        "def already_negated(flag):\n"
+        "    return not flag\n\n"
+        "def identity(value):\n"
+        "    return value\n",
+        encoding="utf-8",
+    )
+
+    result = discover_mutation_candidates(
+        root=project,
+        eval_task_id="task-flags",
+        source_snapshot_id="snap-clean",
+        target_scope={"targets": ["is_enabled", "already_negated", "identity"]},
+        sample_seed=5,
+        max_selected=10,
+    )
+
+    assert result.selected_count == 1
+    assert result.excluded_count == 0
+    [candidate] = result.candidates
+    assert candidate.operator == "boolean_negation"
+    assert candidate.patch.file == "shop/flags.py"
+    assert candidate.patch.old == "return flag"
+    assert candidate.patch.new == "return not flag"
+    assert candidate.matcher.operator == candidate.operator
+    assert candidate.matcher.target_symbol == "is_enabled"
+    assert candidate.selection.status == "selected"
+
+
 def test_mutation_discovery_dry_run_reports_exclusions_without_writing_variants(tmp_path):
     project = tmp_path / "proj"
     package = project / "shop"
