@@ -54,10 +54,10 @@ def create_experiment_route(body: ExperimentCreate, db: Session = Depends(get_db
             repeat_count=body.repeat_count,
             llm_override=body.llm_override,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
     except ExperimentError as e:
         raise _experiment_http_error(e) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/api/v1/experiments", response_model=list[ExperimentOut])
