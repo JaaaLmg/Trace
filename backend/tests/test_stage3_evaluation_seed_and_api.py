@@ -793,6 +793,93 @@ def test_confirm_selected_mutation_candidate_creates_seeded_bug_and_variant_only
         assert session.scalar(select(func.count()).select_from(BugVariant)) == 1
 
 
+def test_confirm_selected_comparison_negation_mutation_candidate(tmp_path, clean_db):
+    app = create_app()
+    project_root = tmp_path / "proj"
+    package = project_root / "shop"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "status.py").write_text(
+        "def status_label(code):\n"
+        "    if code == 200:\n"
+        "        return 'ok'\n"
+        "    return 'bad'\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        snapshot = _create_project_and_snapshot(client, project_root)
+        dataset = client.post(
+            "/api/v1/eval-datasets",
+            json={
+                "id": "dataset-mutation-negation-confirm",
+                "name": "mutation negation confirm",
+                "version": "v1",
+                "project_snapshot_ids": [snapshot["id"]],
+            },
+        ).json()
+        task = client.post(
+            f"/api/v1/eval-datasets/{dataset['id']}/tasks",
+            json={
+                "id": "task-mutation-negation-confirm",
+                "project_snapshot_id": snapshot["id"],
+                "target_scope": {"targets": ["status_label"]},
+                "goal": "confirm comparison negation mutants",
+            },
+        ).json()
+
+        dry_run = client.post(
+            f"/api/v1/eval-tasks/{task['id']}/mutation-discovery/dry-run",
+            json={"sample_seed": 3, "max_selected": 10},
+        ).json()
+        [candidate] = dry_run["candidates"]
+        assert candidate["operator"] == "comparison_negation"
+        assert candidate["patch"] == {"file": "shop/status.py", "old": "code == 200", "new": "code != 200"}
+        assert candidate["selection"]["status"] == "selected"
+        assert candidate["selection"]["reason"]
+
+        with Session(get_engine()) as session:
+            audit_report = build_task_mutation_discovery_audit_report(
+                session,
+                task["id"],
+                sample_seed=3,
+                max_selected=10,
+            )
+
+        response = client.post(
+            f"/api/v1/eval-tasks/{task['id']}/mutation-discovery/confirm-selected",
+            json={
+                "audit_report": audit_report.model_dump(mode="json"),
+                "candidate_id": candidate["candidate_id"],
+                "probe": {
+                    "target_kind": "function",
+                    "probe": "status_label(200)",
+                    "clean_value": "ok",
+                    "buggy_value": "bad",
+                },
+                "seeded_bug_id": "bug-negation-confirmed",
+                "variant_id": "variant-negation-confirmed",
+                "description": "confirmed comparison negation mutation",
+                "expected_detection": "tests should catch status equality inversion",
+                "variant_name": "confirmed comparison negation",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    confirmed = response.json()
+    assert confirmed["bug_type"] == "auto_mutation"
+    [variant] = confirmed["variants"]
+    assert variant["id"] == "variant-negation-confirmed"
+    assert variant["ground_truth"]["source"] == "auto_mutation"
+    assert variant["ground_truth"]["mutation"]["operator"] == "comparison_negation"
+    assert variant["ground_truth"]["mutation"]["selection"]["status"] == "selected"
+    assert variant["ground_truth"]["probe"]["probe_check"]["status"] == "passed"
+    assert variant["ground_truth"]["patch_unique_hit"]["hit_count"] == 1
+
+    with Session(get_engine()) as session:
+        assert session.scalar(select(func.count()).select_from(SeededBug)) == 1
+        assert session.scalar(select(func.count()).select_from(BugVariant)) == 1
+
 def test_seed_demo_dataset_is_repeatable_and_keeps_patch_metadata(clean_db):
     with Session(get_engine()) as session:
         first = seed_demo_dataset(session)

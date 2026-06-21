@@ -16,11 +16,13 @@ from app.schemas.evaluation import (
 
 
 _IGNORE_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".pytest_cache"}
-_BOUNDARY_MUTATIONS = {
-    ast.LtE: ("<=", "<"),
-    ast.Lt: ("<", "<="),
-    ast.GtE: (">=", ">"),
-    ast.Gt: (">", ">="),
+_COMPARE_MUTATIONS = {
+    ast.LtE: ("<=", "<", "comparison_boundary"),
+    ast.Lt: ("<", "<=", "comparison_boundary"),
+    ast.GtE: (">=", ">", "comparison_boundary"),
+    ast.Gt: (">", ">=", "comparison_boundary"),
+    ast.Eq: ("==", "!=", "comparison_negation"),
+    ast.NotEq: ("!=", "==", "comparison_negation"),
 }
 
 
@@ -61,7 +63,7 @@ def discover_mutation_candidates(
                 continue
             seen_targets.add(function.name)
             raw_candidates.extend(
-                _function_boundary_candidates(
+                _function_compare_candidates(
                     text=text,
                     rel_path=rel,
                     function=function,
@@ -93,7 +95,7 @@ def discover_mutation_candidates(
     )
 
 
-def _function_boundary_candidates(
+def _function_compare_candidates(
     *,
     text: str,
     rel_path: str,
@@ -118,7 +120,7 @@ def _function_boundary_candidates(
             )
             continue
         op_type = type(node.ops[0])
-        if op_type not in _BOUNDARY_MUTATIONS:
+        if op_type not in _COMPARE_MUTATIONS:
             exclusions.append(
                 _compare_exclusion(
                     reason_code="unsupported_compare",
@@ -153,7 +155,7 @@ def _function_boundary_candidates(
             )
             continue
 
-        _, replacement_op = _BOUNDARY_MUTATIONS[op_type]
+        _, replacement_op, operator = _COMPARE_MUTATIONS[op_type]
         replacement = f"{ast.unparse(node.left)} {replacement_op} {ast.unparse(node.comparators[0])}"
         candidate_id = _candidate_id(
             source_snapshot_id=source_snapshot_id,
@@ -167,7 +169,7 @@ def _function_boundary_candidates(
                 candidate_id=candidate_id,
                 eval_task_id=eval_task_id,
                 source_snapshot_id=source_snapshot_id,
-                operator="comparison_boundary",
+                operator=operator,
                 patch=MutantPatchContract(file=rel_path, old=source_segment, new=replacement),
                 matcher=MutantMatcherContract(
                     matcher_kind="source_location_hash",
@@ -175,7 +177,7 @@ def _function_boundary_candidates(
                     start_line=node.lineno,
                     end_line=getattr(node, "end_lineno", node.lineno),
                     original_content_hash=_sha256(source_segment),
-                    operator="comparison_boundary",
+                    operator=operator,
                     target_symbol=function.name,
                     context_hash=_sha256(_line_range_text(text, node.lineno, getattr(node, "end_lineno", node.lineno))),
                 ),

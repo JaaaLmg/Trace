@@ -71,7 +71,9 @@ def test_mutation_discovery_dry_run_reports_exclusions_without_writing_variants(
         "def chained(value, upper):\n"
         "    return 1 < value < upper\n\n"
         "def equality(value):\n"
-        "    return value == 1\n",
+        "    if value == 1:\n"
+        "        return True\n"
+        "    return value != 2\n",
         encoding="utf-8",
     )
 
@@ -84,10 +86,15 @@ def test_mutation_discovery_dry_run_reports_exclusions_without_writing_variants(
         max_selected=10,
     )
 
-    assert result.candidates == []
+    assert len(result.candidates) == 2
+    assert {candidate.operator for candidate in result.candidates} == {"comparison_negation"}
+    assert {candidate.patch.old for candidate in result.candidates} == {"value == 1", "value != 2"}
+    assert {candidate.patch.new for candidate in result.candidates} == {"value != 1", "value == 2"}
+    assert all(candidate.matcher.operator == candidate.operator for candidate in result.candidates)
+    assert all(candidate.selection.status == "selected" for candidate in result.candidates)
     reason_codes = [exclusion.reason_code for exclusion in result.exclusions]
     assert "non_unique_patch" in reason_codes
-    assert reason_codes.count("unsupported_compare") == 2
+    assert reason_codes.count("unsupported_compare") == 1
     assert "target_not_found" in reason_codes
     assert result.excluded_count == len(result.exclusions)
     missing = [exclusion for exclusion in result.exclusions if exclusion.reason_code == "target_not_found"]
