@@ -78,6 +78,51 @@ GEN_RETRY_INSTRUCTION = """上次生成被 Contract Guard 拒绝。
 如果 violation 是 `路由响应 oracle 与目标源码行为不一致`，必须按 handler 源码和被调用函数重新计算响应 JSON 期望值；不要手写与源码条件矛盾的折扣、阈值或状态。
 不要降低有源码证据的业务断言；继续只返回要求的 GenerationOutput JSON。"""
 
+GEN_RETRY_OUTPUT_INVARIANTS = """重试输出不变量：
+- 必须返回完整 GenerationOutput JSON，不要只返回 diff 或解释。
+- `test_file_content` 必须是完整 pytest 文件源码。
+- `cases` 必须与真实 pytest 测试函数一一对应；每个 case 必须保留 `test_name`、`assertion_summary`，并填写 `target_function` 或 `target_route`。
+- 不要输出 `test_file_path: null`；路径由系统决定。
+- 只修正 violation 指向的问题，不要切换目标、删除有证据的业务断言或新增无证据 fixture/request field/oracle。"""
+
+
+def generation_retry_fix_hints(violations: list[str]) -> list[str]:
+    """把 Guard violation 翻译成可执行修复动作；Guard 本身仍是最终边界。"""
+    hints: list[str] = []
+    for violation in violations:
+        hint = _generation_retry_fix_hint(violation)
+        if hint and hint not in hints:
+            hints.append(hint)
+    return hints
+
+
+def _generation_retry_fix_hint(violation: str) -> str | None:
+    if "真实测试函数缺少 cases 声明" in violation or "cases 声明未对应真实测试函数" in violation:
+        return "修正 cases 映射：逐个读取 test_file_content 中的真实 pytest 函数名，并让 cases[*].test_name 与函数名完全一致；参数化测试使用基础函数名即可。"
+    if "缺少 assertion_summary" in violation:
+        return "补齐每个 case 的 assertion_summary，写清断言的业务字段、输入和期望值。"
+    if "缺少 target_function/target_route" in violation or "目标绑定不匹配 plan item" in violation:
+        return "修正目标绑定：函数任务填写 target_function；路由任务填写 target_route，并确保测试请求仍命中本次 plan item 的目标。"
+    if "测试函数 fixture 缺少项目证据" in violation:
+        return "删除无证据 fixture 参数；FastAPI 路由测试在测试内导入 app 并用 TestClient(app) 构造局部 client，pytest 内置 fixture 如 monkeypatch/tmp_path 可继续使用。"
+    if "请求字段缺少证据" in violation or "请求字段缺少模型证据" in violation:
+        return "只使用模型 schema、路由 query 参数或源码证据中出现的 request 字段；删除 made-up json/params/data 字段。"
+    if "业务 oracle" in violation:
+        return "补强路由业务 oracle：除状态码外，必须断言响应 JSON 中有源码/response model 证据的字段和值。"
+    if "请求路径不匹配目标路由" in violation or "请求方法不匹配目标路由" in violation:
+        return "修正 TestClient 请求 method/path，使其与 target_route 或 plan item 的 method/path 一致。"
+    if "空 path 参数" in violation:
+        return "不要用空 path 段测试 path 参数；选择源码常量或 fixture 证据中的有效 path 参数值。"
+    if "没有可见 raise 证据" in violation or "异常类型" in violation or "异常消息" in violation:
+        return "异常 oracle 必须来自目标源码片段中的 raise 语句；没有 raise 证据时改测返回值或状态，不要写 pytest.raises。"
+    if "源码行为" in violation or "路由响应 oracle" in violation or "响应模型字段" in violation:
+        return "按目标源码、依赖函数和 response model 重新计算期望；删除与源码条件、字段或状态码矛盾的 oracle。"
+    if "空洞断言" in violation or "没有任何断言" in violation:
+        return "把空洞断言替换为具体业务断言，断言返回值、异常、状态码和响应 JSON 字段中的可证事实。"
+    if "重新定义被测目标" in violation:
+        return "不要在测试文件里重定义被测函数、路由 handler 或 app；必须 import 项目里的真实目标。"
+    return None
+
 PLAN_INSTRUCTION = (
     '把目标拆成若干测试任务，返回 JSON：'
     '{"items":[{"index":0,"target_type":"function|route|module","target_ref":"标识","goal":"该任务测什么","planned_assertions":["..."]}]}'
@@ -101,6 +146,7 @@ def prompt_bundle(strategy: StrategyVersionSpec) -> dict:
         "generate_prefix": GEN_PREFIX,
         "generate_contract": GEN_CONTRACT,
         "generate_retry_instruction": GEN_RETRY_INSTRUCTION,
+        "generate_retry_output_invariants": GEN_RETRY_OUTPUT_INVARIANTS,
         "generate_schema_hint": _GEN_SCHEMA_HINT,
         "reflect_json_tail": REFLECT_JSON_TAIL,
     }
@@ -171,9 +217,13 @@ def build_generate_retry_messages(
     previous_content: str,
 ) -> list[Message]:
     violation_lines = "\n".join(f"- {violation}" for violation in violations)
+    fix_hints = generation_retry_fix_hints(violations)
+    hint_lines = "\n".join(f"- {hint}" for hint in fix_hints) or "- 按 violations 原文修正，不新增无证据测试目标或 oracle。"
     user = (
         f"{GEN_RETRY_INSTRUCTION}\n\n"
         f"violations:\n{violation_lines}\n\n"
+        f"针对性修复动作：\n{hint_lines}\n\n"
+        f"{GEN_RETRY_OUTPUT_INVARIANTS}\n\n"
         f"上次生成的测试文件：\n```python\n{previous_content}\n```\n\n"
         f"{GEN_PREFIX}{_GEN_SCHEMA_HINT}"
     )

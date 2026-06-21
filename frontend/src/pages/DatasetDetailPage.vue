@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { ArrowLeft, Bug, CheckCircle2, Database, FlaskConical, GitBranch, RefreshCw } from "@lucide/vue";
-import { confirmSelectedMutationCandidate, createBugVariant, createEvalDataset, createEvalTask, createSeededBug, dryRunTaskMutationDiscovery, getEvalDataset } from "../api/evaluation";
+import { confirmSelectedMutationCandidate, createBugVariant, createEvalDataset, createEvalTask, createSeededBug, dryRunTaskMutationDiscovery, getEvalDataset, getEvalDatasetReadiness, updateBugVariant, updateEvalTask, updateSeededBug } from "../api/evaluation";
 import JsonViewer from "../components/JsonViewer.vue";
 import { demoEvalDataset } from "../demo/staticRunFixture";
 import { useLatestRequest } from "../composables/useLatestRequest";
 import { useI18n } from "../i18n";
 import type {
+  BugVariantOut,
+  DatasetReadinessOut,
   EvalDatasetDetailOut,
   EvalTaskDetailOut,
   JsonObject,
@@ -32,6 +34,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const dataset = shallowRef<EvalDatasetDetailOut | null>(null);
+const serverDatasetReadiness = shallowRef<DatasetReadinessOut | null>(null);
 const loading = ref(false);
 const errorMessage = ref<string | null>(null);
 const selectedTaskId = ref<string | null>(null);
@@ -64,6 +67,9 @@ const confirmForm = ref({
   probeJson: '{\n  "target_kind": "function",\n  "probe": "",\n  "clean_value": null,\n  "buggy_value": null\n}'
 });
 const authoring = ref(false);
+const editingTaskId = ref<string | null>(null);
+const editingBugId = ref<string | null>(null);
+const editingVariantId = ref<string | null>(null);
 const taskForm = ref({
   id: "",
   projectSnapshotId: "",
@@ -109,6 +115,101 @@ const variantCount = computed<number>(() => {
 });
 
 type ReadinessStatus = "ready" | "incomplete";
+type TaskReadinessFilter = "all" | ReadinessStatus;
+
+const taskSearchQuery = ref("");
+const taskReadinessFilter = ref<TaskReadinessFilter>("all");
+
+
+type VariantConfirmationStatus = "ordinary" | "confirmed" | "probe_failed" | "probe_missing";
+
+function objectField(value: JsonObject | null, key: string): JsonObject | null {
+  const next = value?.[key];
+  if (next && typeof next === "object" && !Array.isArray(next)) {
+    return next as JsonObject;
+  }
+  return null;
+}
+
+function stringField(value: JsonObject | null, key: string): string | null {
+  const next = value?.[key];
+  return typeof next === "string" ? next : null;
+}
+
+function compactJson(value: JsonValue | undefined): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === undefined) {
+    return "-";
+  }
+  return JSON.stringify(value);
+}
+
+function variantGroundTruthSource(variant: BugVariantOut): string {
+  return stringField(variant.ground_truth, "source") ?? "seeded_bug";
+}
+
+function variantProbeCheck(variant: BugVariantOut): JsonObject | null {
+  return objectField(objectField(variant.ground_truth, "probe"), "probe_check");
+}
+
+function probeCheckFailureDetail(probeCheck: JsonObject): string | null {
+  for (const key of ["reason", "message", "error", "detail"]) {
+    const value = stringField(probeCheck, key);
+    if (value?.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function variantConfirmationStatus(variant: BugVariantOut): VariantConfirmationStatus {
+  if (variantGroundTruthSource(variant) !== "auto_mutation") {
+    return "ordinary";
+  }
+  const status = stringField(variantProbeCheck(variant), "status");
+  if (status === "passed") {
+    return "confirmed";
+  }
+  if (status === "failed") {
+    return "probe_failed";
+  }
+  return "probe_missing";
+}
+
+function variantConfirmationLabel(variant: BugVariantOut): string {
+  const status = variantConfirmationStatus(variant);
+  if (status === "confirmed") {
+    return t("datasets.confirmationConfirmed");
+  }
+  if (status === "probe_failed") {
+    return t("datasets.confirmationProbeFailed");
+  }
+  if (status === "probe_missing") {
+    return t("datasets.confirmationProbeMissing");
+  }
+  return t("datasets.confirmationOrdinary");
+}
+
+function variantConfirmationDetail(variant: BugVariantOut): string {
+  if (variantGroundTruthSource(variant) !== "auto_mutation") {
+    return t("datasets.confirmationOrdinaryDetail");
+  }
+  const probe = objectField(variant.ground_truth, "probe");
+  const probeCheck = variantProbeCheck(variant);
+  const probeExpr = stringField(probe, "probe") ?? t("common.unknown");
+  if (!probeCheck) {
+    return t("datasets.confirmationProbeMissingDetail", { probe: probeExpr });
+  }
+  const failureDetail = probeCheckFailureDetail(probeCheck);
+  if (failureDetail) {
+    return t("datasets.confirmationProbeFailureDetail", { probe: probeExpr, reason: failureDetail });
+  }
+  const clean = `${compactJson(probeCheck.clean_actual)} / ${compactJson(probeCheck.clean_expected)}`;
+  const buggy = `${compactJson(probeCheck.buggy_actual)} / ${compactJson(probeCheck.buggy_expected)}`;
+  return t("datasets.confirmationProbeDetail", { probe: probeExpr, clean, buggy });
+}
 
 type DatasetReadinessIssue = {
   id: string;
@@ -201,6 +302,81 @@ const datasetReadiness = computed(() => {
     issues.push(...taskReadinessIssues(task));
   }
   return { status: readinessStatus(issues), issues };
+});
+
+
+
+const displayedDatasetReadiness = computed(() => {
+  const server = serverDatasetReadiness.value;
+  if (!server) {
+    return datasetReadiness.value;
+  }
+  return {
+    status: server.status,
+    issues: server.issues.map((issue) => ({
+      id: issue.id,
+      label: issue.code,
+      detail: issue.message
+    }))
+  };
+});
+function taskSearchText(task: EvalTaskDetailOut): string {
+  return [
+    task.id,
+    task.project_snapshot_id,
+    task.goal,
+    capabilityText(task),
+    JSON.stringify(task.target_scope),
+    ...task.seeded_bugs.flatMap((bug) => [
+      bug.id,
+      bug.bug_type,
+      bug.description,
+      bug.expected_detection,
+      ...bug.variants.flatMap((variant) => [
+        variant.id,
+        variant.variant_name,
+        variantGroundTruthSource(variant),
+        variantConfirmationStatus(variant),
+        variantConfirmationDetail(variant)
+      ])
+    ])
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+const filteredTasks = computed<EvalTaskDetailOut[]>(() => {
+  const current = dataset.value;
+  if (!current) {
+    return [];
+  }
+  const query = taskSearchQuery.value.trim().toLowerCase();
+  return current.tasks.filter((task) => {
+    const status = taskReadinessStatus(task);
+    const statusMatches = taskReadinessFilter.value === "all" || taskReadinessFilter.value === status;
+    const queryMatches = !query || taskSearchText(task).includes(query);
+    return statusMatches && queryMatches;
+  });
+});
+
+const taskReadinessSummary = computed(() => {
+  const tasks = dataset.value?.tasks ?? [];
+  let ready = 0;
+  let incomplete = 0;
+  for (const task of tasks) {
+    if (taskReadinessStatus(task) === "ready") {
+      ready += 1;
+    } else {
+      incomplete += 1;
+    }
+  }
+  return {
+    total: tasks.length,
+    ready,
+    incomplete,
+    visible: filteredTasks.value.length,
+    hidden: Math.max(0, tasks.length - filteredTasks.value.length)
+  };
 });
 
 const selectedMutationCandidates = computed<MutationCandidateContract[]>(() =>
@@ -367,6 +543,86 @@ function commaList(value: string): string[] {
     .filter(Boolean);
 }
 
+function formatJsonInput(value: JsonObject): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function resetTaskForm() {
+  editingTaskId.value = null;
+  taskForm.value = {
+    id: "",
+    projectSnapshotId: "",
+    goal: "",
+    expectedCapabilities: "",
+    targetScopeJson: "{}"
+  };
+}
+
+function resetBugForm() {
+  editingBugId.value = null;
+  bugForm.value = {
+    id: "",
+    bugType: "semantic",
+    description: "",
+    expectedDetection: ""
+  };
+}
+
+function resetVariantForm() {
+  editingVariantId.value = null;
+  variantForm.value = {
+    seededBugId: "",
+    id: "",
+    variantName: "",
+    patchFile: "",
+    patchOld: "",
+    patchNew: "",
+    mutatedSnapshotId: "",
+    groundTruthJson: "{}"
+  };
+}
+
+function loadSelectedTaskForEdit() {
+  const task = selectedTask.value;
+  if (!task) {
+    return;
+  }
+  authoring.value = true;
+  editingTaskId.value = task.id;
+  taskForm.value = {
+    id: task.id,
+    projectSnapshotId: task.project_snapshot_id,
+    goal: task.goal,
+    expectedCapabilities: task.expected_capabilities.map((item) => String(item)).join(", "),
+    targetScopeJson: formatJsonInput(task.target_scope)
+  };
+}
+
+function loadBugForEdit(bug: SeededBugDetailOut) {
+  authoring.value = true;
+  editingBugId.value = bug.id;
+  bugForm.value = {
+    id: bug.id,
+    bugType: bug.bug_type,
+    description: bug.description,
+    expectedDetection: bug.expected_detection
+  };
+}
+
+function loadVariantForEdit(variant: BugVariantOut) {
+  authoring.value = true;
+  editingVariantId.value = variant.id;
+  variantForm.value = {
+    seededBugId: variant.seeded_bug_id,
+    id: variant.id,
+    variantName: variant.variant_name,
+    patchFile: "",
+    patchOld: "",
+    patchNew: "",
+    mutatedSnapshotId: variant.mutated_snapshot_id ?? "",
+    groundTruthJson: formatJsonInput(variant.ground_truth)
+  };
+}
 async function submitTask() {
   if (props.dataSource !== "api" || !dataset.value) {
     return;
@@ -376,6 +632,18 @@ async function submitTask() {
   createMessage.value = null;
   try {
     const targetScope = parseJsonObject(taskForm.value.targetScopeJson, "datasets.targetScopeJsonInvalid");
+    if (editingTaskId.value) {
+      const updated = await updateEvalTask(editingTaskId.value, {
+        target_scope: targetScope,
+        goal: taskForm.value.goal.trim(),
+        expected_capabilities: commaList(taskForm.value.expectedCapabilities)
+      });
+      createMessage.value = `${t("datasets.updatedTask")}: ${updated.id}`;
+      await loadDataset();
+      selectedTaskId.value = updated.id;
+      resetTaskForm();
+      return;
+    }
     const created = await createEvalTask(dataset.value.id, {
       id: taskForm.value.id.trim() || null,
       project_snapshot_id: taskForm.value.projectSnapshotId.trim(),
@@ -386,8 +654,9 @@ async function submitTask() {
     createMessage.value = `${t("datasets.createdTask")}: ${created.id}`;
     await loadDataset();
     selectedTaskId.value = created.id;
+    resetTaskForm();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : t("datasets.createTaskFailed");
+    errorMessage.value = error instanceof Error ? error.message : t(editingTaskId.value ? "datasets.updateTaskFailed" : "datasets.createTaskFailed");
   } finally {
     creating.value = false;
   }
@@ -395,13 +664,28 @@ async function submitTask() {
 
 async function submitSeededBug() {
   const task = selectedTask.value;
-  if (props.dataSource !== "api" || !task) {
+  if (props.dataSource !== "api" || (!task && !editingBugId.value)) {
     return;
   }
   creating.value = true;
   errorMessage.value = null;
   createMessage.value = null;
   try {
+    if (editingBugId.value) {
+      const updated = await updateSeededBug(editingBugId.value, {
+        bug_type: bugForm.value.bugType.trim(),
+        description: bugForm.value.description.trim(),
+        expected_detection: bugForm.value.expectedDetection.trim()
+      });
+      createMessage.value = `${t("datasets.updatedSeededBug")}: ${updated.id}`;
+      await loadDataset();
+      selectedTaskId.value = updated.eval_task_id;
+      resetBugForm();
+      return;
+    }
+    if (!task) {
+      return;
+    }
     const created = await createSeededBug(task.id, {
       id: bugForm.value.id.trim() || null,
       bug_type: bugForm.value.bugType.trim(),
@@ -412,8 +696,9 @@ async function submitSeededBug() {
     await loadDataset();
     selectedTaskId.value = task.id;
     variantForm.value.seededBugId = created.id;
+    resetBugForm();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : t("datasets.createSeededBugFailed");
+    errorMessage.value = error instanceof Error ? error.message : t(editingBugId.value ? "datasets.updateSeededBugFailed" : "datasets.createSeededBugFailed");
   } finally {
     creating.value = false;
   }
@@ -431,6 +716,17 @@ async function submitVariant() {
     if (groundTruth.source === "auto_mutation") {
       throw new Error(t("datasets.autoMutationVariantBlocked"));
     }
+    if (editingVariantId.value) {
+      const updated = await updateBugVariant(editingVariantId.value, {
+        variant_name: variantForm.value.variantName.trim(),
+        mutated_snapshot_id: variantForm.value.mutatedSnapshotId.trim() || null,
+        ground_truth: groundTruth
+      });
+      createMessage.value = `${t("datasets.updatedVariant")}: ${updated.id}`;
+      await loadDataset();
+      resetVariantForm();
+      return;
+    }
     const created = await createBugVariant(variantForm.value.seededBugId.trim(), {
       id: variantForm.value.id.trim() || null,
       variant_name: variantForm.value.variantName.trim(),
@@ -445,8 +741,9 @@ async function submitVariant() {
     });
     createMessage.value = `${t("datasets.createdVariant")}: ${created.id}`;
     await loadDataset();
+    resetVariantForm();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : t("datasets.createVariantFailed");
+    errorMessage.value = error instanceof Error ? error.message : t(editingVariantId.value ? "datasets.updateVariantFailed" : "datasets.createVariantFailed");
   } finally {
     creating.value = false;
   }
@@ -455,6 +752,7 @@ async function loadDataset() {
   const requestSeq = datasetRequest.next();
   if (isCreateOnly.value) {
     dataset.value = null;
+    serverDatasetReadiness.value = null;
     selectedTaskId.value = null;
     errorMessage.value = null;
     loading.value = false;
@@ -463,17 +761,21 @@ async function loadDataset() {
   loading.value = true;
   errorMessage.value = null;
   try {
-    const next = props.dataSource === "demo" ? demoEvalDataset : await getEvalDataset(props.datasetId);
+    const [next, readiness] = props.dataSource === "demo"
+      ? [demoEvalDataset, null]
+      : await Promise.all([getEvalDataset(props.datasetId), getEvalDatasetReadiness(props.datasetId)]);
     if (!datasetRequest.isCurrent(requestSeq)) {
       return;
     }
     dataset.value = next;
+    serverDatasetReadiness.value = readiness;
     selectedTaskId.value = next.tasks[0]?.id ?? null;
   } catch (error) {
     if (!datasetRequest.isCurrent(requestSeq)) {
       return;
     }
     dataset.value = null;
+    serverDatasetReadiness.value = null;
     selectedTaskId.value = null;
     errorMessage.value = error instanceof Error ? error.message : t("datasets.loadFailed");
   } finally {
@@ -616,29 +918,29 @@ watch(
         </article>
       </section>
 
-      <section class="subtle-panel readiness-panel" :data-status="datasetReadiness.status">
+      <section class="subtle-panel readiness-panel" :data-status="displayedDatasetReadiness.status">
         <div class="panel-head">
           <div>
             <p class="eyebrow">DATASET READINESS</p>
             <h2>{{ t("datasets.readiness") }}</h2>
           </div>
-          <span class="status-chip" :data-status="datasetReadiness.status">
-            {{ datasetReadiness.status === "ready" ? t("datasets.readinessReady") : t("datasets.readinessIncomplete") }}
+          <span class="status-chip" :data-status="displayedDatasetReadiness.status">
+            {{ displayedDatasetReadiness.status === "ready" ? t("datasets.readinessReady") : t("datasets.readinessIncomplete") }}
           </span>
         </div>
-        <p v-if="datasetReadiness.status === 'ready'" class="mode-note compact-note">{{ t("datasets.readinessReadyBody") }}</p>
+        <p v-if="displayedDatasetReadiness.status === 'ready'" class="mode-note compact-note">{{ t("datasets.readinessReadyBody") }}</p>
         <div v-else class="readiness-issues">
           <p class="mode-note compact-note">
-            <strong>{{ datasetReadiness.issues.length }}</strong> {{ t("datasets.readinessIssueCount") }}
+            <strong>{{ displayedDatasetReadiness.issues.length }}</strong> {{ t("datasets.readinessIssueCount") }}
           </p>
           <ul>
-            <li v-for="issue in datasetReadiness.issues.slice(0, 8)" :key="issue.id">
+            <li v-for="issue in displayedDatasetReadiness.issues.slice(0, 8)" :key="issue.id">
               <strong>{{ issue.label }}</strong>
               <span>{{ issue.detail }}</span>
             </li>
           </ul>
-          <small v-if="datasetReadiness.issues.length > 8">
-            {{ t("datasets.readinessMore", { count: datasetReadiness.issues.length - 8 }) }}
+          <small v-if="displayedDatasetReadiness.issues.length > 8">
+            {{ t("datasets.readinessMore", { count: displayedDatasetReadiness.issues.length - 8 }) }}
           </small>
         </div>
       </section>
@@ -649,24 +951,29 @@ watch(
             <p class="eyebrow">DATASET AUTHORING</p>
             <h2>{{ t("datasets.authoring") }}</h2>
           </div>
-          <button class="text-button" type="button" @click="authoring = !authoring">
-            {{ authoring ? t("json.collapse") : t("json.expand") }}
-          </button>
+          <div class="authoring-actions">
+            <button class="text-button" type="button" :disabled="!selectedTask" @click="loadSelectedTaskForEdit">
+              {{ t("datasets.editSelectedTask") }}
+            </button>
+            <button class="text-button" type="button" @click="authoring = !authoring">
+              {{ authoring ? t("json.collapse") : t("json.expand") }}
+            </button>
+          </div>
         </div>
 
         <div v-if="authoring" class="authoring-grid">
           <form class="authoring-form" @submit.prevent="submitTask">
             <div class="form-title">
-              <strong>{{ t("datasets.createTask") }}</strong>
+              <strong>{{ editingTaskId ? t("datasets.updateTask") : t("datasets.createTask") }}</strong>
               <small>{{ t("datasets.task") }}</small>
             </div>
             <label>
               <span>{{ t("experiments.optionalId") }}</span>
-              <input v-model="taskForm.id" type="text" placeholder="task-local-pricing" />
+              <input v-model="taskForm.id" type="text" placeholder="task-local-pricing" :disabled="Boolean(editingTaskId)" />
             </label>
             <label>
               <span>{{ t("datasets.snapshot") }}</span>
-              <input v-model="taskForm.projectSnapshotId" type="text" placeholder="snapshot id" required />
+              <input v-model="taskForm.projectSnapshotId" type="text" placeholder="snapshot id" required :disabled="Boolean(editingTaskId)" />
             </label>
             <label>
               <span>{{ t("projects.goal") }}</span>
@@ -680,17 +987,24 @@ watch(
               <span>{{ t("datasets.targetScope") }}</span>
               <textarea v-model="taskForm.targetScopeJson" rows="5" spellcheck="false" />
             </label>
-            <button class="text-button" type="submit" :disabled="creating">{{ t("datasets.createTask") }}</button>
+            <div class="form-actions">
+              <button class="text-button" type="submit" :disabled="creating">
+                {{ editingTaskId ? t("datasets.updateTask") : t("datasets.createTask") }}
+              </button>
+              <button v-if="editingTaskId" class="text-button" type="button" :disabled="creating" @click="resetTaskForm">
+                {{ t("common.cancel") }}
+              </button>
+            </div>
           </form>
 
           <form class="authoring-form" @submit.prevent="submitSeededBug">
             <div class="form-title">
-              <strong>{{ t("datasets.createSeededBug") }}</strong>
+              <strong>{{ editingBugId ? t("datasets.updateSeededBug") : t("datasets.createSeededBug") }}</strong>
               <small>{{ selectedTask?.id ?? t("common.none") }}</small>
             </div>
             <label>
               <span>{{ t("experiments.optionalId") }}</span>
-              <input v-model="bugForm.id" type="text" placeholder="bug-local-pricing" />
+              <input v-model="bugForm.id" type="text" placeholder="bug-local-pricing" :disabled="Boolean(editingBugId)" />
             </label>
             <label>
               <span>{{ t("datasets.bugType") }}</span>
@@ -704,24 +1018,31 @@ watch(
               <span>{{ t("datasets.expectedDetection") }}</span>
               <input v-model="bugForm.expectedDetection" type="text" required />
             </label>
-            <button class="text-button" type="submit" :disabled="creating || !selectedTask">{{ t("datasets.createSeededBug") }}</button>
+            <div class="form-actions">
+              <button class="text-button" type="submit" :disabled="creating || (!selectedTask && !editingBugId)">
+                {{ editingBugId ? t("datasets.updateSeededBug") : t("datasets.createSeededBug") }}
+              </button>
+              <button v-if="editingBugId" class="text-button" type="button" :disabled="creating" @click="resetBugForm">
+                {{ t("common.cancel") }}
+              </button>
+            </div>
           </form>
 
           <form class="authoring-form variant-authoring" @submit.prevent="submitVariant">
             <div class="form-title">
-              <strong>{{ t("datasets.createVariant") }}</strong>
-              <small>{{ t("datasets.canonicalKind") }} patch</small>
+              <strong>{{ editingVariantId ? t("datasets.updateVariant") : t("datasets.createVariant") }}</strong>
+              <small>{{ editingVariantId ? t("datasets.patchLocked") : t("datasets.canonicalKind") + " patch" }}</small>
             </div>
             <label>
               <span>{{ t("datasets.seededBugId") }}</span>
-              <select v-model="variantForm.seededBugId" required>
+              <select v-model="variantForm.seededBugId" required :disabled="Boolean(editingVariantId)">
                 <option value="">{{ t("common.none") }}</option>
                 <option v-for="bug in selectedTask?.seeded_bugs ?? []" :key="bug.id" :value="bug.id">{{ bug.id }}</option>
               </select>
             </label>
             <label>
               <span>{{ t("experiments.optionalId") }}</span>
-              <input v-model="variantForm.id" type="text" placeholder="variant-local-pricing" />
+              <input v-model="variantForm.id" type="text" placeholder="variant-local-pricing" :disabled="Boolean(editingVariantId)" />
             </label>
             <label>
               <span>{{ t("datasets.variantName") }}</span>
@@ -733,23 +1054,28 @@ watch(
             </label>
             <label>
               <span>{{ t("datasets.patchFile") }}</span>
-              <input v-model="variantForm.patchFile" type="text" placeholder="shop/pricing.py" required />
+              <input v-model="variantForm.patchFile" type="text" placeholder="shop/pricing.py" :required="!editingVariantId" :disabled="Boolean(editingVariantId)" />
             </label>
             <label>
               <span>{{ t("datasets.patchOld") }}</span>
-              <textarea v-model="variantForm.patchOld" rows="4" spellcheck="false" required />
+              <textarea v-model="variantForm.patchOld" rows="4" spellcheck="false" :required="!editingVariantId" :disabled="Boolean(editingVariantId)" />
             </label>
             <label>
               <span>{{ t("datasets.patchNew") }}</span>
-              <textarea v-model="variantForm.patchNew" rows="4" spellcheck="false" />
+              <textarea v-model="variantForm.patchNew" rows="4" spellcheck="false" :disabled="Boolean(editingVariantId)" />
             </label>
             <label>
               <span>{{ t("datasets.groundTruthJson") }}</span>
               <textarea v-model="variantForm.groundTruthJson" rows="4" spellcheck="false" />
             </label>
-            <button class="text-button" type="submit" :disabled="creating || !variantForm.seededBugId.trim()">
-              {{ t("datasets.createVariant") }}
-            </button>
+            <div class="form-actions">
+              <button class="text-button" type="submit" :disabled="creating || (!editingVariantId && !variantForm.seededBugId.trim())">
+                {{ editingVariantId ? t("datasets.updateVariant") : t("datasets.createVariant") }}
+              </button>
+              <button v-if="editingVariantId" class="text-button" type="button" :disabled="creating" @click="resetVariantForm">
+                {{ t("common.cancel") }}
+              </button>
+            </div>
           </form>
         </div>
       </section>
@@ -759,12 +1085,31 @@ watch(
           <div class="panel-head">
             <div>
               <p class="eyebrow">{{ t("datasets.tasks") }}</p>
-              <h2>{{ dataset.tasks.length }}</h2>
+              <h2>{{ taskReadinessSummary.visible }} / {{ taskReadinessSummary.total }}</h2>
             </div>
             <GitBranch :size="18" aria-hidden="true" />
           </div>
+          <div class="task-filter-panel">
+            <label class="task-search-field">
+              <span>{{ t("datasets.searchTasks") }}</span>
+              <input v-model="taskSearchQuery" type="search" :placeholder="t('datasets.searchTasksPlaceholder')" />
+            </label>
+            <label>
+              <span>{{ t("datasets.readinessFilter") }}</span>
+              <select v-model="taskReadinessFilter">
+                <option value="all">{{ t("datasets.filterAll") }}</option>
+                <option value="ready">{{ t("datasets.readinessReady") }}</option>
+                <option value="incomplete">{{ t("datasets.readinessIncomplete") }}</option>
+              </select>
+            </label>
+          </div>
+          <div class="task-summary-strip">
+            <span><strong>{{ taskReadinessSummary.ready }}</strong><small>{{ t("datasets.readinessReady") }}</small></span>
+            <span><strong>{{ taskReadinessSummary.incomplete }}</strong><small>{{ t("datasets.readinessIncomplete") }}</small></span>
+            <span><strong>{{ taskReadinessSummary.hidden }}</strong><small>{{ t("datasets.hiddenByFilter") }}</small></span>
+          </div>
           <button
-            v-for="task in dataset.tasks"
+            v-for="task in filteredTasks"
             :key="task.id"
             type="button"
             class="task-row"
@@ -782,6 +1127,7 @@ watch(
               </i>
             </small>
           </button>
+          <p v-if="filteredTasks.length === 0" class="empty-state compact-note">{{ t("datasets.noFilteredTasks") }}</p>
         </aside>
 
         <section v-if="selectedTask" class="task-detail">
@@ -959,6 +1305,7 @@ watch(
                   <p>{{ bug.description }}</p>
                 </div>
                 <div class="bug-tools">
+                  <button class="text-button" type="button" @click="loadBugForEdit(bug)">{{ t("datasets.edit") }}</button>
                   <span class="status-chip" :data-status="bugReadinessStatus(bug)">
                     {{ bugReadinessStatus(bug) === "ready" ? t("datasets.readinessReady") : t("datasets.readinessIncomplete") }}
                   </span>
@@ -979,7 +1326,9 @@ watch(
                       <th>{{ t("datasets.variant") }}</th>
                       <th>{{ t("datasets.canonicalKind") }}</th>
                       <th>{{ t("datasets.snapshot") }}</th>
+                      <th>{{ t("datasets.confirmation") }}</th>
                       <th>{{ t("datasets.patch") }}</th>
+                      <th>{{ t("experiments.action") }}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -991,7 +1340,14 @@ watch(
                       <td>{{ variant.canonical_kind }}</td>
                       <td class="mono">{{ variant.mutated_snapshot_id ?? t("common.none") }}</td>
                       <td>
+                        <span class="mutation-status" :data-status="variantConfirmationStatus(variant)">{{ variantConfirmationLabel(variant) }}</span>
+                        <small class="block-mono confirmation-detail">{{ variantConfirmationDetail(variant) }}</small>
+                      </td>
+                      <td>
                         <JsonViewer :value="variant.ground_truth as JsonObject" :max-depth="4" :max-array-items="10" />
+                      </td>
+                      <td>
+                        <button class="text-button" type="button" @click="loadVariantForEdit(variant)">{{ t("datasets.edit") }}</button>
                       </td>
                     </tr>
                   </tbody>
@@ -1172,7 +1528,7 @@ watch(
 }
 
 .variant-authoring .form-title,
-.variant-authoring button {
+.variant-authoring .form-actions {
   grid-column: 1 / -1;
   justify-self: start;
 }
@@ -1273,6 +1629,62 @@ watch(
   gap: 14px;
 }
 
+
+.task-filter-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 150px);
+  gap: 10px;
+}
+
+.task-filter-panel label {
+  display: grid;
+  gap: 6px;
+}
+
+.task-filter-panel label span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.task-filter-panel input,
+.task-filter-panel select {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.task-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.task-summary-strip span {
+  display: grid;
+  gap: 1px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(251, 250, 247, 0.72);
+}
+
+.task-summary-strip strong {
+  line-height: 1.15;
+}
+
+.task-summary-strip small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
 .task-row {
   width: 100%;
   display: flex;
@@ -1340,6 +1752,12 @@ watch(
   margin-top: 6px;
 }
 
+
+.confirmation-detail {
+  display: block;
+  max-width: 280px;
+  margin-top: 6px;
+}
 .variant-table {
   margin-top: 4px;
 }
@@ -1446,6 +1864,24 @@ watch(
   color: var(--tool);
 }
 
+.mutation-status[data-status="ordinary"] {
+  border-color: rgba(94, 101, 111, 0.28);
+  background: rgba(94, 101, 111, 0.08);
+  color: var(--muted-strong);
+}
+
+.mutation-status[data-status="confirmed"] {
+  border-color: rgba(49, 95, 125, 0.28);
+  background: rgba(49, 95, 125, 0.08);
+  color: var(--tool);
+}
+
+.mutation-status[data-status="probe_failed"],
+.mutation-status[data-status="probe_missing"] {
+  border-color: rgba(145, 93, 38, 0.28);
+  background: rgba(145, 93, 38, 0.08);
+  color: #795125;
+}
 .mutation-status[data-status="excluded"] {
   border-color: rgba(145, 93, 38, 0.28);
   background: rgba(145, 93, 38, 0.08);

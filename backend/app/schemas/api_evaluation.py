@@ -71,6 +71,14 @@ class EvalTaskCreate(BaseModel):
         return validate_resource_id(value)
 
 
+class EvalTaskUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_scope: dict | None = None
+    goal: str | None = None
+    expected_capabilities: list | None = None
+
+
 class SeededBugCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -83,6 +91,14 @@ class SeededBugCreate(BaseModel):
     @classmethod
     def _id_is_safe(cls, value: str | None) -> str | None:
         return validate_resource_id(value)
+
+
+class SeededBugUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bug_type: str | None = None
+    description: str | None = None
+    expected_detection: str | None = None
 
 
 class BugVariantCreate(BaseModel):
@@ -99,6 +115,14 @@ class BugVariantCreate(BaseModel):
     @classmethod
     def _id_is_safe(cls, value: str | None) -> str | None:
         return validate_resource_id(value)
+
+
+class BugVariantUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    variant_name: str | None = None
+    mutated_snapshot_id: str | None = None
+    ground_truth: dict | None = None
 
 
 class MutationDiscoveryDryRunRequest(BaseModel):
@@ -209,6 +233,24 @@ class EvalTaskDetailOut(EvalTaskOut):
 class EvalDatasetDetailOut(EvalDatasetOut):
     tasks: list[EvalTaskDetailOut] = Field(default_factory=list)
 
+
+
+class DatasetReadinessIssueOut(BaseModel):
+    id: str
+    code: str
+    scope: str
+    entity_id: str | None = None
+    message: str
+
+
+class DatasetReadinessOut(BaseModel):
+    dataset_id: str
+    status: str
+    task_count: int
+    ready_task_count: int
+    incomplete_task_count: int
+    issue_count: int
+    issues: list[DatasetReadinessIssueOut] = Field(default_factory=list)
 
 class ExperimentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")

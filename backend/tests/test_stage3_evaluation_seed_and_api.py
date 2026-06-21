@@ -214,6 +214,262 @@ def test_eval_dataset_task_bug_variant_api_enforces_patch_unique_hit(tmp_path, c
         assert detail["tasks"][0]["seeded_bugs"][0]["variants"][0]["id"] == variant["id"]
 
 
+
+def test_dataset_authoring_update_api_preserves_variant_evidence_and_blocks_auto_mutation_bypass(tmp_path, clean_db):
+    app = create_app()
+    project_root = tmp_path / "proj"
+    package = project_root / "shop"
+    package.mkdir(parents=True)
+    (package / "pricing.py").write_text(
+        "def shipping_fee(weight_kg):\n"
+        "    if weight_kg <= 5:\n"
+        "        return 10\n"
+        "    return 20\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        snapshot = _create_project_and_snapshot(client, project_root)
+        dataset = client.post(
+            "/api/v1/eval-datasets",
+            json={
+                "id": "dataset-authoring-update",
+                "name": "authoring update",
+                "version": "v1",
+                "project_snapshot_ids": [snapshot["id"]],
+            },
+        ).json()
+        task = client.post(
+            f"/api/v1/eval-datasets/{dataset['id']}/tasks",
+            json={
+                "id": "task-authoring-update",
+                "project_snapshot_id": snapshot["id"],
+                "target_scope": {"targets": ["shipping_fee"]},
+                "goal": "cover initial boundary",
+                "expected_capabilities": ["boundary"],
+            },
+        ).json()
+        bug = client.post(
+            f"/api/v1/eval-tasks/{task['id']}/seeded-bugs",
+            json={
+                "id": "bug-authoring-update",
+                "bug_type": "boundary",
+                "description": "initial description",
+                "expected_detection": "initial oracle",
+            },
+        ).json()
+        patch_payload = {
+            "file": "shop/pricing.py",
+            "old": "if weight_kg <= 5:",
+            "new": "if weight_kg < 5:",
+        }
+        variant = client.post(
+            f"/api/v1/seeded-bugs/{bug['id']}/variants",
+            json={
+                "id": "variant-authoring-update",
+                "variant_name": "initial variant",
+                "patch": patch_payload,
+                "ground_truth": {"target": "shipping_fee"},
+            },
+        ).json()
+
+        mutated_root = project_root / "mutated"
+        mutated_package = mutated_root / "shop"
+        mutated_package.mkdir(parents=True)
+        (mutated_package / "pricing.py").write_text(
+            "def shipping_fee(weight_kg):\n"
+            "    if weight_kg < 5:\n"
+            "        return 10\n"
+            "    return 20\n",
+            encoding="utf-8",
+        )
+        mutated_snapshot = client.post(
+            f"/api/v1/projects/{snapshot['project_id']}/snapshots",
+            json={"root_path": str(mutated_root)},
+        ).json()
+
+        updated_task = client.patch(
+            f"/api/v1/eval-tasks/{task['id']}",
+            json={
+                "target_scope": {"targets": ["shipping_fee"], "files": ["shop/pricing.py"]},
+                "goal": "cover edited shipping boundary",
+                "expected_capabilities": ["boundary", "regression"],
+            },
+        )
+        updated_bug = client.patch(
+            f"/api/v1/seeded-bugs/{bug['id']}",
+            json={
+                "bug_type": "boundary_regression",
+                "description": "edited description",
+                "expected_detection": "edited oracle",
+            },
+        )
+        updated_variant = client.patch(
+            f"/api/v1/bug-variants/{variant['id']}",
+            json={
+                "variant_name": "edited variant",
+                "mutated_snapshot_id": mutated_snapshot["id"],
+                "ground_truth": {"target": "shipping_fee", "oracle": "5kg stays cheap"},
+            },
+        )
+        bypass = client.patch(
+            f"/api/v1/bug-variants/{variant['id']}",
+            json={"ground_truth": {"source": "auto_mutation", "target": "shipping_fee"}},
+        )
+        missing = client.patch("/api/v1/bug-variants/missing-variant", json={"variant_name": "missing"})
+
+    assert updated_task.status_code == 200, updated_task.text
+    task_payload = updated_task.json()
+    assert task_payload["goal"] == "cover edited shipping boundary"
+    assert task_payload["target_scope"]["files"] == ["shop/pricing.py"]
+    assert task_payload["expected_capabilities"] == ["boundary", "regression"]
+
+    assert updated_bug.status_code == 200, updated_bug.text
+    bug_payload = updated_bug.json()
+    assert bug_payload["bug_type"] == "boundary_regression"
+    assert bug_payload["description"] == "edited description"
+    assert bug_payload["expected_detection"] == "edited oracle"
+
+    assert updated_variant.status_code == 200, updated_variant.text
+    variant_payload = updated_variant.json()
+    assert variant_payload["variant_name"] == "edited variant"
+    assert variant_payload["mutated_snapshot_id"] == mutated_snapshot["id"]
+    assert variant_payload["ground_truth"]["target"] == "shipping_fee"
+    assert variant_payload["ground_truth"]["oracle"] == "5kg stays cheap"
+    assert variant_payload["ground_truth"]["patch_artifact"]["patch"] == patch_payload
+    assert variant_payload["ground_truth"]["patch_unique_hit"]["hit_count"] == 1
+    assert variant_payload["ground_truth"]["mutated_snapshot_verification"] == {
+        "mutated_snapshot_id": mutated_snapshot["id"],
+        "matches_canonical_patch": True,
+    }
+    assert bypass.status_code == 400
+    assert "mutation confirmation" in bypass.text
+    assert missing.status_code == 404
+
+def test_dataset_readiness_api_reports_structure_and_probe_status(tmp_path, clean_db):
+    app = create_app()
+    project_root = tmp_path / "proj"
+    package = project_root / "shop"
+    package.mkdir(parents=True)
+    (package / "pricing.py").write_text(
+        "def shipping_fee(weight_kg):\n"
+        "    if weight_kg <= 5:\n"
+        "        return 10\n"
+        "    return 20\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(app) as client:
+        snapshot = _create_project_and_snapshot(client, project_root)
+        dataset = client.post(
+            "/api/v1/eval-datasets",
+            json={
+                "id": "dataset-readiness-api",
+                "name": "readiness api",
+                "version": "v1",
+                "project_snapshot_ids": [snapshot["id"]],
+            },
+        ).json()
+
+        empty = client.get(f"/api/v1/eval-datasets/{dataset['id']}/readiness")
+        assert empty.status_code == 200
+        assert empty.json()["status"] == "incomplete"
+        assert [issue["code"] for issue in empty.json()["issues"]] == ["dataset_no_tasks"]
+
+        task = client.post(
+            f"/api/v1/eval-datasets/{dataset['id']}/tasks",
+            json={
+                "id": "task-readiness-api",
+                "project_snapshot_id": snapshot["id"],
+                "goal": "cover readiness",
+            },
+        ).json()
+        task_readiness = client.get(f"/api/v1/eval-datasets/{dataset['id']}/readiness").json()
+        assert task_readiness["status"] == "incomplete"
+        assert {issue["code"] for issue in task_readiness["issues"]} == {
+            "task_missing_target_scope",
+            "task_no_seeded_bugs",
+        }
+
+        client.patch(
+            f"/api/v1/eval-tasks/{task['id']}",
+            json={"target_scope": {"targets": ["shipping_fee"]}},
+        )
+        bug = client.post(
+            f"/api/v1/eval-tasks/{task['id']}/seeded-bugs",
+            json={
+                "id": "bug-readiness-api",
+                "bug_type": "boundary",
+                "description": "readiness bug",
+                "expected_detection": "detect boundary",
+            },
+        ).json()
+        bug_readiness = client.get(f"/api/v1/eval-datasets/{dataset['id']}/readiness").json()
+        assert bug_readiness["status"] == "incomplete"
+        assert [issue["code"] for issue in bug_readiness["issues"]] == ["bug_no_variants"]
+
+    with Session(get_engine()) as session:
+        session.add(
+            BugVariant(
+                id="variant-readiness-auto",
+                seeded_bug_id=bug["id"],
+                variant_name="auto mutation missing probe",
+                canonical_kind="patch",
+                patch_artifact_id=None,
+                mutated_snapshot_id=None,
+                ground_truth={"source": "auto_mutation", "probe": {"probe": "shipping_fee(5)"}},
+            )
+        )
+        session.commit()
+
+    with TestClient(app) as client:
+        missing_probe = client.get(f"/api/v1/eval-datasets/{dataset['id']}/readiness").json()
+        assert missing_probe["status"] == "incomplete"
+        assert [issue["code"] for issue in missing_probe["issues"]] == ["auto_mutation_probe_not_passed"]
+
+    with Session(get_engine()) as session:
+        variant = session.get(BugVariant, "variant-readiness-auto")
+        assert variant is not None
+        variant.ground_truth = {
+            "source": "auto_mutation",
+            "probe": {
+                "probe": "shipping_fee(5)",
+                "probe_check": {"status": "failed", "reason": "buggy value stayed clean"},
+            },
+        }
+        session.add(variant)
+        session.commit()
+
+    with TestClient(app) as client:
+        failed_probe = client.get(f"/api/v1/eval-datasets/{dataset['id']}/readiness").json()
+        assert failed_probe["status"] == "incomplete"
+        assert failed_probe["issues"][0]["code"] == "auto_mutation_probe_not_passed"
+        assert "buggy value stayed clean" in failed_probe["issues"][0]["message"]
+
+    with Session(get_engine()) as session:
+        variant = session.get(BugVariant, "variant-readiness-auto")
+        assert variant is not None
+        variant.ground_truth = {
+            "source": "auto_mutation",
+            "probe": {
+                "probe": "shipping_fee(5)",
+                "probe_check": {"status": "passed"},
+            },
+        }
+        session.add(variant)
+        session.commit()
+
+    with TestClient(app) as client:
+        ready = client.get(f"/api/v1/eval-datasets/{dataset['id']}/readiness")
+        assert ready.status_code == 200
+        payload = ready.json()
+        assert payload["status"] == "ready"
+        assert payload["task_count"] == 1
+        assert payload["ready_task_count"] == 1
+        assert payload["incomplete_task_count"] == 0
+        assert payload["issue_count"] == 0
+
+
 def test_mutation_discovery_dry_run_api_returns_audit_without_writing_variants(tmp_path, clean_db):
     app = create_app()
     project_root = tmp_path / "proj"

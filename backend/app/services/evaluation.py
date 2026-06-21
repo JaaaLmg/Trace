@@ -31,7 +31,14 @@ from app.repositories.evaluation import (
     list_variants_for_bug,
     list_variants_for_bugs,
 )
-from app.schemas.api_evaluation import BugVariantOut, EvalDatasetDetailOut, EvalTaskDetailOut, SeededBugDetailOut
+from app.schemas.api_evaluation import (
+    BugVariantOut,
+    DatasetReadinessIssueOut,
+    DatasetReadinessOut,
+    EvalDatasetDetailOut,
+    EvalTaskDetailOut,
+    SeededBugDetailOut,
+)
 from app.schemas.evaluation import (
     BugVariantGroundTruthContract,
     MutationCandidateContract,
@@ -196,6 +203,17 @@ def create_eval_task(
     return add_eval_task(session, record)
 
 
+def update_eval_task(session: Session, task_id: str, updates: dict[str, Any]) -> EvalTask:
+    task = get_eval_task_or_404(session, task_id)
+    for field in ("target_scope", "goal", "expected_capabilities"):
+        if field in updates and updates[field] is not None:
+            setattr(task, field, updates[field])
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+    return task
+
+
 def list_dataset_tasks(session: Session, dataset_id: str) -> list[EvalTask]:
     get_dataset_or_404(session, dataset_id)
     return list_tasks_for_dataset(session, dataset_id)
@@ -228,6 +246,17 @@ def create_seeded_bug(
         expected_detection=expected_detection,
     )
     return add_seeded_bug(session, record)
+
+
+def update_seeded_bug(session: Session, bug_id: str, updates: dict[str, Any]) -> SeededBug:
+    bug = get_seeded_bug_or_404(session, bug_id)
+    for field in ("bug_type", "description", "expected_detection"):
+        if field in updates and updates[field] is not None:
+            setattr(bug, field, updates[field])
+    session.add(bug)
+    session.commit()
+    session.refresh(bug)
+    return bug
 
 
 def list_task_seeded_bugs(session: Session, task_id: str) -> list[SeededBug]:
@@ -536,10 +565,211 @@ def create_bug_variant(
     return add_bug_variant(session, record)
 
 
+def _variant_canonical_patch_or_error(variant: BugVariant) -> dict:
+    patch = ((variant.ground_truth or {}).get("patch_artifact") or {}).get("patch")
+    if not isinstance(patch, dict) or not all(key in patch for key in ("file", "old", "new")):
+        raise EvaluationError("variant canonical patch evidence is missing")
+    return patch
+
+
+def _preserve_variant_system_evidence(existing: dict, incoming: dict) -> dict:
+    if incoming.get("source") == "auto_mutation":
+        raise EvaluationError("auto mutation variants must be created through mutation confirmation")
+    if existing.get("source") == "auto_mutation":
+        raise EvaluationError("auto mutation ground truth cannot be edited through ordinary variant API")
+    merged = dict(incoming)
+    for key in ("patch_artifact", "patch_unique_hit", "mutated_snapshot_verification"):
+        if key in existing:
+            merged[key] = existing[key]
+    return merged
+
+
+def update_bug_variant(session: Session, variant_id: str, updates: dict[str, Any]) -> BugVariant:
+    variant = get_bug_variant(session, variant_id)
+    if variant is None:
+        raise EvaluationNotFoundError("bug variant not found")
+    bug = get_seeded_bug_or_404(session, variant.seeded_bug_id)
+    task = get_eval_task_or_404(session, bug.eval_task_id)
+    clean_snapshot = _snapshot_or_error(session, task.project_snapshot_id)
+    next_ground_truth = dict(variant.ground_truth or {})
+
+    if "variant_name" in updates and updates["variant_name"] is not None:
+        variant.variant_name = updates["variant_name"]
+    if "ground_truth" in updates and updates["ground_truth"] is not None:
+        next_ground_truth = _preserve_variant_system_evidence(next_ground_truth, updates["ground_truth"])
+    if "mutated_snapshot_id" in updates:
+        mutated_snapshot_id = updates["mutated_snapshot_id"]
+        patch = _variant_canonical_patch_or_error(variant)
+        clean_text = _validate_patch_unique_hit(clean_snapshot, file=patch["file"], old=patch["old"])
+        if mutated_snapshot_id is None:
+            next_ground_truth.pop("mutated_snapshot_verification", None)
+        else:
+            mutated_snapshot = _snapshot_or_error(session, mutated_snapshot_id)
+            _validate_mutated_snapshot_matches_patch(
+                mutated_snapshot,
+                file=patch["file"],
+                clean_text=clean_text,
+                old=patch["old"],
+                new=patch["new"],
+            )
+            next_ground_truth["mutated_snapshot_verification"] = {
+                "mutated_snapshot_id": mutated_snapshot.id,
+                "matches_canonical_patch": True,
+            }
+        variant.mutated_snapshot_id = mutated_snapshot_id
+
+    variant.ground_truth = next_ground_truth
+    session.add(variant)
+    session.commit()
+    session.refresh(variant)
+    return variant
+
+
 def list_bug_variants(session: Session, seeded_bug_id: str) -> list[BugVariant]:
     get_seeded_bug_or_404(session, seeded_bug_id)
     return list_variants_for_bug(session, seeded_bug_id)
 
+
+def _has_readiness_evidence(value: Any) -> bool:
+    if isinstance(value, list):
+        return len(value) > 0
+    if isinstance(value, dict):
+        return len(value) > 0
+    if isinstance(value, str):
+        return bool(value.strip())
+    return value is not None
+
+
+def _readiness_issue(*, code: str, scope: str, entity_id: str | None, message: str) -> DatasetReadinessIssueOut:
+    issue_id = f"{scope}:{entity_id or 'dataset'}:{code}"
+    return DatasetReadinessIssueOut(
+        id=issue_id,
+        code=code,
+        scope=scope,
+        entity_id=entity_id,
+        message=message,
+    )
+
+
+def _probe_check_failure_detail(probe_check: dict) -> str | None:
+    for key in ("reason", "message", "error", "detail"):
+        value = probe_check.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    status = probe_check.get("status")
+    clean_actual = probe_check.get("clean_actual")
+    clean_expected = probe_check.get("clean_expected")
+    buggy_actual = probe_check.get("buggy_actual")
+    buggy_expected = probe_check.get("buggy_expected")
+    if status == "failed":
+        return (
+            f"clean actual/expected={clean_actual!r}/{clean_expected!r}; "
+            f"buggy actual/expected={buggy_actual!r}/{buggy_expected!r}"
+        )
+    return None
+
+
+def _variant_readiness_issues(variant: BugVariantOut) -> list[DatasetReadinessIssueOut]:
+    issues: list[DatasetReadinessIssueOut] = []
+    ground_truth = variant.ground_truth or {}
+    if not _has_readiness_evidence(ground_truth):
+        issues.append(
+            _readiness_issue(
+                code="variant_missing_ground_truth",
+                scope="variant",
+                entity_id=variant.id,
+                message=f"Variant {variant.id} has no ground truth evidence.",
+            )
+        )
+        return issues
+    if ground_truth.get("source") == "auto_mutation":
+        probe = ground_truth.get("probe") if isinstance(ground_truth.get("probe"), dict) else {}
+        probe_check = probe.get("probe_check") if isinstance(probe.get("probe_check"), dict) else {}
+        if probe_check.get("status") != "passed":
+            failure_detail = _probe_check_failure_detail(probe_check)
+            suffix = f" Reason: {failure_detail}" if failure_detail else ""
+            issues.append(
+                _readiness_issue(
+                    code="auto_mutation_probe_not_passed",
+                    scope="variant",
+                    entity_id=variant.id,
+                    message=f"Auto mutation variant {variant.id} requires probe_check.status=passed.{suffix}",
+                )
+            )
+    return issues
+
+
+def _bug_readiness_issues(bug: SeededBugDetailOut) -> list[DatasetReadinessIssueOut]:
+    issues: list[DatasetReadinessIssueOut] = []
+    if not bug.variants:
+        issues.append(
+            _readiness_issue(
+                code="bug_no_variants",
+                scope="seeded_bug",
+                entity_id=bug.id,
+                message=f"Seeded bug {bug.id} has no bug variant.",
+            )
+        )
+    for variant in bug.variants:
+        issues.extend(_variant_readiness_issues(variant))
+    return issues
+
+
+def _task_readiness_issues(task: EvalTaskDetailOut) -> list[DatasetReadinessIssueOut]:
+    issues: list[DatasetReadinessIssueOut] = []
+    if not _has_readiness_evidence(task.target_scope):
+        issues.append(
+            _readiness_issue(
+                code="task_missing_target_scope",
+                scope="task",
+                entity_id=task.id,
+                message=f"Task {task.id} has no target_scope evidence.",
+            )
+        )
+    if not task.seeded_bugs:
+        issues.append(
+            _readiness_issue(
+                code="task_no_seeded_bugs",
+                scope="task",
+                entity_id=task.id,
+                message=f"Task {task.id} has no seeded bug.",
+            )
+        )
+    for bug in task.seeded_bugs:
+        issues.extend(_bug_readiness_issues(bug))
+    return issues
+
+
+def get_dataset_readiness(session: Session, dataset_id: str) -> DatasetReadinessOut:
+    detail = get_dataset_detail(session, dataset_id)
+    issues: list[DatasetReadinessIssueOut] = []
+    if not detail.tasks:
+        issues.append(
+            _readiness_issue(
+                code="dataset_no_tasks",
+                scope="dataset",
+                entity_id=detail.id,
+                message=f"Dataset {detail.id} has no eval task.",
+            )
+        )
+    ready_task_count = 0
+    incomplete_task_count = 0
+    for task in detail.tasks:
+        task_issues = _task_readiness_issues(task)
+        issues.extend(task_issues)
+        if task_issues:
+            incomplete_task_count += 1
+        else:
+            ready_task_count += 1
+    return DatasetReadinessOut(
+        dataset_id=detail.id,
+        status="ready" if not issues else "incomplete",
+        task_count=len(detail.tasks),
+        ready_task_count=ready_task_count,
+        incomplete_task_count=incomplete_task_count,
+        issue_count=len(issues),
+        issues=issues,
+    )
 
 def get_dataset_detail(session: Session, dataset_id: str) -> EvalDatasetDetailOut:
     dataset = get_dataset_or_404(session, dataset_id)

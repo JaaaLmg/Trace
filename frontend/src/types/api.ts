@@ -305,6 +305,25 @@ export interface EvalTaskDetailOut extends EvalTaskOut {
   seeded_bugs: SeededBugDetailOut[];
 }
 
+export type ReadinessStatus = "ready" | "incomplete";
+
+export interface DatasetReadinessIssueOut {
+  id: string;
+  code: string;
+  scope: string;
+  entity_id: string | null;
+  message: string;
+}
+
+export interface DatasetReadinessOut {
+  dataset_id: string;
+  status: ReadinessStatus;
+  task_count: number;
+  ready_task_count: number;
+  incomplete_task_count: number;
+  issue_count: number;
+  issues: DatasetReadinessIssueOut[];
+}
 export interface EvalDatasetDetailOut extends EvalDatasetOut {
   tasks: EvalTaskDetailOut[];
 }
@@ -317,11 +336,23 @@ export interface EvalTaskCreateRequest {
   expected_capabilities?: JsonValue[];
 }
 
+export interface EvalTaskUpdateRequest {
+  target_scope?: JsonObject;
+  goal?: string;
+  expected_capabilities?: JsonValue[];
+}
+
 export interface SeededBugCreateRequest {
   id?: string | null;
   bug_type: string;
   description: string;
   expected_detection: string;
+}
+
+export interface SeededBugUpdateRequest {
+  bug_type?: string;
+  description?: string;
+  expected_detection?: string;
 }
 
 export interface CanonicalPatch {
@@ -335,6 +366,12 @@ export interface BugVariantCreateRequest {
   variant_name: string;
   canonical_kind?: "patch";
   patch: CanonicalPatch;
+  mutated_snapshot_id?: string | null;
+  ground_truth?: JsonObject;
+}
+
+export interface BugVariantUpdateRequest {
+  variant_name?: string;
   mutated_snapshot_id?: string | null;
   ground_truth?: JsonObject;
 }
