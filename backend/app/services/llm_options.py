@@ -45,7 +45,7 @@ def get_llm_options() -> LlmOptionsOut:
         return LlmOptionsOut(
             default_option_id="mock",
             config_status="error",
-            config_error=str(exc),
+            config_error=_safe_config_error(exc),
             options=options,
         )
 
@@ -61,3 +61,25 @@ def get_llm_options() -> LlmOptionsOut:
 
     options.append(_configured_option(config))
     return LlmOptionsOut(default_option_id="mock", config_status="ok", options=options)
+
+
+def validate_llm_override_against_options(provider: str | None, model: str | None) -> None:
+    if not provider or not model:
+        return
+    options = get_llm_options()
+    for option in options.options:
+        if option.selectable and option.provider == provider and option.model == model:
+            return
+    raise ValueError("llm_override must match a selectable LLM option")
+
+
+def _safe_config_error(exc: Exception) -> str:
+    name = type(exc).__name__
+    text = str(exc).lower()
+    if "不存在" in text or "not exist" in text or "no such file" in text:
+        return "config_file_missing"
+    if name in {"JSONDecodeError"}:
+        return "config_parse_failed"
+    if "provider" in text:
+        return "unsupported_provider"
+    return "config_load_failed"

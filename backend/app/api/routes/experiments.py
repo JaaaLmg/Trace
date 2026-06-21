@@ -28,6 +28,7 @@ from app.services.experiments import (
 )
 from app.services.artifact_cleanup import CleanupError, cleanup_experiment_workspaces
 from app.services.artifact_cleanup import experiment_artifact_inventory
+from app.services.llm_options import validate_llm_override_against_options
 from app.services.replay_cache import cleanup_replay_cache_workspaces, list_replay_cache_entries
 
 router = APIRouter(tags=["experiments"])
@@ -40,6 +41,8 @@ def _experiment_http_error(error: ExperimentError) -> HTTPException:
 @router.post("/api/v1/experiments", response_model=ExperimentOut)
 def create_experiment_route(body: ExperimentCreate, db: Session = Depends(get_db)):
     try:
+        if body.llm_override is not None:
+            validate_llm_override_against_options(body.llm_override.provider, body.llm_override.model)
         return create_experiment(
             db,
             experiment_id=body.id,
@@ -51,6 +54,8 @@ def create_experiment_route(body: ExperimentCreate, db: Session = Depends(get_db
             repeat_count=body.repeat_count,
             llm_override=body.llm_override,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except ExperimentError as e:
         raise _experiment_http_error(e) from e
 

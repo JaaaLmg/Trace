@@ -41,6 +41,7 @@ const creatingRuntime = ref(false);
 const startingId = ref<string | null>(null);
 const errorMessage = ref<string | null>(null);
 const createError = ref<string | null>(null);
+const datasetSelectionWarning = ref<string | null>(null);
 const loadingCreateOptions = ref(false);
 const dockerProfileBox = ref<HTMLElement | null>(null);
 const form = ref({
@@ -154,7 +155,12 @@ function showRuntimeProfileBox() {
 
 function applyInitialDatasetId(nextDatasets: EvalDatasetOut[]): boolean {
   const requestedDatasetId = props.initialDatasetId?.trim();
-  if (!requestedDatasetId || !nextDatasets.some((dataset) => dataset.id === requestedDatasetId)) {
+  datasetSelectionWarning.value = null;
+  if (!requestedDatasetId) {
+    return false;
+  }
+  if (!nextDatasets.some((dataset) => dataset.id === requestedDatasetId)) {
+    datasetSelectionWarning.value = t("experiments.initialDatasetMissing", { id: requestedDatasetId });
     return false;
   }
   form.value.datasetId = requestedDatasetId;
@@ -346,6 +352,20 @@ async function createDockerRuntimeProfile() {
   }
 }
 
+function canStartFromList(experiment: ExperimentDefinition): boolean {
+  return props.dataSource === "api" && experiment.status === "draft";
+}
+
+function statusActionHint(experiment: ExperimentDefinition): string {
+  if (experiment.status === "queued" || experiment.status === "running") {
+    return t(`status.${experiment.status}`);
+  }
+  if (experiment.status === "cancelled") {
+    return t("experiments.cloneRequired");
+  }
+  return "";
+}
+
 async function startExperiment(experiment: ExperimentDefinition) {
   if (props.dataSource !== "api") {
     openExperiment(experiment.id);
@@ -413,6 +433,7 @@ watch(
 
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
     <p v-if="createError" class="error-banner">{{ createError }}</p>
+    <p v-if="datasetSelectionWarning" class="warning-banner">{{ datasetSelectionWarning }}</p>
 
     <section class="summary-strip">
       <article class="subtle-panel summary-tile">
@@ -508,11 +529,11 @@ watch(
           {{
             runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.executor ?? "local_subprocess"
           }}
-          · network:
+          · {{ t("experiments.network") }}:
           {{ runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.network_policy ?? "default" }}
-          · timeout:
+          · {{ t("experiments.timeout") }}:
           {{ runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.resource_limits?.timeout_seconds ?? 120 }}s
-          · Docker {{ dockerAvailable ? "available" : "not available" }}
+          · {{ t("experiments.dockerAvailability") }} {{ dockerAvailable ? t("experiments.available") : t("experiments.notAvailable") }}
         </p>
         <div v-if="isMultiProjectDataset" class="runtime-binding-box">
           <div class="docker-profile-head">
@@ -639,7 +660,7 @@ watch(
                   {{ t("experiments.open") }}
                 </button>
                 <button
-                  v-if="props.dataSource === 'api' && ['draft', 'queued', 'cancelled'].includes(experiment.status)"
+                  v-if="canStartFromList(experiment)"
                   class="text-button"
                   type="button"
                   :disabled="startingId === experiment.id"
@@ -648,6 +669,9 @@ watch(
                   <Play :size="15" aria-hidden="true" />
                   {{ startingId === experiment.id ? t("experiments.starting") : t("run.start") }}
                 </button>
+                <small v-else-if="props.dataSource === 'api' && statusActionHint(experiment)" class="row-hint">
+                  {{ statusActionHint(experiment) }}
+                </small>
               </span>
             </td>
           </tr>
@@ -687,6 +711,7 @@ watch(
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .summary-strip {
@@ -959,6 +984,12 @@ watch(
   border-color: rgba(159, 58, 47, 0.24);
   background: var(--failed-bg);
   color: var(--failed);
+}
+
+.row-hint {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .empty-state {

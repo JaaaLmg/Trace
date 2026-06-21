@@ -123,8 +123,8 @@ async function loadComparison() {
     if (!comparisonRequest.isCurrent(requestSeq)) {
       return;
     }
-    metrics.value = demoExperimentMetrics;
-    usingFallback.value = true;
+    metrics.value = null;
+    usingFallback.value = false;
     errorMessage.value = error instanceof Error ? error.message : t("comparison.fallbackReason");
   } finally {
     if (comparisonRequest.isCurrent(requestSeq)) {
@@ -152,8 +152,8 @@ async function selectExperiment(experimentId: string) {
     if (!comparisonRequest.isCurrent(requestSeq)) {
       return;
     }
-    metrics.value = demoExperimentMetrics;
-    usingFallback.value = true;
+    metrics.value = null;
+    usingFallback.value = false;
     errorMessage.value = error instanceof Error ? error.message : t("comparison.fallbackReason");
   } finally {
     if (comparisonRequest.isCurrent(requestSeq)) {
@@ -203,7 +203,7 @@ watch(
     </section>
 
     <p v-if="errorMessage" class="warning-banner">
-      {{ t("comparison.apiFallback") }} {{ errorMessage }}
+      {{ t("comparison.apiError") }} {{ errorMessage }}
     </p>
     <p v-if="loading" class="mode-note">{{ t("comparison.loading") }}</p>
 
