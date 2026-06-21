@@ -197,7 +197,7 @@ watch(
         </button>
         <button class="primary-action" type="button" @click="emit('navigate', experimentHref())">
           <ArrowRight :size="17" aria-hidden="true" />
-          {{ t("comparison.openExperiment") }}
+          {{ metrics ? t("comparison.openExperiment") : t("experiments.title") }}
         </button>
       </div>
     </section>
@@ -297,10 +297,24 @@ watch(
     <section v-if="!loading && !metrics" class="empty-state subtle-panel">
       <h2>{{ noCompleted ? t("comparison.noCompletedTitle") : t("comparison.emptyTitle") }}</h2>
       <p>{{ noCompleted ? t("comparison.noCompletedBody") : t("comparison.emptyBody") }}</p>
-      <button class="primary-action" type="button" @click="emit('navigate', '#/experiments')">
-        <ArrowRight :size="17" aria-hidden="true" />
-        {{ t("experiments.title") }}
-      </button>
+      <div class="empty-guidance">
+        <strong>{{ t("comparison.nextStepsTitle") }}</strong>
+        <ol>
+          <li>{{ t("comparison.nextStepDataset") }}</li>
+          <li>{{ t("comparison.nextStepStart") }}</li>
+          <li>{{ t("comparison.nextStepReturn") }}</li>
+        </ol>
+      </div>
+      <div class="empty-actions">
+        <button v-if="props.dataSource === 'api'" class="primary-action" type="button" @click="emit('navigate', '#/datasets/new')">
+          <ArrowRight :size="17" aria-hidden="true" />
+          {{ t("app.datasets") }}
+        </button>
+        <button class="text-button" type="button" @click="emit('navigate', '#/experiments')">
+          <ArrowRight :size="15" aria-hidden="true" />
+          {{ t("experiments.title") }}
+        </button>
+      </div>
     </section>
   </main>
 </template>
@@ -456,6 +470,36 @@ watch(
 .empty-state {
   justify-items: start;
   padding: 22px;
+}
+
+.empty-guidance {
+  display: grid;
+  gap: 8px;
+  max-width: 720px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.empty-guidance strong {
+  font-size: 13px;
+}
+
+.empty-guidance ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 @media (max-width: 900px) {
