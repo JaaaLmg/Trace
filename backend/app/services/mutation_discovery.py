@@ -24,6 +24,10 @@ _COMPARE_MUTATIONS = {
     ast.Eq: ("==", "!=", "comparison_negation"),
     ast.NotEq: ("!=", "==", "comparison_negation"),
 }
+_ARITHMETIC_MUTATIONS = {
+    ast.Add: ("+", "-"),
+    ast.Sub: ("-", "+"),
+}
 
 
 def discover_mutation_candidates(
@@ -72,6 +76,16 @@ def discover_mutation_candidates(
                     exclusions=exclusions,
                 )
             )
+            raw_candidates.extend(
+                _function_arithmetic_candidates(
+                    text=text,
+                    rel_path=rel,
+                    function=function,
+                    eval_task_id=eval_task_id,
+                    source_snapshot_id=source_snapshot_id,
+                    exclusions=exclusions,
+                )
+            )
 
     for target in sorted(targets - seen_targets):
         exclusions.append(
@@ -110,7 +124,7 @@ def _function_compare_candidates(
             continue
         if len(node.ops) != 1 or len(node.comparators) != 1:
             exclusions.append(
-                _compare_exclusion(
+                _mutation_exclusion(
                     reason_code="unsupported_compare",
                     message="only single-operator comparisons are supported",
                     rel_path=rel_path,
@@ -122,7 +136,7 @@ def _function_compare_candidates(
         op_type = type(node.ops[0])
         if op_type not in _COMPARE_MUTATIONS:
             exclusions.append(
-                _compare_exclusion(
+                _mutation_exclusion(
                     reason_code="unsupported_compare",
                     message=f"unsupported comparison operator: {op_type.__name__}",
                     rel_path=rel_path,
@@ -134,7 +148,7 @@ def _function_compare_candidates(
         source_segment = ast.get_source_segment(text, node)
         if not source_segment:
             exclusions.append(
-                _compare_exclusion(
+                _mutation_exclusion(
                     reason_code="source_segment_unavailable",
                     message="could not recover exact source segment for comparison",
                     rel_path=rel_path,
@@ -145,7 +159,7 @@ def _function_compare_candidates(
             continue
         if text.count(source_segment) != 1:
             exclusions.append(
-                _compare_exclusion(
+                _mutation_exclusion(
                     reason_code="non_unique_patch",
                     message="comparison source segment is not unique in file",
                     rel_path=rel_path,
@@ -157,6 +171,83 @@ def _function_compare_candidates(
 
         _, replacement_op, operator = _COMPARE_MUTATIONS[op_type]
         replacement = f"{ast.unparse(node.left)} {replacement_op} {ast.unparse(node.comparators[0])}"
+        candidate_id = _candidate_id(
+            source_snapshot_id=source_snapshot_id,
+            rel_path=rel_path,
+            line=node.lineno,
+            old=source_segment,
+            new=replacement,
+        )
+        candidates.append(
+            MutationCandidateContract(
+                candidate_id=candidate_id,
+                eval_task_id=eval_task_id,
+                source_snapshot_id=source_snapshot_id,
+                operator=operator,
+                patch=MutantPatchContract(file=rel_path, old=source_segment, new=replacement),
+                matcher=MutantMatcherContract(
+                    matcher_kind="source_location_hash",
+                    source_path=rel_path,
+                    start_line=node.lineno,
+                    end_line=getattr(node, "end_lineno", node.lineno),
+                    original_content_hash=_sha256(source_segment),
+                    operator=operator,
+                    target_symbol=function.name,
+                    context_hash=_sha256(_line_range_text(text, node.lineno, getattr(node, "end_lineno", node.lineno))),
+                ),
+                selection=MutantSelectionContract(
+                    status="not_selected",
+                    selected_by="auto_sampler",
+                    reason="candidate discovered but not selected yet",
+                ),
+            )
+        )
+    return candidates
+
+
+def _function_arithmetic_candidates(
+    *,
+    text: str,
+    rel_path: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    eval_task_id: str,
+    source_snapshot_id: str,
+    exclusions: list[MutationDiscoveryExclusionContract],
+) -> list[MutationCandidateContract]:
+    candidates: list[MutationCandidateContract] = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.BinOp):
+            continue
+        op_type = type(node.op)
+        if op_type not in _ARITHMETIC_MUTATIONS:
+            continue
+        source_segment = ast.get_source_segment(text, node)
+        if not source_segment:
+            exclusions.append(
+                _mutation_exclusion(
+                    reason_code="source_segment_unavailable",
+                    message="could not recover exact source segment for arithmetic expression",
+                    rel_path=rel_path,
+                    node=node,
+                    target_ref=function.name,
+                )
+            )
+            continue
+        if text.count(source_segment) != 1:
+            exclusions.append(
+                _mutation_exclusion(
+                    reason_code="non_unique_patch",
+                    message="arithmetic source segment is not unique in file",
+                    rel_path=rel_path,
+                    node=node,
+                    target_ref=function.name,
+                )
+            )
+            continue
+
+        _, replacement_op = _ARITHMETIC_MUTATIONS[op_type]
+        replacement = f"{ast.unparse(node.left)} {replacement_op} {ast.unparse(node.right)}"
+        operator = "arithmetic_operator"
         candidate_id = _candidate_id(
             source_snapshot_id=source_snapshot_id,
             rel_path=rel_path,
@@ -251,7 +342,7 @@ def _python_source_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
-def _compare_exclusion(
+def _mutation_exclusion(
     *,
     reason_code: str,
     message: str,

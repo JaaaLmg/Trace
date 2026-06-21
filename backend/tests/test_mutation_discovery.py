@@ -56,6 +56,36 @@ def test_mutation_discovery_dry_run_finds_boundary_candidates_and_samples_determ
     assert not any(candidate.patch.file.startswith("tests/") for candidate in result.candidates)
 
 
+def test_mutation_discovery_dry_run_finds_arithmetic_candidates(tmp_path):
+    project = tmp_path / "proj"
+    package = project / "shop"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "totals.py").write_text(
+        "def checkout_total(price, shipping):\n"
+        "    return price + shipping\n\n"
+        "def apply_discount(total, discount):\n"
+        "    return total - discount\n",
+        encoding="utf-8",
+    )
+
+    result = discover_mutation_candidates(
+        root=project,
+        eval_task_id="task-totals",
+        source_snapshot_id="snap-clean",
+        target_scope={"targets": ["checkout_total", "apply_discount"]},
+        sample_seed=2,
+        max_selected=10,
+    )
+
+    assert result.selected_count == 2
+    assert result.excluded_count == 0
+    assert {candidate.operator for candidate in result.candidates} == {"arithmetic_operator"}
+    assert {candidate.patch.old for candidate in result.candidates} == {"price + shipping", "total - discount"}
+    assert {candidate.patch.new for candidate in result.candidates} == {"price - shipping", "total + discount"}
+    assert all(candidate.matcher.operator == candidate.operator for candidate in result.candidates)
+    assert all(candidate.selection.status == "selected" for candidate in result.candidates)
+
 def test_mutation_discovery_dry_run_reports_exclusions_without_writing_variants(tmp_path):
     project = tmp_path / "proj"
     package = project / "shop"
