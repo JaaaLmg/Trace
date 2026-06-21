@@ -96,6 +96,7 @@ const variantForm = ref({
 const datasetRequest = useLatestRequest();
 
 const isCreateOnly = computed(() => props.dataSource === "api" && props.datasetId === "new");
+const canCreateExperimentFromDataset = computed(() => props.dataSource === "api" && Boolean(dataset.value) && !isCreateOnly.value);
 const selectedTask = computed<EvalTaskDetailOut | null>(() => {
   const current = dataset.value;
   if (!current) {
@@ -582,6 +583,13 @@ function capabilityText(task: EvalTaskDetailOut): string {
   return task.expected_capabilities.length > 0 ? task.expected_capabilities.map((item) => String(item)).join(", ") : t("common.none");
 }
 
+function openExperimentCreateForDataset() {
+  if (!dataset.value) {
+    return;
+  }
+  emit("navigate", `#/experiments?dataset=${encodeURIComponent(dataset.value.id)}`);
+}
+
 function parseJsonObject(value: string, messageKey: string): JsonObject {
   const parsed = JSON.parse(value || "{}") as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -932,6 +940,10 @@ watch(
       <button class="text-button" type="button" @click="emit('navigate', '#/experiments')">
         <ArrowLeft :size="16" aria-hidden="true" />
         {{ t("experiments.back") }}
+      </button>
+      <button v-if="canCreateExperimentFromDataset" class="text-button" type="button" @click="openExperimentCreateForDataset">
+        <FlaskConical :size="16" aria-hidden="true" />
+        {{ t("experiments.create") }}
       </button>
       <button class="text-button" type="button" @click="loadDataset">
         <RefreshCw :size="16" aria-hidden="true" />

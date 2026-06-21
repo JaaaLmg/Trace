@@ -14,6 +14,7 @@ import type { DataSource } from "../types/ui";
 
 const props = defineProps<{
   dataSource: DataSource;
+  initialDatasetId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -105,6 +106,15 @@ function openDataset(datasetId: string) {
   emit("navigate", `#/datasets/${datasetId}`);
 }
 
+function applyInitialDatasetId(nextDatasets: EvalDatasetOut[]): boolean {
+  const requestedDatasetId = props.initialDatasetId?.trim();
+  if (!requestedDatasetId || !nextDatasets.some((dataset) => dataset.id === requestedDatasetId)) {
+    return false;
+  }
+  form.value.datasetId = requestedDatasetId;
+  return true;
+}
+
 function profileSummary(profile: RuntimeProfileOut | undefined): string {
   if (!profile) {
     return t("common.none");
@@ -167,7 +177,9 @@ async function loadCreateOptions() {
       form.value.llmOptionId = defaultLlmOption?.id ?? "";
     }
     dockerAvailable.value = Boolean(executorStatus.executors.docker?.available);
-    if (!form.value.datasetId && nextDatasets[0]) {
+    const appliedInitialDataset = applyInitialDatasetId(nextDatasets);
+    const currentDatasetExists = nextDatasets.some((dataset) => dataset.id === form.value.datasetId);
+    if (!appliedInitialDataset && (!form.value.datasetId || !currentDatasetExists) && nextDatasets[0]) {
       form.value.datasetId = nextDatasets[0].id;
     }
     await loadRuntimeProfilesForDataset();
@@ -318,6 +330,13 @@ watch(
   () => form.value.datasetId,
   () => {
     void loadRuntimeProfilesForDataset();
+  }
+);
+
+watch(
+  () => props.initialDatasetId,
+  () => {
+    applyInitialDatasetId(datasets.value);
   }
 );
 </script>

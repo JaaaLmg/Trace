@@ -22,10 +22,13 @@ const { locale, setLocale, t } = useI18n();
 
 const route = computed(() => {
   const hash = currentHash.value.replace(/^#/, "") || defaultHash.value.replace(/^#/, "");
-  const parts = hash.split("/").filter(Boolean);
+  const [path, queryString = ""] = hash.split("?");
+  const parts = path.split("/").filter(Boolean);
+  const query = Object.fromEntries(new URLSearchParams(queryString).entries());
   return {
     name: parts[0] ?? (dataSource.value === "demo" ? "runs" : "projects"),
-    id: parts[1] ?? (dataSource.value === "demo" ? sampleRunId : "")
+    id: parts[1] ?? (dataSource.value === "demo" ? sampleRunId : ""),
+    query
   };
 });
 
@@ -174,7 +177,12 @@ onBeforeUnmount(() => {
     :data-source="dataSource"
     @navigate="navigate"
   />
-  <ExperimentListPage v-else-if="route.name === 'experiments'" :data-source="dataSource" @navigate="navigate" />
+  <ExperimentListPage
+    v-else-if="route.name === 'experiments'"
+    :data-source="dataSource"
+    :initial-dataset-id="route.query.dataset ?? ''"
+    @navigate="navigate"
+  />
   <RuntimeProfilePage v-else-if="route.name === 'runtime'" :data-source="dataSource" />
   <ComparisonPage v-else-if="route.name === 'comparison'" :data-source="dataSource" @navigate="navigate" />
   <RunConsolePage v-else :run-id="runId" :data-source="dataSource" @navigate="navigate" />
