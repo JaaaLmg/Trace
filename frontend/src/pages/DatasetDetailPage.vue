@@ -64,6 +64,10 @@ const confirmForm = ref({
   description: "",
   expectedDetection: "",
   variantName: "",
+  probeTargetKind: "function",
+  probeExpression: "",
+  probeCleanValueJson: "null",
+  probeBuggyValueJson: "null",
   probeJson: '{\n  "target_kind": "function",\n  "probe": "",\n  "clean_value": null,\n  "buggy_value": null\n}'
 });
 const authoring = ref(false);
@@ -457,6 +461,18 @@ function probePresetForCandidate(candidate: MutationCandidateContract): Mutation
   };
 }
 
+function formatProbeSpec(probe: MutationProbeSpec): string {
+  return JSON.stringify(probe, null, 2);
+}
+
+function setProbeFormFromSpec(probe: MutationProbeSpec) {
+  confirmForm.value.probeTargetKind = probe.target_kind;
+  confirmForm.value.probeExpression = probe.probe;
+  confirmForm.value.probeCleanValueJson = JSON.stringify(probe.clean_value, null, 2);
+  confirmForm.value.probeBuggyValueJson = JSON.stringify(probe.buggy_value, null, 2);
+  confirmForm.value.probeJson = formatProbeSpec(probe);
+}
+
 function fillMutationConfirmPreset(candidate: MutationCandidateContract) {
   const slug = slugForResourceId(candidate.matcher.target_symbol ?? candidate.operator, candidate.operator);
   confirmForm.value.seededBugId = `bug-auto-${slug}`.slice(0, 64);
@@ -464,7 +480,7 @@ function fillMutationConfirmPreset(candidate: MutationCandidateContract) {
   confirmForm.value.variantName = `${candidate.operator} mutation`;
   confirmForm.value.description = `Auto mutation candidate ${candidate.operator} in ${candidate.matcher.source_path}`;
   confirmForm.value.expectedDetection = "A generated test should pass on clean replay and fail on this confirmed mutated behavior.";
-  confirmForm.value.probeJson = JSON.stringify(probePresetForCandidate(candidate), null, 2);
+  setProbeFormFromSpec(probePresetForCandidate(candidate));
 }
 
 function selectMutationCandidate(candidate: MutationCandidateContract) {
@@ -515,6 +531,41 @@ function parseProbeJson(): MutationProbeSpec {
   };
 }
 
+function parseProbeValueJson(value: string, fieldLabel: string): JsonValue {
+  try {
+    return JSON.parse(value) as JsonValue;
+  } catch {
+    throw new Error(t("datasets.probeValueJsonInvalid", { field: fieldLabel }));
+  }
+}
+
+function probeSpecFromStructuredForm(): MutationProbeSpec {
+  const targetKind = confirmForm.value.probeTargetKind.trim();
+  const probeExpression = confirmForm.value.probeExpression.trim();
+  if (!targetKind || !probeExpression) {
+    throw new Error(t("datasets.probeJsonInvalid"));
+  }
+  return {
+    target_kind: targetKind,
+    probe: probeExpression,
+    clean_value: parseProbeValueJson(confirmForm.value.probeCleanValueJson, t("datasets.cleanValueJson")),
+    buggy_value: parseProbeValueJson(confirmForm.value.probeBuggyValueJson, t("datasets.buggyValueJson"))
+  };
+}
+
+function refreshProbeJsonFromFields() {
+  confirmForm.value.probeJson = formatProbeSpec(probeSpecFromStructuredForm());
+}
+
+function updateProbeJsonPreview() {
+  mutationError.value = null;
+  try {
+    refreshProbeJsonFromFields();
+  } catch (error) {
+    mutationError.value = error instanceof Error ? error.message : t("datasets.probeJsonInvalid");
+  }
+}
+
 async function runMutationDiscovery() {
   const task = selectedTask.value;
   if (props.dataSource !== "api" || !task) {
@@ -529,7 +580,12 @@ async function runMutationDiscovery() {
       max_selected: asPositiveInteger(discoveryForm.value.maxSelected, 20)
     });
     mutationDiscovery.value = result;
-    selectedCandidateId.value = selectedMutationCandidates.value[0]?.candidate_id ?? null;
+    const firstCandidate = selectedMutationCandidates.value[0] ?? null;
+    if (firstCandidate) {
+      selectMutationCandidate(firstCandidate);
+    } else {
+      selectedCandidateId.value = null;
+    }
     mutationMessage.value = t("datasets.discoveryComplete");
   } catch (error) {
     mutationDiscovery.value = null;
@@ -552,6 +608,7 @@ async function confirmMutationCandidate() {
   mutationError.value = null;
   mutationMessage.value = null;
   try {
+    refreshProbeJsonFromFields();
     const probe = parseProbeJson();
     const confirmed = await confirmSelectedMutationCandidate(task.id, {
       audit_report: buildAuditReport(task, discovery),
@@ -1402,9 +1459,28 @@ watch(
                 <span>{{ t("datasets.expectedDetection") }}</span>
                 <input v-model="confirmForm.expectedDetection" type="text" />
               </label>
+              <label>
+                <span>{{ t("datasets.probeTargetKind") }}</span>
+                <input v-model="confirmForm.probeTargetKind" type="text" placeholder="function" />
+              </label>
+              <label class="wide-field">
+                <span>{{ t("datasets.probeExpression") }}</span>
+                <input v-model="confirmForm.probeExpression" type="text" />
+              </label>
+              <label class="probe-value-field">
+                <span>{{ t("datasets.cleanValueJson") }}</span>
+                <textarea v-model="confirmForm.probeCleanValueJson" rows="3" spellcheck="false" />
+              </label>
+              <label class="probe-value-field">
+                <span>{{ t("datasets.buggyValueJson") }}</span>
+                <textarea v-model="confirmForm.probeBuggyValueJson" rows="3" spellcheck="false" />
+              </label>
+              <button class="text-button probe-preview-button" type="button" :disabled="mutationConfirming" @click="updateProbeJsonPreview">
+                {{ t("datasets.updateProbeJson") }}
+              </button>
               <label class="probe-field">
                 <span>{{ t("datasets.probeJson") }}</span>
-                <textarea v-model="confirmForm.probeJson" rows="7" spellcheck="false" />
+                <textarea v-model="confirmForm.probeJson" rows="7" spellcheck="false" readonly />
                 <small>{{ t("datasets.fillProbePresetHint") }}</small>
               </label>
               <button class="text-button confirm-button" type="button" :disabled="!canConfirmMutation" @click="confirmMutationCandidate">
@@ -1697,6 +1773,7 @@ watch(
 .authoring-form select,
 .authoring-form textarea,
 .confirm-grid input,
+.confirm-grid select,
 .confirm-grid textarea,
 .mutation-controls input {
   width: 100%;
@@ -1925,8 +2002,16 @@ watch(
   line-height: 1.5;
 }
 
+.confirm-grid .probe-value-field textarea {
+  min-height: 78px;
+}
+
 .probe-field {
   grid-column: 1 / -1;
+}
+
+.probe-preview-button {
+  justify-self: start;
 }
 
 .confirm-button {
