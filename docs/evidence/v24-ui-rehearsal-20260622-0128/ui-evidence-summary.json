@@ -1,0 +1,350 @@
+{
+  "captured_at": "2026-06-22T01:32+08:00",
+  "frontend_url": "http://127.0.0.1:5186/",
+  "experiment_id": "v24-ui-rehearsal-202606220128",
+  "dataset_id": "dataset-demo-v2",
+  "status": "completed",
+  "strategy_version_ids": [
+    "sv-direct-v1",
+    "sv-plan-v1",
+    "sv-react-v1"
+  ],
+  "clean_runs_completed": 3,
+  "replay_runs_completed": 27,
+  "replay_runs_running": 0,
+  "metric_rows": [
+    {
+      "strategy_id": "direct",
+      "strategy_name": "Direct v1",
+      "metric_status": "ok",
+      "captured_mean": 5,
+      "total_in_scope": 6,
+      "capture_rate_mean": 0.8333333333333334,
+      "false_positive_rate": 1,
+      "llm_display": {
+        "provider": "mock",
+        "model": "mock-1",
+        "derived_from_clean_run_ids": [
+          "9648871f-8fc4-48aa-bb45-64954cb1fa36"
+        ],
+        "source": "derived_from_clean_run_strategy_snapshots"
+      }
+    },
+    {
+      "strategy_id": "plan_execute",
+      "strategy_name": "Plan-and-Execute v1",
+      "metric_status": "ok",
+      "captured_mean": 6,
+      "total_in_scope": 6,
+      "capture_rate_mean": 1,
+      "false_positive_rate": 0,
+      "llm_display": {
+        "provider": "mock",
+        "model": "mock-1",
+        "derived_from_clean_run_ids": [
+          "0252314d-fdca-49a5-a759-29a8bf0752ff"
+        ],
+        "source": "derived_from_clean_run_strategy_snapshots"
+      }
+    },
+    {
+      "strategy_id": "react_reflection",
+      "strategy_name": "ReAct+Reflection v1",
+      "metric_status": "ok",
+      "captured_mean": 6,
+      "total_in_scope": 6,
+      "capture_rate_mean": 1,
+      "false_positive_rate": 0,
+      "llm_display": {
+        "provider": "mock",
+        "model": "mock-1",
+        "derived_from_clean_run_ids": [
+          "87ad2a0e-ff2b-4383-8243-bc3b2314fe81"
+        ],
+        "source": "derived_from_clean_run_strategy_snapshots"
+      }
+    }
+  ],
+  "replay_llm_calls_values": [
+    0
+  ],
+  "evaluation_event_count": 54,
+  "evaluation_event_types": [
+    "probe_check_passed",
+    "replay_cache_hit",
+    "replay_captured",
+    "replay_uncaptured"
+  ],
+  "runtime_execution": {
+    "executor_kind_distribution": {
+      "local_subprocess": 30
+    },
+    "runtime_profiles": [
+      {
+        "id": "e2c47195-f8b2-447f-9aeb-85b620be8553",
+        "name": "Default Local Subprocess",
+        "executor": "local_subprocess",
+        "network_policy": "default",
+        "timeout_seconds": 120,
+        "capabilities": {
+          "policy_notes": [
+            "Runs pytest in a local subprocess.",
+            "This executor is not a security sandbox.",
+            "network_policy and resource_limits are recorded but not strongly enforced."
+          ],
+          "executor_kind": "local_subprocess",
+          "isolation_level": "process",
+          "network_enforced": false,
+          "supports_parallel": true,
+          "workspace_strategy": "host_workdir",
+          "resource_limits_enforced": false
+        }
+      }
+    ],
+    "replay_cache_counts": {
+      "miss": 9,
+      "hit": 18
+    },
+    "setup_status_counts": {
+      "skipped": 30
+    },
+    "replay_concurrency": {
+      "configured": 1,
+      "mode": "sequential",
+      "scheduled_variant_jobs": 18
+    },
+    "retries": {
+      "retried_replay_count": 0,
+      "retry_attempts": 0
+    },
+    "observed_replay_count": 9,
+    "reused_replay_count": 18,
+    "artifact_inventory": {
+      "artifact_count": 3,
+      "artifact_bytes": 2602,
+      "workspace_count": 27,
+      "workspace_bytes": 157330,
+      "total_bytes": 159932
+    }
+  },
+  "sampled_mutation_score": {
+    "status": "not_applicable",
+    "unit": "auto_mutation_bug_variant",
+    "denominator_source": "bug_variants.ground_truth.source=auto_mutation + ground_truth.probe.probe_check.status=passed",
+    "mutant_count": 0,
+    "included_variant_ids": [],
+    "excluded_variant_counts": {
+      "non_auto_mutation": 6
+    },
+    "rows": [
+      {
+        "strategy_id": "direct",
+        "strategy_name": "Direct v1",
+        "mutant_count": 0,
+        "repeat_count": 1,
+        "expected_replay_count": 0,
+        "observed_replay_count": 0,
+        "captured_mutant_count": 0,
+        "score": null,
+        "status": "not_applicable"
+      },
+      {
+        "strategy_id": "plan_execute",
+        "strategy_name": "Plan-and-Execute v1",
+        "mutant_count": 0,
+        "repeat_count": 1,
+        "expected_replay_count": 0,
+        "observed_replay_count": 0,
+        "captured_mutant_count": 0,
+        "score": null,
+        "status": "not_applicable"
+      },
+      {
+        "strategy_id": "react_reflection",
+        "strategy_name": "ReAct+Reflection v1",
+        "mutant_count": 0,
+        "repeat_count": 1,
+        "expected_replay_count": 0,
+        "observed_replay_count": 0,
+        "captured_mutant_count": 0,
+        "score": null,
+        "status": "not_applicable"
+      }
+    ],
+    "matrix_counts": {}
+  },
+  "replay_cache_entries": 27,
+  "artifact_inventory": {
+    "artifact_count": 3,
+    "artifact_bytes": 2602,
+    "workspace_count": 27,
+    "workspace_bytes": 157330,
+    "total_bytes": 159932
+  },
+  "workspace_cleanup_dry_run": {
+    "candidate_count": 9,
+    "deleted_count": 0,
+    "candidates": [
+      {
+        "replay_id": "fbfcfc42-8d00-428f-8c76-b1df18669a16",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\50b46e41-2e18-448b-9eae-7ae9fa2b949a\\replay-fbfcfc42-8d00-428f-8c76-b1df18669a16"
+      },
+      {
+        "replay_id": "acee7ce0-aa59-4c1f-b79a-5c386fea600a",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\50b46e41-2e18-448b-9eae-7ae9fa2b949a\\replay-acee7ce0-aa59-4c1f-b79a-5c386fea600a"
+      },
+      {
+        "replay_id": "de327b65-302a-4c44-bda8-900a768dc677",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\50b46e41-2e18-448b-9eae-7ae9fa2b949a\\replay-de327b65-302a-4c44-bda8-900a768dc677"
+      },
+      {
+        "replay_id": "4ba1007e-24d9-4abb-9dda-305240225f2f",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\61291f8a-959d-4f4a-b195-28cad5591593\\replay-4ba1007e-24d9-4abb-9dda-305240225f2f"
+      },
+      {
+        "replay_id": "21b2f6f8-4e7a-444d-be5a-a9ba5cf99fae",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\61291f8a-959d-4f4a-b195-28cad5591593\\replay-21b2f6f8-4e7a-444d-be5a-a9ba5cf99fae"
+      },
+      {
+        "replay_id": "007d1e20-02b0-406b-bcc7-cea53a6df960",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\61291f8a-959d-4f4a-b195-28cad5591593\\replay-007d1e20-02b0-406b-bcc7-cea53a6df960"
+      },
+      {
+        "replay_id": "dc709852-9693-4fe3-9793-506183ea8ecf",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\e6f5ff1c-9a0e-429f-bd10-f239bd52a3d8\\replay-dc709852-9693-4fe3-9793-506183ea8ecf"
+      },
+      {
+        "replay_id": "4d87c235-c502-4605-9292-deb12f39943e",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\e6f5ff1c-9a0e-429f-bd10-f239bd52a3d8\\replay-4d87c235-c502-4605-9292-deb12f39943e"
+      },
+      {
+        "replay_id": "66d2f273-1519-4087-91df-e42047cfbb66",
+        "status": "completed",
+        "exists": true,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\e6f5ff1c-9a0e-429f-bd10-f239bd52a3d8\\replay-66d2f273-1519-4087-91df-e42047cfbb66"
+      }
+    ]
+  },
+  "replay_cache_cleanup_dry_run": {
+    "candidate_count": 0,
+    "deleted_count": 0
+  },
+  "comparison": {
+    "hasApiSource": true,
+    "hasCompletedExperiment": true,
+    "hasMetricRows": true,
+    "textSlice": "TRACE\n项目\n运行控制台\n实验\n数据集\n运行环境\n策略对比\nAPI\n静态演示\n中文\nEN\n\nTRACE / COMPARISON\n\n策略对比\n\n快速查看最近一次实验的策略摘要；完整矩阵、clean run 和 replay 证据进入实验详情查看。\n\n选择实验\nV2.4 UI rehearsal 20260622 (已完成)\nV2.4 final API acceptance (已完成)\nV2.4 final API acceptance (已完成)\n刷新\n打开实验详情\n数据来源\nDatabase experiment metrics\n提供方\nmock\nmock-1\n重复次数\n1\nv24-ui-rehearsal-202606220128\nBUG 范围\n6\nBug 变体\n当前最佳\nPlan-and-Execute v1\n100% · 假阳性 0%\n策略数\n3\nsv-direct-v1, sv-plan-v1, sv-react-v1\n摘要页\n完整证据链在实验详情中查看\n打开实验详情\n策略\t捕获率\t假阳性\t状态\tTOKENS\t工具调用\t反思\t单捕获成本\t操作\nDirect v1direct\t83% (5/6)\t100%\t可评价\nClean baseline 失败会污染捕获率\n\t1,202\t3\t否\t240.4\t\n看证据\nPlan-and-Execute v1plan_execute\t100% (6/6)\t0%\t可评价\t5,531\t13\t否\t921.83\t\n看证据\nReAct+Reflection v1react_reflection\t100% (6/6)\t0%\t可评价\t2,598\t5\t是\t433\t\n看证据",
+    "url": "http://127.0.0.1:5186/#/comparison"
+  },
+  "ui_checks": {
+    "dataset_list_visible": true,
+    "dataset_detail_visible": true,
+    "dataset_create_experiment_preselected": true,
+    "llm_option_select_only": true,
+    "draft_start_visible": true,
+    "queued_running_completed_hide_start": true,
+    "completed_metrics_evidence_report_visible": true,
+    "cleanup_preview_before_delete": true,
+    "cleanup_delete_enabled_after_preview": true,
+    "cleanup_confirm_dialog_automation": "native confirm exists in frontend code, but automation path triggered delete; 9 rehearsal workspace candidates were deleted",
+    "comparison_api_metrics_visible": true
+  },
+  "screenshots": [
+    "01-dataset-list.png",
+    "02-dataset-detail.png",
+    "03-experiment-create-preselected.png",
+    "04-experiment-draft-start.png",
+    "05-experiment-progress-after-start.png",
+    "06-experiment-running-progress.png",
+    "07-experiment-completed.png",
+    "08-report-export.png",
+    "09-metrics-rows.png",
+    "10-evaluation-events.png",
+    "13-cleanup-dry-run-candidates.png"
+  ],
+  "workspace_cleanup_delete_check": {
+    "workspace_cleanup_delete_executed_during_confirm_check": true,
+    "observed_deleted_count": 9,
+    "dry_run_candidates_after_delete": 9,
+    "artifact_inventory_after_delete": {
+      "artifact_count": 3,
+      "artifact_bytes": 2602,
+      "workspace_count": 27,
+      "workspace_bytes": 120265,
+      "total_bytes": 122867
+    },
+    "after_delete_candidates": [
+      {
+        "replay_id": "fbfcfc42-8d00-428f-8c76-b1df18669a16",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\50b46e41-2e18-448b-9eae-7ae9fa2b949a\\replay-fbfcfc42-8d00-428f-8c76-b1df18669a16"
+      },
+      {
+        "replay_id": "acee7ce0-aa59-4c1f-b79a-5c386fea600a",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\50b46e41-2e18-448b-9eae-7ae9fa2b949a\\replay-acee7ce0-aa59-4c1f-b79a-5c386fea600a"
+      },
+      {
+        "replay_id": "de327b65-302a-4c44-bda8-900a768dc677",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\50b46e41-2e18-448b-9eae-7ae9fa2b949a\\replay-de327b65-302a-4c44-bda8-900a768dc677"
+      },
+      {
+        "replay_id": "4ba1007e-24d9-4abb-9dda-305240225f2f",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\61291f8a-959d-4f4a-b195-28cad5591593\\replay-4ba1007e-24d9-4abb-9dda-305240225f2f"
+      },
+      {
+        "replay_id": "21b2f6f8-4e7a-444d-be5a-a9ba5cf99fae",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\61291f8a-959d-4f4a-b195-28cad5591593\\replay-21b2f6f8-4e7a-444d-be5a-a9ba5cf99fae"
+      },
+      {
+        "replay_id": "007d1e20-02b0-406b-bcc7-cea53a6df960",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\61291f8a-959d-4f4a-b195-28cad5591593\\replay-007d1e20-02b0-406b-bcc7-cea53a6df960"
+      },
+      {
+        "replay_id": "dc709852-9693-4fe3-9793-506183ea8ecf",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\e6f5ff1c-9a0e-429f-bd10-f239bd52a3d8\\replay-dc709852-9693-4fe3-9793-506183ea8ecf"
+      },
+      {
+        "replay_id": "4d87c235-c502-4605-9292-deb12f39943e",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\e6f5ff1c-9a0e-429f-bd10-f239bd52a3d8\\replay-4d87c235-c502-4605-9292-deb12f39943e"
+      },
+      {
+        "replay_id": "66d2f273-1519-4087-91df-e42047cfbb66",
+        "status": "completed",
+        "exists": false,
+        "path": "D:\\GitRepo\\专业实训\\TRACE\\.pytest_tmp_experiments\\v24-ui-rehearsal-202606220128\\e6f5ff1c-9a0e-429f-bd10-f239bd52a3d8\\replay-66d2f273-1519-4087-91df-e42047cfbb66"
+      }
+    ],
+    "after_delete_existing_candidate_count": 0
+  }
+}
