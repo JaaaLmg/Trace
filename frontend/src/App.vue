@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { BarChart3, Beaker, Database, FolderGit2, MonitorDot, Server, SlidersHorizontal } from "@lucide/vue";
 import ComparisonPage from "./pages/ComparisonPage.vue";
 import DatasetDetailPage from "./pages/DatasetDetailPage.vue";
+import DatasetListPage from "./pages/DatasetListPage.vue";
 import ExperimentDetailPage from "./pages/ExperimentDetailPage.vue";
 import ExperimentListPage from "./pages/ExperimentListPage.vue";
 import ProjectListPage from "./pages/ProjectListPage.vue";
@@ -134,7 +135,7 @@ onBeforeUnmount(() => {
         <Beaker :size="16" aria-hidden="true" />
         {{ t("app.experiments") }}
       </a>
-      <a :href="dataSource === 'demo' ? `#/datasets/${sampleDatasetId}` : '#/datasets/new'" :class="{ active: route.name === 'datasets' }">
+      <a href="#/datasets" :class="{ active: route.name === 'datasets' }">
         <Database :size="16" aria-hidden="true" />
         {{ t("app.datasets") }}
       </a>
@@ -165,6 +166,11 @@ onBeforeUnmount(() => {
   </header>
 
   <ProjectListPage v-if="route.name === 'projects' || (route.name === 'runs' && !runId)" :data-source="dataSource" @navigate="navigate" />
+  <DatasetListPage
+    v-else-if="route.name === 'datasets' && !route.id"
+    :data-source="dataSource"
+    @navigate="navigate"
+  />
   <DatasetDetailPage
     v-else-if="route.name === 'datasets' && route.id"
     :dataset-id="route.id"

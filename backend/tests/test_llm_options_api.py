@@ -93,3 +93,22 @@ def test_llm_options_marks_real_llm_unselectable_without_api_key(tmp_path, monke
     assert configured["selectable"] is False
     assert configured["credential_status"] == "missing_api_key"
     assert configured["reason"] == "api_key_missing"
+
+
+def test_llm_options_config_error_is_sanitized(tmp_path, monkeypatch):
+    config_path = tmp_path / "llm.config.json"
+    config_path.write_text(
+        '{"provider": "openai_chat_compat", "api_key": "sk-should-not-leak",',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TRACE_LLM_CONFIG_FILE", str(config_path))
+    app = create_app(initialize=False)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/llm-options")
+
+    assert response.status_code == 200
+    assert response.json()["config_status"] == "error"
+    assert response.json()["config_error"] == "config_parse_failed"
+    assert "sk-should-not-leak" not in response.text
+    assert str(config_path) not in response.text

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Activity, ArrowLeft, Bot, Database, Footprints, Play, RefreshCw } from "@lucide/vue";
+import { Activity, ArrowLeft, Bot, Database, Download, FileText, Footprints, Play, RefreshCw } from "@lucide/vue";
 import {
   cleanupExperiment,
   cleanupExperimentReplayCache,
@@ -19,7 +19,7 @@ import ReplayEvidencePanel from "../components/experiment/ReplayEvidencePanel.vu
 import { demoExperimentMetrics } from "../demo/staticRunFixture";
 import { useLatestRequest } from "../composables/useLatestRequest";
 import { useI18n } from "../i18n";
-import type { ExperimentDefinition, ExperimentMetricsResponse, ExperimentProgressOut } from "../types/api";
+import type { ArtifactContract, ExperimentDefinition, ExperimentMetricsResponse, ExperimentProgressOut, JsonObject } from "../types/api";
 import type { DataSource } from "../types/ui";
 
 const props = defineProps<{
@@ -41,6 +41,8 @@ const selectedReplayId = ref<string | null>(null);
 const cleanupMessage = ref<string | null>(null);
 const lifecycle = ref<Record<string, unknown> | null>(null);
 const cacheInfo = ref<Record<string, unknown> | null>(null);
+const workspaceCleanupPreview = ref<CleanupResult | null>(null);
+const cacheCleanupPreview = ref<CleanupResult | null>(null);
 const progress = ref<ExperimentProgressOut | null>(null);
 const progressError = ref<string | null>(null);
 const starting = ref(false);
@@ -48,7 +50,29 @@ let progressTimer: number | null = null;
 
 const terminalExperimentStatuses = new Set(["completed", "failed", "cancelled"]);
 const activeExperimentStatuses = new Set(["queued", "running"]);
-const startableExperimentStatuses = new Set(["draft", "queued", "cancelled"]);
+const startableExperimentStatuses = new Set(["draft"]);
+
+type CleanupCandidate = {
+  replay_id?: string;
+  path?: string;
+  status?: string;
+  cache_status?: string;
+  exists?: boolean | null;
+  safe?: boolean;
+  error?: string;
+  source_replay_id?: string | null;
+  reused_from_replay_id?: string | null;
+};
+
+type CleanupResult = {
+  experiment_id?: string;
+  dry_run?: boolean;
+  keep_failed?: boolean;
+  candidate_count?: number;
+  deleted_count?: number;
+  candidates?: CleanupCandidate[];
+  deleted?: CleanupCandidate[];
+};
 
 const canStartExperiment = computed(() => {
   const status = experiment.value?.status ?? metrics.value?.experiment.status;
@@ -77,13 +101,13 @@ const progressStatusText = computed(() => {
 
 const currentStrategyText = computed(() => {
   if (!progress.value) {
-    return "none";
+    return t("common.none");
   }
   const index = progress.value.current_strategy_index;
   const total = progress.value.strategy_count;
   const id = progress.value.current_strategy_version_id;
   if (!index || !total) {
-    return id ?? "none";
+    return id ?? t("common.none");
   }
   return `${index} / ${total}${id ? ` · ${id}` : ""}`;
 });
@@ -91,20 +115,20 @@ const currentStrategyText = computed(() => {
 const currentStepText = computed(() => {
   const step = progress.value?.latest_trace_step;
   if (!step) {
-    return progress.value?.run_stage ?? "preparing";
+    return progress.value?.run_stage ?? t("experiments.preparing");
   }
   return step.tool_name ? `${step.name} · ${step.tool_name}` : step.name;
 });
 
 const currentUnitText = computed(() => {
   if (!progress.value) {
-    return "none";
+    return t("common.none");
   }
-  const task = progress.value.current_eval_task_id ?? "task pending";
+  const task = progress.value.current_eval_task_id ?? t("experiments.taskPending");
   const repeat =
     progress.value.current_repeat_index === null || progress.value.current_repeat_index === undefined
-      ? "repeat pending"
-      : `repeat ${progress.value.current_repeat_index + 1} / ${progress.value.repeat_count}`;
+      ? t("experiments.repeatPending")
+      : `${t("experiments.repeatShort")} ${progress.value.current_repeat_index + 1} / ${progress.value.repeat_count}`;
   return `${task} · ${repeat}`;
 });
 
@@ -169,10 +193,65 @@ async function loadMetrics(options: { preserveReplaySelection?: boolean } = {}) 
 
 function countText(values: Record<string, number> | undefined): string {
   if (!values) {
-    return "none";
+    return t("common.none");
   }
   const pairs = Object.entries(values);
-  return pairs.length ? pairs.map(([key, value]) => `${key}: ${value}`).join(" / ") : "none";
+  return pairs.length ? pairs.map(([key, value]) => `${key}: ${value}`).join(" / ") : t("common.none");
+}
+
+function candidateText(value: string | null | undefined): string {
+  return value ?? t("common.none");
+}
+
+function candidateStatusText(value: string | null | undefined): string {
+  return value ?? t("common.unknown");
+}
+
+function candidateExistsText(value: boolean | null | undefined): string {
+  if (value === true) {
+    return t("common.yes");
+  }
+  if (value === false) {
+    return t("common.no");
+  }
+  return t("common.unknown");
+}
+
+function jsonText(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2);
+}
+
+function downloadMetricsJson() {
+  if (!metrics.value) {
+    return;
+  }
+  const blob = new Blob([JSON.stringify(metrics.value, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${metrics.value.experiment.id}.metrics.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function reportLikeArtifacts(): ArtifactContract[] {
+  const artifacts = metrics.value?.artifacts ?? [];
+  return artifacts.filter((artifact) =>
+    artifact.artifact_type === "report_json" ||
+    artifact.artifact_type === "report_markdown" ||
+    artifact.artifact_type === "experiment_metrics"
+  );
+}
+
+function firstRunIdForReport(): string | null {
+  return metrics.value?.clean_runs[0]?.clean_run_id ?? null;
+}
+
+function openFirstRunReport() {
+  const runId = firstRunIdForReport();
+  if (runId) {
+    emit("navigate", `#/runs/${runId}`);
+  }
 }
 
 async function startExperiment() {
@@ -203,15 +282,27 @@ async function runCleanup(dryRun: boolean) {
   }
   cleanupMessage.value = null;
   try {
-    const result = await cleanupExperiment(props.experimentId, { dry_run: dryRun, keep_failed: true });
+    if (!dryRun && !workspaceCleanupPreview.value) {
+      cleanupMessage.value = t("experiments.cleanupPreviewRequired");
+      return;
+    }
+    if (!dryRun && !window.confirm(t("experiments.cleanupConfirm"))) {
+      return;
+    }
+    const result = (await cleanupExperiment(props.experimentId, { dry_run: dryRun, keep_failed: true })) as CleanupResult;
+    if (dryRun) {
+      workspaceCleanupPreview.value = result;
+    }
     cleanupMessage.value = dryRun
-      ? `Cleanup dry run: ${String(result.candidate_count ?? 0)} candidates.`
-      : `Cleanup completed: ${String(result.deleted_count ?? 0)} workspaces deleted.`;
+      ? t("experiments.cleanupDryRunMessage", { count: String(result.candidate_count ?? 0) })
+      : t("experiments.cleanupCompletedMessage", { count: String(result.deleted_count ?? 0) });
     if (!dryRun) {
+      workspaceCleanupPreview.value = null;
       await loadMetrics();
+      await loadLifecycle();
     }
   } catch (error) {
-    cleanupMessage.value = error instanceof Error ? error.message : "Cleanup failed.";
+    cleanupMessage.value = error instanceof Error ? error.message : t("experiments.cleanupFailed");
   }
 }
 
@@ -265,7 +356,7 @@ async function loadLifecycle() {
     lifecycle.value = inventory;
     cacheInfo.value = cache;
   } catch (error) {
-    cleanupMessage.value = error instanceof Error ? error.message : "Lifecycle load failed.";
+    cleanupMessage.value = error instanceof Error ? error.message : t("experiments.lifecycleLoadFailed");
   }
 }
 
@@ -274,13 +365,26 @@ async function runCacheCleanup(dryRun: boolean) {
     return;
   }
   try {
-    const result = await cleanupExperimentReplayCache(props.experimentId, { dry_run: dryRun });
+    if (!dryRun && !cacheCleanupPreview.value) {
+      cleanupMessage.value = t("experiments.cacheCleanupPreviewRequired");
+      return;
+    }
+    if (!dryRun && !window.confirm(t("experiments.cacheCleanupConfirm"))) {
+      return;
+    }
+    const result = (await cleanupExperimentReplayCache(props.experimentId, { dry_run: dryRun })) as CleanupResult;
+    if (dryRun) {
+      cacheCleanupPreview.value = result;
+    }
     cleanupMessage.value = dryRun
-      ? `Cache cleanup dry run: ${String(result.candidate_count ?? 0)} candidates.`
-      : `Cache cleanup completed: ${String(result.deleted_count ?? 0)} workspaces deleted.`;
+      ? t("experiments.cacheCleanupDryRunMessage", { count: String(result.candidate_count ?? 0) })
+      : t("experiments.cacheCleanupCompletedMessage", { count: String(result.deleted_count ?? 0) });
+    if (!dryRun) {
+      cacheCleanupPreview.value = null;
+    }
     await loadLifecycle();
   } catch (error) {
-    cleanupMessage.value = error instanceof Error ? error.message : "Cache cleanup failed.";
+    cleanupMessage.value = error instanceof Error ? error.message : t("experiments.cacheCleanupFailed");
   }
 }
 
@@ -348,29 +452,29 @@ onBeforeUnmount(() => {
       <div class="progress-grid">
         <article>
           <Activity :size="16" aria-hidden="true" />
-          <span>Strategy</span>
+          <span>{{ t("experiments.progressStrategy") }}</span>
           <strong>{{ currentStrategyText }}</strong>
         </article>
         <article>
           <Bot :size="16" aria-hidden="true" />
-          <span>Agent</span>
-          <strong>{{ progress?.run_stage ?? progress?.run_status ?? "preparing" }}</strong>
+          <span>{{ t("experiments.progressAgent") }}</span>
+          <strong>{{ progress?.run_stage ?? progress?.run_status ?? t("experiments.preparing") }}</strong>
         </article>
         <article>
           <Footprints :size="16" aria-hidden="true" />
-          <span>Step</span>
+          <span>{{ t("experiments.progressStep") }}</span>
           <strong>{{ currentStepText }}</strong>
         </article>
         <article>
           <Database :size="16" aria-hidden="true" />
-          <span>Unit</span>
+          <span>{{ t("experiments.progressUnit") }}</span>
           <strong>{{ currentUnitText }}</strong>
         </article>
       </div>
       <div class="progress-counts">
-        <span>{{ progress?.clean_runs_completed ?? 0 }} / {{ progress?.clean_runs_total_estimate ?? 0 }} clean runs</span>
-        <span>{{ progress?.replay_runs_completed ?? 0 }} replay done</span>
-        <span>{{ progress?.replay_runs_running ?? 0 }} replay active</span>
+        <span>{{ progress?.clean_runs_completed ?? 0 }} / {{ progress?.clean_runs_total_estimate ?? 0 }} {{ t("experiments.cleanRunsProgress") }}</span>
+        <span>{{ progress?.replay_runs_completed ?? 0 }} {{ t("experiments.replayDone") }}</span>
+        <span>{{ progress?.replay_runs_running ?? 0 }} {{ t("experiments.replayActive") }}</span>
       </div>
     </section>
 
@@ -432,52 +536,141 @@ onBeforeUnmount(() => {
 
       <section class="runtime-band subtle-panel">
         <article>
-          <span>Executors</span>
+          <span>{{ t("experiments.executors") }}</span>
           <strong>{{ countText(metrics.runtime_execution.executor_kind_distribution) }}</strong>
         </article>
         <article>
-          <span>Replay cache</span>
+          <span>{{ t("experiments.replayCache") }}</span>
           <strong>{{ countText(metrics.runtime_execution.replay_cache_counts) }}</strong>
         </article>
         <article>
-          <span>Setup</span>
+          <span>{{ t("experiments.setup") }}</span>
           <strong>{{ countText(metrics.runtime_execution.setup_status_counts) }}</strong>
         </article>
         <article>
-          <span>Replay work</span>
-          <strong>{{ metrics.runtime_execution.observed_replay_count }} observed / {{ metrics.runtime_execution.reused_replay_count }} reused</strong>
+          <span>{{ t("experiments.replayWork") }}</span>
+          <strong>{{ metrics.runtime_execution.observed_replay_count }} {{ t("experiments.replayObserved") }} / {{ metrics.runtime_execution.reused_replay_count }} {{ t("experiments.replayReused") }}</strong>
         </article>
         <article>
-          <span>Retries</span>
+          <span>{{ t("experiments.retries") }}</span>
           <strong>
-            {{ String(metrics.runtime_execution.retries?.retried_replay_count ?? 0) }} replays /
-            {{ String(metrics.runtime_execution.retries?.retry_attempts ?? 0) }} attempts
+            {{ String(metrics.runtime_execution.retries?.retried_replay_count ?? 0) }} {{ t("experiments.retryReplays") }} /
+            {{ String(metrics.runtime_execution.retries?.retry_attempts ?? 0) }} {{ t("experiments.retryAttempts") }}
           </strong>
         </article>
         <div v-if="props.dataSource === 'api'" class="cleanup-actions">
-          <button class="text-button" type="button" @click="runCleanup(true)">Dry-run cleanup</button>
-          <button class="text-button" type="button" @click="runCleanup(false)">Clean workspaces</button>
-          <button class="text-button" type="button" @click="runCacheCleanup(true)">Dry-run cache</button>
-          <button class="text-button" type="button" @click="runCacheCleanup(false)">Clean cache</button>
+          <button class="text-button" type="button" @click="runCleanup(true)">{{ t("experiments.previewWorkspaceCleanup") }}</button>
+          <button class="text-button danger-action" type="button" :disabled="!workspaceCleanupPreview" @click="runCleanup(false)">{{ t("experiments.deleteWorkspaceCandidates") }}</button>
+          <button class="text-button" type="button" @click="runCacheCleanup(true)">{{ t("experiments.previewReplayCacheCleanup") }}</button>
+          <button class="text-button danger-action" type="button" :disabled="!cacheCleanupPreview" @click="runCacheCleanup(false)">{{ t("experiments.deleteCacheCandidates") }}</button>
         </div>
+      </section>
+
+      <section v-if="workspaceCleanupPreview || cacheCleanupPreview" class="cleanup-preview-grid">
+        <article v-if="workspaceCleanupPreview" class="subtle-panel cleanup-preview">
+          <div class="cleanup-preview-head">
+            <span>{{ t("experiments.workspaceCleanupCandidates") }}</span>
+            <strong>{{ workspaceCleanupPreview.candidate_count ?? 0 }}</strong>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>{{ t("experiments.replay") }}</th>
+                <th>{{ t("experiments.status") }}</th>
+                <th>{{ t("experiments.exists") }}</th>
+                <th>{{ t("experiments.path") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="candidate in workspaceCleanupPreview.candidates ?? []" :key="candidate.replay_id ?? candidate.path">
+                <td class="mono">{{ candidateText(candidate.replay_id) }}</td>
+                <td>{{ candidateStatusText(candidate.status) }}</td>
+                <td>{{ candidateExistsText(candidate.exists) }}</td>
+                <td class="mono">{{ candidateText(candidate.path) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+        <article v-if="cacheCleanupPreview" class="subtle-panel cleanup-preview">
+          <div class="cleanup-preview-head">
+            <span>{{ t("experiments.replayCacheCleanupCandidates") }}</span>
+            <strong>{{ cacheCleanupPreview.candidate_count ?? 0 }}</strong>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>{{ t("experiments.replay") }}</th>
+                <th>{{ t("experiments.cache") }}</th>
+                <th>{{ t("experiments.exists") }}</th>
+                <th>{{ t("experiments.path") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="candidate in cacheCleanupPreview.candidates ?? []" :key="candidate.replay_id ?? candidate.path">
+                <td class="mono">{{ candidateText(candidate.replay_id) }}</td>
+                <td>{{ candidateStatusText(candidate.cache_status ?? candidate.status) }}</td>
+                <td>{{ candidateExistsText(candidate.exists) }}</td>
+                <td class="mono">{{ candidateText(candidate.path) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
       </section>
 
       <section v-if="props.dataSource === 'api'" class="lifecycle-grid">
         <article class="subtle-panel lifecycle-tile">
-          <span>Artifact inventory</span>
+          <span>{{ t("experiments.artifactInventory") }}</span>
           <strong>{{ String(lifecycle?.artifact_count ?? metrics.runtime_execution.artifact_inventory?.artifact_count ?? 0) }}</strong>
           <small>{{ String(lifecycle?.artifact_bytes ?? metrics.runtime_execution.artifact_inventory?.artifact_bytes ?? 0) }} bytes</small>
         </article>
         <article class="subtle-panel lifecycle-tile">
-          <span>Workspaces</span>
+          <span>{{ t("experiments.workspaces") }}</span>
           <strong>{{ String(lifecycle?.workspace_count ?? metrics.runtime_execution.artifact_inventory?.workspace_count ?? 0) }}</strong>
           <small>{{ String(lifecycle?.workspace_bytes ?? metrics.runtime_execution.artifact_inventory?.workspace_bytes ?? 0) }} bytes</small>
         </article>
         <article class="subtle-panel lifecycle-tile">
-          <span>Replay cache entries</span>
+          <span>{{ t("experiments.replayCacheEntries") }}</span>
           <strong>{{ String((cacheInfo?.entries as unknown[] | undefined)?.length ?? 0) }}</strong>
           <small>{{ countText(metrics.runtime_execution.replay_cache_counts) }}</small>
         </article>
+      </section>
+
+      <section class="report-export-panel subtle-panel">
+        <div>
+          <p class="eyebrow">{{ t("experiments.reportExport") }}</p>
+          <h2>{{ t("experiments.reportExportTitle") }}</h2>
+          <p>{{ t("experiments.reportExportBody") }}</p>
+        </div>
+        <div class="report-actions">
+          <button class="text-button" type="button" @click="downloadMetricsJson">
+            <Download :size="15" aria-hidden="true" />
+            {{ t("experiments.downloadMetricsJson") }}
+          </button>
+          <button class="text-button" type="button" :disabled="!firstRunIdForReport()" @click="openFirstRunReport">
+            <FileText :size="15" aria-hidden="true" />
+            {{ t("experiments.openFirstRunReport") }}
+          </button>
+        </div>
+        <div class="report-grid">
+          <article>
+            <span>{{ t("experiments.dataset") }}</span>
+            <button class="inline-link" type="button" @click="emit('navigate', `#/datasets/${metrics.experiment.dataset_id}`)">
+              {{ metrics.experiment.dataset_id }}
+            </button>
+          </article>
+          <article>
+            <span>{{ t("experiments.metricStates") }}</span>
+            <strong>{{ metrics.rows.map((row) => `${row.strategy_id}:${row.metric_status}`).join(" / ") }}</strong>
+          </article>
+          <article>
+            <span>{{ t("experiments.artifacts") }}</span>
+            <strong>{{ reportLikeArtifacts().length ? reportLikeArtifacts().map((artifact) => artifact.artifact_type).join(", ") : t("experiments.runLevelReportsOnly") }}</strong>
+          </article>
+        </div>
+        <details class="json-details">
+          <summary>{{ t("experiments.runtimeExecutionJson") }}</summary>
+          <pre>{{ jsonText(metrics.runtime_execution as JsonObject) }}</pre>
+        </details>
       </section>
 
       <ExperimentMetricsTable :rows="metrics.rows" />
@@ -719,6 +912,106 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.cleanup-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.cleanup-preview {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  overflow-x: auto;
+}
+
+.cleanup-preview-head,
+.report-export-panel,
+.report-actions {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.cleanup-preview-head span,
+.report-grid span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.danger-action {
+  color: var(--failed);
+}
+
+.report-export-panel {
+  display: grid;
+  margin-top: 18px;
+  padding: 16px;
+}
+
+.report-export-panel h2 {
+  margin-top: 4px;
+  font-size: 18px;
+}
+
+.report-export-panel p {
+  max-width: 760px;
+  color: var(--muted-strong);
+}
+
+.report-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.report-grid article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.report-grid strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.json-details {
+  display: grid;
+  gap: 8px;
+}
+
+.json-details summary {
+  cursor: pointer;
+  color: var(--tool);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.json-details pre {
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  font-size: 11px;
+}
+
 .lifecycle-tile {
   display: grid;
   gap: 3px;
@@ -787,7 +1080,9 @@ onBeforeUnmount(() => {
   .hero-band,
   .progress-grid,
   .metadata-grid,
-  .lifecycle-grid {
+  .lifecycle-grid,
+  .cleanup-preview-grid,
+  .report-grid {
     grid-template-columns: 1fr;
   }
 

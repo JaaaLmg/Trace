@@ -574,6 +574,27 @@ def test_experiment_run_route_enqueues_without_sync(monkeypatch, clean_db):
         assert calls == ["exp-stage4-queued"]
 
 
+def test_experiment_create_rejects_unselectable_llm_override(clean_db):
+    _seed_v2_demo()
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/experiments",
+            json={
+                "id": "exp-bad-llm-option",
+                "name": "bad llm option",
+                "dataset_id": DEMO_DATASET_ID,
+                "strategy_version_ids": ["sv-direct-v1"],
+                "repeat_count": 1,
+                "llm_override": {"provider": "openai", "model": "gpt-5"},
+            },
+        )
+
+    assert response.status_code == 400
+    assert "selectable LLM option" in response.text
+
+
 def test_experiment_metrics_missing_experiment_returns_404(clean_db):
     app = create_app()
 

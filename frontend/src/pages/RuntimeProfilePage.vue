@@ -27,7 +27,34 @@ const loading = ref(false);
 const saving = ref(false);
 const errorMessage = ref<string | null>(null);
 const preflightMessage = ref<string | null>(null);
-const executorStatus = ref<Record<string, { available: boolean; warning?: string; unavailable_reason?: string | null }>>({});
+const preflightResult = ref<PreflightResult | null>(null);
+const executorStatus = ref<
+  Record<
+    string,
+    {
+      available: boolean;
+      isolation_level?: string;
+      network_enforced?: boolean;
+      resource_limits_enforced?: boolean;
+      warning?: string;
+      unavailable_reason?: string | null;
+    }
+  >
+>({});
+
+type PreflightCheck = {
+  name: string;
+  status: string;
+  message: string;
+  [key: string]: unknown;
+};
+
+type PreflightResult = {
+  status?: string;
+  checks?: PreflightCheck[];
+  replay_policy?: Record<string, unknown>;
+  audit_only_limitations?: string[];
+};
 
 const DEFAULT_ARTIFACT_POLICY: JsonObject = { retain: "evidence" };
 const DEFAULT_CLEANUP_POLICY: JsonObject = { mode: "manual", keep_failed: true };
@@ -179,7 +206,7 @@ async function runPreflight() {
     errorMessage.value = error instanceof Error ? error.message : t("runtime.saveFailed");
     return;
   }
-  const result = await preflightRuntimeProfileDraft({
+  const result = (await preflightRuntimeProfileDraft({
     name: form.name.trim(),
     executor: form.executor,
     image: form.image.trim() || null,
@@ -195,7 +222,8 @@ async function runPreflight() {
     },
     artifact_policy: artifactPolicy,
     cleanup_policy: cleanupPolicy
-  });
+  })) as PreflightResult;
+  preflightResult.value = result;
   preflightMessage.value = `Preflight ${String(result.status)} · ${String((result.checks as unknown[] | undefined)?.length ?? 0)} checks`;
 }
 
@@ -256,6 +284,7 @@ onMounted(() => {
           <span>{{ name }}</span>
           <strong>{{ status.available ? t("runtime.available") : t("runtime.unavailable") }}</strong>
           <small>{{ capabilityMessage(status) }}</small>
+          <small>{{ t("runtime.isolation") }}: {{ status.isolation_level ?? t("common.unknown") }} · {{ t("runtime.networkEnforced") }}: {{ status.network_enforced ? t("common.yes") : t("common.no") }} · {{ t("runtime.resourceLimits") }}: {{ status.resource_limits_enforced ? t("common.yes") : t("common.no") }}</small>
         </article>
       </section>
 
@@ -301,7 +330,7 @@ onMounted(() => {
               </button>
               <button class="text-button" type="button" :disabled="saving" @click="runPreflight">
                 <Stethoscope :size="16" aria-hidden="true" />
-                Preflight
+                {{ t("runtime.preflight") }}
               </button>
               <button class="primary-action" type="button" :disabled="saving" @click="saveProfile">
                 <Save :size="16" aria-hidden="true" />
@@ -314,6 +343,24 @@ onMounted(() => {
             <ShieldAlert :size="16" aria-hidden="true" />
             {{ t("runtime.localWarning") }}
           </p>
+
+          <section v-if="preflightResult" class="preflight-panel">
+            <div class="preflight-head">
+              <span>{{ t("runtime.preflightChecks") }}</span>
+              <strong :data-status="preflightResult.status">{{ preflightResult.status }}</strong>
+            </div>
+            <div class="preflight-grid">
+              <article v-for="check in preflightResult.checks ?? []" :key="check.name" :data-status="check.status">
+                <span>{{ check.name }}</span>
+                <strong>{{ check.status }}</strong>
+                <small>{{ check.message }}</small>
+              </article>
+            </div>
+            <div class="preflight-foot">
+              <code>{{ t("runtime.replayPolicy") }} {{ JSON.stringify(preflightResult.replay_policy ?? {}) }}</code>
+              <code v-for="limitation in preflightResult.audit_only_limitations ?? []" :key="limitation">{{ limitation }}</code>
+            </div>
+          </section>
 
           <div class="form-grid">
             <label>
@@ -356,23 +403,23 @@ onMounted(() => {
               <input v-model.number="form.timeoutSeconds" min="1" type="number" />
             </label>
             <label>
-              <span>Replay concurrency</span>
+              <span>{{ t("runtime.replayConcurrency") }}</span>
               <input v-model.number="form.replayConcurrency" min="1" type="number" />
             </label>
             <label>
-              <span>Max retries</span>
+              <span>{{ t("runtime.maxRetries") }}</span>
               <input v-model.number="form.maxRetries" min="0" type="number" />
             </label>
             <label>
-              <span>Retry backoff</span>
+              <span>{{ t("runtime.retryBackoff") }}</span>
               <input v-model.number="form.retryBackoffSeconds" min="0" step="0.1" type="number" />
             </label>
             <label class="wide">
-              <span>Artifact policy</span>
+              <span>{{ t("runtime.artifactPolicy") }}</span>
               <textarea v-model="form.artifactPolicyText" class="policy-textarea" rows="4" spellcheck="false"></textarea>
             </label>
             <label class="wide">
-              <span>Cleanup policy</span>
+              <span>{{ t("runtime.cleanupPolicy") }}</span>
               <textarea v-model="form.cleanupPolicyText" class="policy-textarea" rows="4" spellcheck="false"></textarea>
             </label>
           </div>
@@ -447,6 +494,10 @@ label span {
   overflow-wrap: anywhere;
 }
 
+.summary-tile small + small {
+  margin-top: 2px;
+}
+
 .runtime-grid {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
@@ -484,6 +535,81 @@ label span {
   background: var(--running-bg);
   color: var(--running);
   font-size: 13px;
+}
+
+.preflight-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.preflight-head {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.preflight-head span,
+.preflight-grid span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.preflight-head strong[data-status="failed"],
+.preflight-grid article[data-status="failed"] strong {
+  color: var(--failed);
+}
+
+.preflight-head strong[data-status="warning"],
+.preflight-grid article[data-status="warning"] strong {
+  color: var(--running);
+}
+
+.preflight-head strong[data-status="passed"],
+.preflight-grid article[data-status="passed"] strong {
+  color: var(--passed);
+}
+
+.preflight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.preflight-grid article {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.preflight-grid small,
+.preflight-foot code {
+  overflow-wrap: anywhere;
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.preflight-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preflight-foot code {
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(251, 250, 247, 0.7);
 }
 
 .form-grid {
@@ -533,7 +659,8 @@ textarea {
 @media (max-width: 900px) {
   .summary-grid,
   .runtime-grid,
-  .form-grid {
+  .form-grid,
+  .preflight-grid {
     grid-template-columns: 1fr;
   }
 
