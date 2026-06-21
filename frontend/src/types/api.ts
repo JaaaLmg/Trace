@@ -473,6 +473,7 @@ export interface ExperimentCreateRequest {
   name: string;
   dataset_id: string;
   runtime_profile_id?: string | null;
+  runtime_profile_bindings?: Record<string, string>;
   strategy_version_ids: string[];
   repeat_count: number;
   llm_override?: Partial<LlmOverride> | null;
@@ -494,6 +495,7 @@ export interface ExperimentDefinition {
   name: string;
   dataset_id: string;
   runtime_profile_id: string | null;
+  runtime_profile_bindings?: Record<string, string>;
   strategy_version_ids: string[];
   repeat_count: number;
   llm_override: LlmOverride | null;
@@ -516,6 +518,38 @@ export interface ExperimentCleanRunOut {
   false_positive: boolean;
   clean_metrics: JsonObject;
   created_at: string;
+}
+
+export interface ExperimentProgressTraceStepOut {
+  step_index: number;
+  step_type: StepType | string;
+  name: string;
+  tool_name: string | null;
+  status: "ok" | "error" | string;
+  created_at: string;
+}
+
+export interface ExperimentProgressOut {
+  experiment_id: string;
+  status: ExperimentStatus;
+  dataset_id: string;
+  strategy_version_ids: string[];
+  current_strategy_version_id: string | null;
+  current_strategy_index: number | null;
+  strategy_count: number;
+  current_clean_run_id: string | null;
+  current_test_run_id: string | null;
+  current_eval_task_id: string | null;
+  current_repeat_index: number | null;
+  repeat_count: number;
+  clean_runs_completed: number;
+  clean_runs_total_estimate: number;
+  replay_runs_completed: number;
+  replay_runs_running: number;
+  run_status: RunStatus | string | null;
+  run_stage: RunStage | string | null;
+  latest_trace_step: ExperimentProgressTraceStepOut | null;
+  updated_at: string;
 }
 
 export interface TestReplayOut {
@@ -561,6 +595,7 @@ export interface RuntimeSnapshotContract {
   network_policy: "default" | "disabled" | "install_only";
   timeout_seconds: number;
   resource_limits: JsonObject;
+  replay_policy?: JsonObject;
   artifact_policy?: JsonObject;
   cleanup_policy?: JsonObject;
   executor_capabilities?: JsonObject;
@@ -580,6 +615,7 @@ export interface RuntimeProfileOut {
   test_command: string;
   env_template: JsonObject;
   resource_limits: JsonObject;
+  replay_policy: JsonObject;
   network_policy: "default" | "disabled" | "install_only";
   artifact_policy: JsonObject;
   cleanup_policy: JsonObject;
@@ -598,10 +634,30 @@ export interface RuntimeProfileUpsertRequest {
   install_command?: string | null;
   env_template?: JsonObject;
   resource_limits?: JsonObject;
+  replay_policy?: JsonObject;
   network_policy?: "default" | "disabled" | "install_only";
   timeout_seconds?: number | null;
   artifact_policy?: JsonObject;
   cleanup_policy?: JsonObject;
+}
+
+export interface DatasetRuntimeBindingTaskOut {
+  task_id: string;
+  project_id: string;
+  project_snapshot_id: string;
+}
+
+export interface DatasetRuntimeBindingProjectOut {
+  project_id: string;
+  project_name: string | null;
+  profiles: RuntimeProfileOut[];
+}
+
+export interface DatasetRuntimeBindingManifestOut {
+  dataset_id: string;
+  multi_project: boolean;
+  tasks: DatasetRuntimeBindingTaskOut[];
+  projects: DatasetRuntimeBindingProjectOut[];
 }
 
 export interface RuntimeExecutionSummary {
@@ -610,6 +666,8 @@ export interface RuntimeExecutionSummary {
   replay_cache_counts: Record<string, number>;
   setup_status_counts: Record<string, number>;
   replay_concurrency: JsonObject;
+  retries?: JsonObject;
+  artifact_inventory?: JsonObject;
   observed_replay_count: number;
   reused_replay_count: number;
 }
@@ -813,6 +871,7 @@ export type EvaluationEventType =
   | "executor_timeout"
   | "setup_failed"
   | "cleanup_failed"
+  | "cleanup_completed"
   | "resource_limit_exceeded"
   | "network_policy_violation"
   | "replay_cache_hit"

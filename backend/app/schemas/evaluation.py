@@ -88,6 +88,7 @@ EvaluationEventType = Literal[
     "executor_timeout",
     "setup_failed",
     "cleanup_failed",
+    "cleanup_completed",
     "resource_limit_exceeded",
     "network_policy_violation",
     "replay_cache_hit",
@@ -224,6 +225,7 @@ class RuntimeSnapshotContract(ContractModel):
     timeout_seconds: int = Field(ge=1)
     env_template: dict[str, Any] = Field(default_factory=dict)
     resource_limits: dict[str, Any] = Field(default_factory=dict)
+    replay_policy: dict[str, Any] = Field(default_factory=dict)
     artifact_policy: dict[str, Any] = Field(default_factory=dict)
     cleanup_policy: dict[str, Any] = Field(default_factory=dict)
     executor_capabilities: dict[str, Any] = Field(default_factory=dict)
@@ -251,6 +253,7 @@ class ExperimentDefinition(ContractModel):
     name: str
     dataset_id: str
     runtime_profile_id: str | None = None
+    runtime_profile_bindings: dict[str, str] = Field(default_factory=dict)
     strategy_version_ids: list[str] = Field(min_length=1)
     repeat_count: int = Field(ge=1)
     llm_override: LlmOverride | None = None

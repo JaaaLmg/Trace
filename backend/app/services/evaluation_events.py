@@ -241,6 +241,29 @@ def _replay_failure_events(clean_by_id: dict[str, ExperimentCleanRun], replay: T
                 },
             )
         )
+    if replay.error_code == "EXECUTOR_TIMEOUT":
+        events.append(
+            _event_payload(
+                event_type="executor_timeout",
+                severity="error",
+                scope="replay",
+                experiment_id=clean.experiment_id,
+                clean_run_id=clean.id,
+                replay_id=replay.id,
+                bug_variant_id=replay.bug_variant_id,
+                eval_task_id=clean.eval_task_id,
+                strategy_version_id=clean.strategy_version_id,
+                repeat_index=clean.repeat_index,
+                stable_code="executor_timeout",
+                reason=str(message),
+                source_ids={"test_replay_id": replay.id},
+                artifact_ids=[replay.generated_test_set_artifact_id],
+                payload={
+                    "executor": (replay.runtime_snapshot or {}).get("executor"),
+                    "timeout_seconds": (replay.runtime_snapshot or {}).get("timeout_seconds"),
+                },
+            )
+        )
     if replay.error_code == "SETUP_FAILED":
         events.append(
             _event_payload(

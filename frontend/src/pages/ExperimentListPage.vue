@@ -3,12 +3,12 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ArrowRight, Beaker, Play, Plus, RefreshCw, ServerCrash } from "@lucide/vue";
 import { createExperiment, listExperiments, runExperiment } from "../api/experiments";
 import { listEvalDatasets } from "../api/evaluation";
-import { createDatasetRuntimeProfile, getExecutorStatus, listDatasetRuntimeProfiles } from "../api/runtimeProfiles";
+import { createDatasetRuntimeProfile, getDatasetRuntimeBindingManifest, getExecutorStatus, listDatasetRuntimeProfiles } from "../api/runtimeProfiles";
 import { listStrategies, listStrategyVersions } from "../api/strategies";
 import { demoExperimentMetrics } from "../demo/staticRunFixture";
 import { useLatestRequest } from "../composables/useLatestRequest";
 import { useI18n } from "../i18n";
-import type { EvalDatasetOut, ExperimentDefinition, RuntimeProfileOut, StrategyVersionOut } from "../types/api";
+import type { DatasetRuntimeBindingManifestOut, EvalDatasetOut, ExperimentDefinition, RuntimeProfileOut, StrategyVersionOut } from "../types/api";
 import type { DataSource } from "../types/ui";
 
 const props = defineProps<{
@@ -23,8 +23,12 @@ const { t } = useI18n();
 
 const experiments = ref<ExperimentDefinition[]>([]);
 const datasets = ref<EvalDatasetOut[]>([]);
+const runtimeBindingManifest = ref<DatasetRuntimeBindingManifestOut | null>(null);
 const strategyVersions = ref<StrategyVersionOut[]>([]);
 const runtimeProfiles = ref<RuntimeProfileOut[]>([]);
+const projectRuntimeProfiles = ref<Record<string, RuntimeProfileOut[]>>({});
+const projectLabels = ref<Record<string, string>>({});
+const runtimeProfileBindings = ref<Record<string, string>>({});
 const dockerAvailable = ref<boolean | null>(null);
 const loading = ref(false);
 const creating = ref(false);
@@ -54,12 +58,18 @@ const dockerProfileForm = ref({
 const listRequest = useLatestRequest();
 
 const completedCount = computed(() => experiments.value.filter((experiment) => experiment.status === "completed").length);
+const datasetProjectIds = computed(() => {
+  return (runtimeBindingManifest.value?.projects ?? []).map((project) => project.project_id).sort();
+});
+const isMultiProjectDataset = computed(() => datasetProjectIds.value.length > 1);
 const canCreate = computed(
   () =>
     props.dataSource === "api" &&
     form.value.name.trim() &&
     form.value.datasetId &&
-    form.value.runtimeProfileId &&
+    (isMultiProjectDataset.value
+      ? datasetProjectIds.value.every((projectId) => Boolean(runtimeProfileBindings.value[`project:${projectId}`]))
+      : form.value.runtimeProfileId) &&
     form.value.strategyVersionIds.length > 0 &&
     form.value.repeatCount >= 1
 );
@@ -84,6 +94,15 @@ function formatDate(value: string | null): string {
 
 function openExperiment(experimentId: string) {
   emit("navigate", `#/experiments/${experimentId}`);
+}
+
+function profileSummary(profile: RuntimeProfileOut | undefined): string {
+  if (!profile) {
+    return t("common.none");
+  }
+  const concurrency = profile.replay_policy?.replay_concurrency ?? profile.resource_limits?.replay_concurrency ?? 1;
+  const timeout = profile.resource_limits?.timeout_seconds ?? 120;
+  return `${profile.executor} / retry:${profile.replay_policy?.max_retries ?? 0} / concurrency:${concurrency} / timeout:${timeout}s`;
 }
 
 async function loadExperiments() {
@@ -136,10 +155,32 @@ async function loadCreateOptions() {
 async function loadRuntimeProfilesForDataset() {
   if (!form.value.datasetId || props.dataSource !== "api") {
     runtimeProfiles.value = [];
+    runtimeBindingManifest.value = null;
+    projectRuntimeProfiles.value = {};
+    runtimeProfileBindings.value = {};
     form.value.runtimeProfileId = "";
     return;
   }
+  const manifest = await getDatasetRuntimeBindingManifest(form.value.datasetId);
+  runtimeBindingManifest.value = manifest;
+  const nextProjectLabels: Record<string, string> = {};
   runtimeProfiles.value = await listDatasetRuntimeProfiles(form.value.datasetId);
+  const grouped: Record<string, RuntimeProfileOut[]> = {};
+  for (const project of manifest.projects) {
+    nextProjectLabels[project.project_id] = project.project_name ?? project.project_id;
+    grouped[project.project_id] = project.profiles;
+  }
+  projectLabels.value = nextProjectLabels;
+  const projectIds = manifest.projects.map((project) => project.project_id).sort();
+  projectRuntimeProfiles.value = grouped;
+  const nextBindings: Record<string, string> = {};
+  for (const projectId of projectIds) {
+    const key = `project:${projectId}`;
+    const current = runtimeProfileBindings.value[key];
+    const choices = grouped[projectId] ?? [];
+    nextBindings[key] = choices.some((profile) => profile.id === current) ? current : choices[0]?.id ?? "";
+  }
+  runtimeProfileBindings.value = nextBindings;
   if (!runtimeProfiles.value.some((profile) => profile.id === form.value.runtimeProfileId)) {
     form.value.runtimeProfileId = runtimeProfiles.value[0]?.id ?? "";
   }
@@ -173,7 +214,8 @@ async function submitExperiment() {
       id: form.value.id.trim() || null,
       name: form.value.name.trim(),
       dataset_id: form.value.datasetId,
-      runtime_profile_id: form.value.runtimeProfileId,
+      runtime_profile_id: isMultiProjectDataset.value ? null : form.value.runtimeProfileId,
+      runtime_profile_bindings: isMultiProjectDataset.value ? runtimeProfileBindings.value : {},
       strategy_version_ids: form.value.strategyVersionIds,
       repeat_count: Number(form.value.repeatCount) || 1,
       llm_override: override
@@ -318,7 +360,7 @@ watch(
             </option>
           </select>
         </label>
-        <label>
+        <label v-if="!isMultiProjectDataset">
           <span>{{ t("runtime.profileContract") }}</span>
           <select v-model="form.runtimeProfileId">
             <option v-for="profile in runtimeProfiles" :key="profile.id" :value="profile.id">
@@ -340,7 +382,7 @@ watch(
         </label>
       </div>
       <div class="strategy-picker">
-        <p v-if="form.runtimeProfileId" class="runtime-note">
+        <p v-if="!isMultiProjectDataset && form.runtimeProfileId" class="runtime-note">
           {{
             runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.executor ?? "local_subprocess"
           }}
@@ -350,6 +392,21 @@ watch(
           {{ runtimeProfiles.find((profile) => profile.id === form.runtimeProfileId)?.resource_limits?.timeout_seconds ?? 120 }}s
           · Docker {{ dockerAvailable ? "available" : "not available" }}
         </p>
+        <div v-if="isMultiProjectDataset" class="runtime-binding-box">
+          <div class="docker-profile-head">
+            <span>{{ t("experiments.runtimeBindings") }}</span>
+          </div>
+          <div class="binding-list">
+            <label v-for="projectId in datasetProjectIds" :key="projectId">
+              <span>{{ projectLabels[projectId] ?? projectId }}</span>
+              <select v-model="runtimeProfileBindings[`project:${projectId}`]">
+                <option v-for="profile in projectRuntimeProfiles[projectId] ?? []" :key="profile.id" :value="profile.id">
+                  {{ profile.name }} / {{ profileSummary(profile) }}
+                </option>
+              </select>
+            </label>
+          </div>
+        </div>
         <div class="docker-profile-box">
           <div class="docker-profile-head">
             <span>{{ t("experiments.createDockerProfile") }}</span>
@@ -563,7 +620,8 @@ watch(
 
 .create-grid label,
 .strategy-picker,
-.docker-profile-grid label {
+.docker-profile-grid label,
+.binding-list label {
   display: grid;
   gap: 6px;
 }
@@ -571,7 +629,8 @@ watch(
 .create-grid span,
 .strategy-picker > span,
 .docker-profile-head span,
-.docker-profile-grid span {
+.docker-profile-grid span,
+.binding-list span {
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -591,7 +650,8 @@ watch(
 .create-grid input,
 .create-grid select,
 .docker-profile-grid input,
-.docker-profile-grid select {
+.docker-profile-grid select,
+.binding-list select {
   width: 100%;
   min-height: 34px;
   padding: 6px 9px;
@@ -601,7 +661,8 @@ watch(
   color: var(--ink);
 }
 
-.docker-profile-box {
+.docker-profile-box,
+.runtime-binding-box {
   display: grid;
   gap: 10px;
   padding: 12px;
@@ -620,6 +681,12 @@ watch(
 .docker-profile-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.binding-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -725,6 +792,7 @@ watch(
   .summary-strip,
   .create-grid,
   .docker-profile-grid,
+  .binding-list,
   .strategy-options {
     grid-template-columns: 1fr;
   }

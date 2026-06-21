@@ -4,6 +4,7 @@ import type {
   ExperimentCleanRunOut,
   ExperimentDefinition,
   ExperimentMetricsResponse,
+  ExperimentProgressOut,
   TestReplayOut
 } from "../types/api";
 
@@ -46,6 +47,10 @@ export function getExperimentMetrics(experimentId: string): Promise<ExperimentMe
   return requestJson<ExperimentMetricsResponse>(`/api/v1/experiments/${experimentId}/metrics`);
 }
 
+export function getExperimentProgress(experimentId: string): Promise<ExperimentProgressOut> {
+  return requestJson<ExperimentProgressOut>(`/api/v1/experiments/${experimentId}/progress`);
+}
+
 export function cleanupExperiment(
   experimentId: string,
   body: { dry_run?: boolean; keep_failed?: boolean } = {}
@@ -53,5 +58,23 @@ export function cleanupExperiment(
   return requestJson<Record<string, unknown>>(`/api/v1/experiments/${experimentId}/cleanup`, {
     method: "POST",
     body: JSON.stringify({ dry_run: body.dry_run ?? true, keep_failed: body.keep_failed ?? true })
+  });
+}
+
+export function getExperimentArtifactInventory(experimentId: string): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>(`/api/v1/experiments/${experimentId}/artifact-inventory`);
+}
+
+export function getExperimentReplayCache(experimentId: string): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>(`/api/v1/experiments/${experimentId}/replay-cache`);
+}
+
+export function cleanupExperimentReplayCache(
+  experimentId: string,
+  body: { dry_run?: boolean } = {}
+): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>(`/api/v1/experiments/${experimentId}/replay-cache/cleanup`, {
+    method: "POST",
+    body: JSON.stringify({ dry_run: body.dry_run ?? true, keep_failed: true })
   });
 }

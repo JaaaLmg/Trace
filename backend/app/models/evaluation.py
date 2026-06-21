@@ -82,6 +82,7 @@ class Experiment(Base):
     runtime_profile_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("runtime_profiles.id", ondelete="RESTRICT"), index=True
     )
+    runtime_profile_bindings: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     repeat_count: Mapped[int] = mapped_column(Integer, nullable=False)
     llm_override: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
@@ -190,4 +191,18 @@ class ExperimentReplayRun(Base):
     )
     captured_bug: Mapped[bool] = mapped_column(Boolean, nullable=False)
     replay_metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class ExperimentLifecycleEvent(Base):
+    __tablename__ = "experiment_lifecycle_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("experiments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[str] = mapped_column(String(64), nullable=False, default="experiment")
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)

@@ -27,6 +27,7 @@ from app.models import (
 from app.repositories.strategies import get_strategy_version
 from app.services.evaluation import EvaluationNotFoundError
 from app.services.evaluation_events import build_reflection_event_backfeed_audit, project_evaluation_events
+from app.services.artifact_cleanup import experiment_artifact_inventory
 from eval.harness import metrics as harness_metrics
 
 
@@ -294,6 +295,8 @@ def _runtime_execution_summary(clean_runs: list[ExperimentCleanRun], replays: li
     reused_count = 0
     configured_concurrency = 1
     scheduled_variant_jobs = 0
+    retry_attempts = 0
+    retried_replay_count = 0
 
     for clean in clean_runs:
         run = session.get(TestRun, clean.clean_run_id)
@@ -327,6 +330,11 @@ def _runtime_execution_summary(clean_runs: list[ExperimentCleanRun], replays: li
         cache_counts[cache_status] = cache_counts.get(cache_status, 0) + 1
         if cache_status == "hit":
             reused_count += 1
+        retry_meta = (replay.executor_metadata or {}).get("retry_attempts")
+        if isinstance(retry_meta, list):
+            retry_attempts += max(0, len(retry_meta) - 1)
+            if len(retry_meta) > 1:
+                retried_replay_count += 1
         setup = (replay.workspace_manifest or {}).get("setup")
         if isinstance(setup, dict):
             status = str(setup.get("status") or "unknown")
@@ -341,6 +349,10 @@ def _runtime_execution_summary(clean_runs: list[ExperimentCleanRun], replays: li
             "configured": configured_concurrency,
             "mode": "parallel" if configured_concurrency > 1 else "sequential",
             "scheduled_variant_jobs": scheduled_variant_jobs,
+        },
+        "retries": {
+            "retried_replay_count": retried_replay_count,
+            "retry_attempts": retry_attempts,
         },
         "observed_replay_count": replay_count - reused_count,
         "reused_replay_count": reused_count,
@@ -660,6 +672,17 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
         )
     evaluation_events = project_evaluation_events(experiment, clean_runs, replays, replay_results)
     runtime_execution = _runtime_execution_summary(clean_runs, replays, session)
+    try:
+        artifact_inventory = experiment_artifact_inventory(session, experiment_id=experiment_id)
+        runtime_execution["artifact_inventory"] = {
+            "artifact_count": artifact_inventory["artifact_count"],
+            "artifact_bytes": artifact_inventory["artifact_bytes"],
+            "workspace_count": artifact_inventory["workspace_count"],
+            "workspace_bytes": artifact_inventory["workspace_bytes"],
+            "total_bytes": artifact_inventory["total_bytes"],
+        }
+    except Exception:
+        runtime_execution["artifact_inventory"] = {"status": "unavailable"}
 
     for row in rows:
         row["runtime_execution"] = runtime_execution
@@ -673,6 +696,7 @@ def get_experiment_metrics(session: Session, experiment_id: str) -> dict:
             "name": experiment.name,
             "dataset_id": experiment.dataset_id,
             "runtime_profile_id": experiment.runtime_profile_id,
+            "runtime_profile_bindings": experiment.runtime_profile_bindings or {},
             "strategy_version_ids": _experiment_strategy_ids(session, experiment.id),
             "repeat_count": experiment.repeat_count,
             "llm_override": experiment.llm_override,

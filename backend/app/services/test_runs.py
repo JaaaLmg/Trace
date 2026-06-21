@@ -269,6 +269,7 @@ def _runtime_snapshot(
         timeout_seconds=timeout_seconds,
         env_template=env_template,
         resource_limits=dict(runtime_base.get("resource_limits") or {}),
+        replay_policy=dict(runtime_base.get("replay_policy") or {}),
         artifact_policy=dict(runtime_base.get("artifact_policy") or {}),
         cleanup_policy=dict(runtime_base.get("cleanup_policy") or {}),
         env_keys=sorted(env_template.keys()),
@@ -457,6 +458,7 @@ def get_runtime_profile_snapshot(profile) -> dict:
         "network_policy": profile.network_policy,
         "env_template": sanitize_env_template(profile.env_template),
         "resource_limits": dict(profile.resource_limits or {}),
+        "replay_policy": dict(profile.replay_policy or {}),
         "artifact_policy": dict(profile.artifact_policy or {}),
         "cleanup_policy": dict(profile.cleanup_policy or {}),
     }

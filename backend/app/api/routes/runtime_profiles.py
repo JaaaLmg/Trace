@@ -5,14 +5,21 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.api.deps import get_db
-from app.models import EvalTask, ProjectSnapshot
+from app.models import EvalTask, Project, ProjectSnapshot
 from app.repositories.runtime_profiles import get_runtime_profile, list_active_runtime_profiles_for_project
-from app.schemas.api_runtime_profile import RuntimeProfileCreate, RuntimeProfileOut, RuntimeProfileUpdate
+from app.schemas.api_runtime_profile import (
+    DatasetRuntimeBindingManifestOut,
+    RuntimeProfileCreate,
+    RuntimeProfileOut,
+    RuntimeProfileUpdate,
+)
 from app.services.projects import get_project_or_404
 from app.services.runtime_profiles import (
     archive_runtime_profile,
     create_runtime_profile,
     ensure_default_runtime_profile,
+    preflight_runtime_profile,
+    preflight_runtime_profile_payload,
     update_runtime_profile,
 )
 from app.tools.executor import docker_available
@@ -35,6 +42,7 @@ def create_project_runtime_profile_route(project_id: str, body: RuntimeProfileCr
             install_command=body.install_command,
             env_template=body.env_template,
             resource_limits=body.resource_limits,
+            replay_policy=body.replay_policy,
             network_policy=body.network_policy,
             timeout_seconds=body.timeout_seconds,
             artifact_policy=body.artifact_policy,
@@ -45,7 +53,19 @@ def create_project_runtime_profile_route(project_id: str, body: RuntimeProfileCr
 
 
 def _project_id_for_dataset(db: Session, dataset_id: str) -> str:
-    project_ids = sorted(
+    project_ids = _project_ids_for_dataset(db, dataset_id)
+    if not project_ids:
+        raise HTTPException(status_code=404, detail="dataset has no eval tasks")
+    if len(project_ids) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="dataset spans multiple projects; project-scoped runtime profile selection is ambiguous",
+        )
+    return project_ids[0]
+
+
+def _project_ids_for_dataset(db: Session, dataset_id: str) -> list[str]:
+    return sorted(
         {
             project_id
             for project_id in db.scalars(
@@ -55,14 +75,41 @@ def _project_id_for_dataset(db: Session, dataset_id: str) -> str:
             )
         }
     )
-    if not project_ids:
-        raise HTTPException(status_code=404, detail="dataset has no eval tasks")
-    if len(project_ids) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="dataset spans multiple projects; project-scoped runtime profile selection is ambiguous",
+
+
+def _runtime_binding_manifest(db: Session, dataset_id: str) -> dict:
+    rows = list(
+        db.execute(
+            select(EvalTask.id, EvalTask.project_snapshot_id, ProjectSnapshot.project_id, Project.name)
+            .join(ProjectSnapshot, EvalTask.project_snapshot_id == ProjectSnapshot.id)
+            .join(Project, Project.id == ProjectSnapshot.project_id)
+            .where(EvalTask.dataset_id == dataset_id)
+            .order_by(EvalTask.created_at.asc(), EvalTask.id.asc())
         )
-    return project_ids[0]
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="dataset has no eval tasks")
+    project_ids = sorted({str(project_id) for _task_id, _snapshot_id, project_id, _project_name in rows})
+    projects = []
+    for project_id in project_ids:
+        profiles = list_active_runtime_profiles_for_project(db, project_id)
+        if not profiles:
+            profiles = [ensure_default_runtime_profile(db, project_id=project_id)]
+        project_name = next((str(name) for _task_id, _snapshot_id, row_project_id, name in rows if row_project_id == project_id), None)
+        projects.append({"project_id": project_id, "project_name": project_name, "profiles": profiles})
+    return {
+        "dataset_id": dataset_id,
+        "multi_project": len(project_ids) > 1,
+        "tasks": [
+            {
+                "task_id": str(task_id),
+                "project_id": str(project_id),
+                "project_snapshot_id": str(snapshot_id),
+            }
+            for task_id, snapshot_id, project_id, _project_name in rows
+        ],
+        "projects": projects,
+    }
 
 
 @router.post("/api/v1/eval-datasets/{dataset_id}/runtime-profiles", response_model=RuntimeProfileOut)
@@ -81,6 +128,7 @@ def create_dataset_runtime_profile_route(dataset_id: str, body: RuntimeProfileCr
             install_command=body.install_command,
             env_template=body.env_template,
             resource_limits=body.resource_limits,
+            replay_policy=body.replay_policy,
             network_policy=body.network_policy,
             timeout_seconds=body.timeout_seconds,
             artifact_policy=body.artifact_policy,
@@ -105,11 +153,21 @@ def list_project_runtime_profiles_route(project_id: str, db: Session = Depends(g
 
 @router.get("/api/v1/eval-datasets/{dataset_id}/runtime-profiles", response_model=list[RuntimeProfileOut])
 def list_dataset_runtime_profiles_route(dataset_id: str, db: Session = Depends(get_db)):
-    project_id = _project_id_for_dataset(db, dataset_id)
-    profiles = list_active_runtime_profiles_for_project(db, project_id)
-    if not profiles:
-        return [ensure_default_runtime_profile(db, project_id=project_id)]
+    project_ids = _project_ids_for_dataset(db, dataset_id)
+    if not project_ids:
+        raise HTTPException(status_code=404, detail="dataset has no eval tasks")
+    profiles = []
+    for project_id in project_ids:
+        project_profiles = list_active_runtime_profiles_for_project(db, project_id)
+        if not project_profiles:
+            project_profiles = [ensure_default_runtime_profile(db, project_id=project_id)]
+        profiles.extend(project_profiles)
     return profiles
+
+
+@router.get("/api/v1/eval-datasets/{dataset_id}/runtime-binding-manifest", response_model=DatasetRuntimeBindingManifestOut)
+def dataset_runtime_binding_manifest_route(dataset_id: str, db: Session = Depends(get_db)):
+    return _runtime_binding_manifest(db, dataset_id)
 
 
 @router.get("/api/v1/runtime-profiles/executors/status")
@@ -133,6 +191,19 @@ def executor_status_route():
             },
         }
     }
+
+
+@router.post("/api/v1/runtime-profiles/preflight")
+def preflight_runtime_profile_payload_route(body: RuntimeProfileCreate):
+    return preflight_runtime_profile_payload(body.model_dump(exclude_none=True))
+
+
+@router.post("/api/v1/runtime-profiles/{runtime_profile_id}/preflight")
+def preflight_runtime_profile_route(runtime_profile_id: str, db: Session = Depends(get_db)):
+    try:
+        return preflight_runtime_profile(db, profile_id=runtime_profile_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/api/v1/runtime-profiles/{runtime_profile_id}", response_model=RuntimeProfileOut)
