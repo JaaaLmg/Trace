@@ -3,12 +3,13 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ArrowRight, Beaker, Play, Plus, RefreshCw, ServerCrash } from "@lucide/vue";
 import { createExperiment, listExperiments, runExperiment } from "../api/experiments";
 import { listEvalDatasets } from "../api/evaluation";
+import { listLlmOptions } from "../api/llmOptions";
 import { createDatasetRuntimeProfile, getDatasetRuntimeBindingManifest, getExecutorStatus, listDatasetRuntimeProfiles } from "../api/runtimeProfiles";
 import { listStrategies, listStrategyVersions } from "../api/strategies";
 import { demoExperimentMetrics } from "../demo/staticRunFixture";
 import { useLatestRequest } from "../composables/useLatestRequest";
 import { useI18n } from "../i18n";
-import type { DatasetRuntimeBindingManifestOut, EvalDatasetOut, ExperimentDefinition, RuntimeProfileOut, StrategyVersionOut } from "../types/api";
+import type { DatasetRuntimeBindingManifestOut, EvalDatasetOut, ExperimentDefinition, LlmOptionOut, RuntimeProfileOut, StrategyVersionOut } from "../types/api";
 import type { DataSource } from "../types/ui";
 
 const props = defineProps<{
@@ -26,6 +27,9 @@ const datasets = ref<EvalDatasetOut[]>([]);
 const runtimeBindingManifest = ref<DatasetRuntimeBindingManifestOut | null>(null);
 const strategyVersions = ref<StrategyVersionOut[]>([]);
 const runtimeProfiles = ref<RuntimeProfileOut[]>([]);
+const llmOptions = ref<LlmOptionOut[]>([]);
+const llmConfigStatus = ref<"ok" | "missing" | "error">("missing");
+const llmConfigError = ref<string | null>(null);
 const projectRuntimeProfiles = ref<Record<string, RuntimeProfileOut[]>>({});
 const projectLabels = ref<Record<string, string>>({});
 const runtimeProfileBindings = ref<Record<string, string>>({});
@@ -43,8 +47,7 @@ const form = ref({
   runtimeProfileId: "",
   strategyVersionIds: [] as string[],
   repeatCount: 1,
-  provider: "mock",
-  model: "mock-1"
+  llmOptionId: "mock"
 });
 const dockerProfileForm = ref({
   name: "Docker pytest 3.12",
@@ -62,6 +65,7 @@ const datasetProjectIds = computed(() => {
   return (runtimeBindingManifest.value?.projects ?? []).map((project) => project.project_id).sort();
 });
 const isMultiProjectDataset = computed(() => datasetProjectIds.value.length > 1);
+const selectedLlmOption = computed(() => llmOptions.value.find((option) => option.id === form.value.llmOptionId) ?? null);
 const canCreate = computed(
   () =>
     props.dataSource === "api" &&
@@ -71,7 +75,8 @@ const canCreate = computed(
       ? datasetProjectIds.value.every((projectId) => Boolean(runtimeProfileBindings.value[`project:${projectId}`]))
       : form.value.runtimeProfileId) &&
     form.value.strategyVersionIds.length > 0 &&
-    form.value.repeatCount >= 1
+    form.value.repeatCount >= 1 &&
+    Boolean(selectedLlmOption.value?.selectable)
 );
 
 // llm_override is only the override layer; the resolved final provider/model is
@@ -94,6 +99,10 @@ function formatDate(value: string | null): string {
 
 function openExperiment(experimentId: string) {
   emit("navigate", `#/experiments/${experimentId}`);
+}
+
+function openDataset(datasetId: string) {
+  emit("navigate", `#/datasets/${datasetId}`);
 }
 
 function profileSummary(profile: RuntimeProfileOut | undefined): string {
@@ -132,13 +141,31 @@ async function loadCreateOptions() {
   if (props.dataSource !== "api") {
     datasets.value = [];
     strategyVersions.value = [];
+    llmOptions.value = [];
+    llmConfigStatus.value = "missing";
+    llmConfigError.value = null;
     return;
   }
   try {
-    const [nextDatasets, strategies, executorStatus] = await Promise.all([listEvalDatasets(), listStrategies(), getExecutorStatus()]);
+    const [nextDatasets, strategies, executorStatus, llmOptionResponse] = await Promise.all([
+      listEvalDatasets(),
+      listStrategies(),
+      getExecutorStatus(),
+      listLlmOptions()
+    ]);
     const versionGroups = await Promise.all(strategies.map((strategy) => listStrategyVersions(strategy.id)));
     datasets.value = nextDatasets;
     strategyVersions.value = versionGroups.flat();
+    llmOptions.value = llmOptionResponse.options;
+    llmConfigStatus.value = llmOptionResponse.config_status;
+    llmConfigError.value = llmOptionResponse.config_error;
+    const defaultLlmOption =
+      llmOptionResponse.options.find((option) => option.id === llmOptionResponse.default_option_id && option.selectable) ??
+      llmOptionResponse.options.find((option) => option.selectable) ??
+      null;
+    if (!llmOptionResponse.options.some((option) => option.id === form.value.llmOptionId && option.selectable)) {
+      form.value.llmOptionId = defaultLlmOption?.id ?? "";
+    }
     dockerAvailable.value = Boolean(executorStatus.executors.docker?.available);
     if (!form.value.datasetId && nextDatasets[0]) {
       form.value.datasetId = nextDatasets[0].id;
@@ -203,13 +230,14 @@ async function submitExperiment() {
   creating.value = true;
   createError.value = null;
   try {
-    const override =
-      form.value.provider.trim() || form.value.model.trim()
-        ? {
-            provider: form.value.provider.trim() || null,
-            model: form.value.model.trim() || null
-          }
-        : null;
+    const option = selectedLlmOption.value;
+    if (!option) {
+      return;
+    }
+    const override = {
+      provider: option.provider,
+      model: option.model
+    };
     const created = await createExperiment({
       id: form.value.id.trim() || null,
       name: form.value.name.trim(),
@@ -372,15 +400,23 @@ watch(
           <span>{{ t("experiments.repeat") }}</span>
           <input v-model.number="form.repeatCount" type="number" min="1" max="20" />
         </label>
-        <label>
-          <span>{{ t("experiments.provider") }}</span>
-          <input v-model="form.provider" type="text" placeholder="mock" />
-        </label>
-        <label>
-          <span>{{ t("experiments.model") }}</span>
-          <input v-model="form.model" type="text" placeholder="mock-1" />
+        <label class="wide-field">
+          <span>{{ t("experiments.llmOption") }}</span>
+          <select v-model="form.llmOptionId">
+            <option v-for="option in llmOptions" :key="option.id" :value="option.id" :disabled="!option.selectable">
+              {{ option.label }} · {{ option.is_mock ? t("experiments.mockSource") : t("experiments.realLlm") }}{{ option.selectable ? "" : " · " + t("experiments.llmUnavailable") }}
+            </option>
+          </select>
         </label>
       </div>
+      <p v-if="selectedLlmOption" class="runtime-note llm-note">
+        {{ selectedLlmOption.provider }} / {{ selectedLlmOption.model }} ·
+        {{ selectedLlmOption.config_source === "runtime_config" ? t("experiments.llmRuntimeConfig") : t("experiments.llmBuiltIn") }}
+        <span v-if="!selectedLlmOption.selectable"> · {{ t("experiments.llmUnavailable") }}</span>
+      </p>
+      <p v-if="llmConfigStatus === 'error' && llmConfigError" class="runtime-note llm-note">
+        {{ t("experiments.llmConfigError") }}: {{ llmConfigError }}
+      </p>
       <div class="strategy-picker">
         <p v-if="!isMultiProjectDataset && form.runtimeProfileId" class="runtime-note">
           {{
@@ -488,7 +524,11 @@ watch(
                 </span>
               </button>
             </td>
-            <td class="mono">{{ experiment.dataset_id }}</td>
+            <td>
+              <button class="inline-link" type="button" @click="openDataset(experiment.dataset_id)">
+                {{ experiment.dataset_id }}
+              </button>
+            </td>
             <td>
               <span class="status-pill" :data-status="experiment.status">{{ t(`status.${experiment.status}`) }}</span>
             </td>
@@ -626,6 +666,14 @@ watch(
   gap: 6px;
 }
 
+.create-grid label.wide-field {
+  grid-column: span 2;
+}
+
+.llm-note {
+  margin: 0;
+}
+
 .create-grid span,
 .strategy-picker > span,
 .docker-profile-head span,
@@ -731,6 +779,24 @@ watch(
 .link-button:hover {
   background: transparent;
   color: var(--ink);
+}
+
+.inline-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--tool);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.inline-link:hover {
+  background: transparent;
+  color: var(--ink);
+  text-decoration: underline;
 }
 
 .link-button span,

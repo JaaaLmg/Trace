@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { BarChart3, Beaker, FolderGit2, MonitorDot, Server, SlidersHorizontal } from "@lucide/vue";
+import { BarChart3, Beaker, Database, FolderGit2, MonitorDot, Server, SlidersHorizontal } from "@lucide/vue";
 import ComparisonPage from "./pages/ComparisonPage.vue";
 import DatasetDetailPage from "./pages/DatasetDetailPage.vue";
 import ExperimentDetailPage from "./pages/ExperimentDetailPage.vue";
@@ -130,6 +130,10 @@ onBeforeUnmount(() => {
       <a href="#/experiments" :class="{ active: route.name === 'experiments' }">
         <Beaker :size="16" aria-hidden="true" />
         {{ t("app.experiments") }}
+      </a>
+      <a :href="dataSource === 'demo' ? `#/datasets/${sampleDatasetId}` : '#/datasets/new'" :class="{ active: route.name === 'datasets' }">
+        <Database :size="16" aria-hidden="true" />
+        {{ t("app.datasets") }}
       </a>
       <a href="#/runtime" :class="{ active: route.name === 'runtime' }">
         <SlidersHorizontal :size="16" aria-hidden="true" />

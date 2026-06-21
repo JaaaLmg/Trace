@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Activity, ArrowLeft, Bot, Database, Footprints, RefreshCw } from "@lucide/vue";
+import { Activity, ArrowLeft, Bot, Database, Footprints, Play, RefreshCw } from "@lucide/vue";
 import {
   cleanupExperiment,
   cleanupExperimentReplayCache,
@@ -8,6 +8,7 @@ import {
   getExperimentArtifactInventory,
   getExperimentMetrics,
   getExperimentProgress,
+  runExperiment,
   getExperimentReplayCache
 } from "../api/experiments";
 import CaptureMatrix from "../components/experiment/CaptureMatrix.vue";
@@ -42,10 +43,17 @@ const lifecycle = ref<Record<string, unknown> | null>(null);
 const cacheInfo = ref<Record<string, unknown> | null>(null);
 const progress = ref<ExperimentProgressOut | null>(null);
 const progressError = ref<string | null>(null);
+const starting = ref(false);
 let progressTimer: number | null = null;
 
 const terminalExperimentStatuses = new Set(["completed", "failed", "cancelled"]);
 const activeExperimentStatuses = new Set(["queued", "running"]);
+const startableExperimentStatuses = new Set(["draft", "queued", "cancelled"]);
+
+const canStartExperiment = computed(() => {
+  const status = experiment.value?.status ?? metrics.value?.experiment.status;
+  return props.dataSource === "api" && Boolean(status && startableExperimentStatuses.has(status));
+});
 
 const progressPercent = computed(() => {
   const total = progress.value?.clean_runs_total_estimate ?? 0;
@@ -167,6 +175,28 @@ function countText(values: Record<string, number> | undefined): string {
   return pairs.length ? pairs.map(([key, value]) => `${key}: ${value}`).join(" / ") : "none";
 }
 
+async function startExperiment() {
+  if (!canStartExperiment.value || starting.value) {
+    return;
+  }
+  starting.value = true;
+  errorMessage.value = null;
+  try {
+    const updated = await runExperiment(props.experimentId);
+    experiment.value = updated;
+    if (metrics.value) {
+      metrics.value = { ...metrics.value, experiment: updated };
+    }
+    await loadProgress();
+    startProgressPolling();
+    await loadMetrics({ preserveReplaySelection: true });
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("experiments.startFailed");
+  } finally {
+    starting.value = false;
+  }
+}
+
 async function runCleanup(dryRun: boolean) {
   if (props.dataSource !== "api") {
     return;
@@ -282,6 +312,16 @@ onBeforeUnmount(() => {
       <button class="text-button" type="button" @click="emit('navigate', '#/experiments')">
         <ArrowLeft :size="16" aria-hidden="true" />
         {{ t("experiments.back") }}
+      </button>
+      <button
+        v-if="canStartExperiment"
+        class="text-button"
+        type="button"
+        :disabled="starting"
+        @click="startExperiment"
+      >
+        <Play :size="16" aria-hidden="true" />
+        {{ starting ? t("experiments.starting") : t("run.start") }}
       </button>
       <button class="text-button" type="button" @click="() => loadMetrics()">
         <RefreshCw :size="16" aria-hidden="true" />

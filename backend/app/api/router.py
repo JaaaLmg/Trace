@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.experiments import router as experiments_router
+from app.api.routes.llm_options import router as llm_options_router
 from app.api.routes.local import router as local_router
 from app.api.routes.projects import router as projects_router
 from app.api.routes.runtime_profiles import router as runtime_profiles_router
@@ -13,6 +14,7 @@ from app.api.routes.versioning import router as versioning_router
 api_router = APIRouter()
 api_router.include_router(evaluation_router)
 api_router.include_router(experiments_router)
+api_router.include_router(llm_options_router)
 api_router.include_router(local_router)
 api_router.include_router(projects_router)
 api_router.include_router(runtime_profiles_router)

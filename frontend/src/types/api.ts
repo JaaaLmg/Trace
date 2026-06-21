@@ -505,6 +505,26 @@ export interface LlmOverride {
   model_params: JsonObject;
 }
 
+export interface LlmOptionOut {
+  id: string;
+  label: string;
+  kind: "mock" | "configured";
+  provider: string;
+  model: string;
+  is_mock: boolean;
+  selectable: boolean;
+  credential_status: "not_required" | "configured" | "missing_api_key";
+  config_source: "built_in" | "runtime_config";
+  base_url_configured: boolean;
+  reason: string | null;
+}
+
+export interface LlmOptionsOut {
+  default_option_id: string;
+  config_status: "ok" | "missing" | "error";
+  config_error: string | null;
+  options: LlmOptionOut[];
+}
 export interface ExperimentCreateRequest {
   id?: string | null;
   name: string;
