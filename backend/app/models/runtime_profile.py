@@ -29,6 +29,7 @@ class RuntimeProfile(Base):
     test_command: Mapped[str] = mapped_column(Text(), nullable=False)
     env_template: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     resource_limits: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    replay_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     network_policy: Mapped[str] = mapped_column(String(32), nullable=False, default="default")
     artifact_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     cleanup_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

@@ -55,3 +55,21 @@ export function cleanupExperiment(
     body: JSON.stringify({ dry_run: body.dry_run ?? true, keep_failed: body.keep_failed ?? true })
   });
 }
+
+export function getExperimentArtifactInventory(experimentId: string): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>(`/api/v1/experiments/${experimentId}/artifact-inventory`);
+}
+
+export function getExperimentReplayCache(experimentId: string): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>(`/api/v1/experiments/${experimentId}/replay-cache`);
+}
+
+export function cleanupExperimentReplayCache(
+  experimentId: string,
+  body: { dry_run?: boolean } = {}
+): Promise<Record<string, unknown>> {
+  return requestJson<Record<string, unknown>>(`/api/v1/experiments/${experimentId}/replay-cache/cleanup`, {
+    method: "POST",
+    body: JSON.stringify({ dry_run: body.dry_run ?? true, keep_failed: true })
+  });
+}

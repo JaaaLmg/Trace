@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { Archive, Boxes, RefreshCw, Save, ShieldAlert } from "@lucide/vue";
+import { Archive, Boxes, RefreshCw, Save, ShieldAlert, Stethoscope } from "@lucide/vue";
 import { listProjects } from "../api/projects";
 import {
   archiveRuntimeProfile,
   createRuntimeProfile,
   getExecutorStatus,
   listRuntimeProfiles,
+  preflightRuntimeProfileDraft,
   updateRuntimeProfile
 } from "../api/runtimeProfiles";
 import type { JsonObject, ProjectOut, RuntimeProfileOut, RuntimeProfileUpsertRequest } from "../types/api";
@@ -25,6 +26,7 @@ const selectedProfileId = ref("");
 const loading = ref(false);
 const saving = ref(false);
 const errorMessage = ref<string | null>(null);
+const preflightMessage = ref<string | null>(null);
 const executorStatus = ref<Record<string, { available: boolean; warning?: string; unavailable_reason?: string | null }>>({});
 
 const DEFAULT_ARTIFACT_POLICY: JsonObject = { retain: "evidence" };
@@ -39,6 +41,9 @@ const form = reactive({
   testCommand: "python -m pytest tests -q --rootdir . -p no:cacheprovider",
   networkPolicy: "default" as "default" | "disabled" | "install_only",
   timeoutSeconds: 120,
+  replayConcurrency: 1,
+  maxRetries: 0,
+  retryBackoffSeconds: 0,
   artifactPolicyText: formatJsonObject(DEFAULT_ARTIFACT_POLICY),
   cleanupPolicyText: formatJsonObject(DEFAULT_CLEANUP_POLICY)
 });
@@ -73,6 +78,9 @@ function applyProfile(profile: RuntimeProfileOut | null) {
   form.testCommand = profile?.test_command ?? "python -m pytest tests -q --rootdir . -p no:cacheprovider";
   form.networkPolicy = profile?.network_policy ?? "default";
   form.timeoutSeconds = Number(profile?.resource_limits?.timeout_seconds ?? 120);
+  form.replayConcurrency = Number(profile?.replay_policy?.replay_concurrency ?? profile?.resource_limits?.replay_concurrency ?? 1);
+  form.maxRetries = Number(profile?.replay_policy?.max_retries ?? 0);
+  form.retryBackoffSeconds = Number(profile?.replay_policy?.retry_backoff_seconds ?? 0);
   form.artifactPolicyText = formatJsonObject(profile?.artifact_policy, DEFAULT_ARTIFACT_POLICY);
   form.cleanupPolicyText = formatJsonObject(profile?.cleanup_policy, DEFAULT_CLEANUP_POLICY);
 }
@@ -137,6 +145,11 @@ async function saveProfile() {
     test_command: form.testCommand.trim(),
     network_policy: form.networkPolicy,
     timeout_seconds: Number(form.timeoutSeconds) || 120,
+    replay_policy: {
+      replay_concurrency: Math.max(1, Number(form.replayConcurrency) || 1),
+      max_retries: Math.max(0, Number(form.maxRetries) || 0),
+      retry_backoff_seconds: Math.max(0, Number(form.retryBackoffSeconds) || 0)
+    },
     artifact_policy: artifactPolicy,
     cleanup_policy: cleanupPolicy
   };
@@ -152,6 +165,38 @@ async function saveProfile() {
   } finally {
     saving.value = false;
   }
+}
+
+async function runPreflight() {
+  errorMessage.value = null;
+  preflightMessage.value = null;
+  let artifactPolicy: JsonObject;
+  let cleanupPolicy: JsonObject;
+  try {
+    artifactPolicy = parseJsonObjectField(form.artifactPolicyText, "artifact_policy");
+    cleanupPolicy = parseJsonObjectField(form.cleanupPolicyText, "cleanup_policy");
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : t("runtime.saveFailed");
+    return;
+  }
+  const result = await preflightRuntimeProfileDraft({
+    name: form.name.trim(),
+    executor: form.executor,
+    image: form.image.trim() || null,
+    working_dir: form.workingDir.trim() || null,
+    install_command: form.installCommand.trim() || null,
+    test_command: form.testCommand.trim(),
+    network_policy: form.networkPolicy,
+    timeout_seconds: Number(form.timeoutSeconds) || 120,
+    replay_policy: {
+      replay_concurrency: Math.max(1, Number(form.replayConcurrency) || 1),
+      max_retries: Math.max(0, Number(form.maxRetries) || 0),
+      retry_backoff_seconds: Math.max(0, Number(form.retryBackoffSeconds) || 0)
+    },
+    artifact_policy: artifactPolicy,
+    cleanup_policy: cleanupPolicy
+  });
+  preflightMessage.value = `Preflight ${String(result.status)} · ${String((result.checks as unknown[] | undefined)?.length ?? 0)} checks`;
 }
 
 async function archiveSelected() {
@@ -197,6 +242,7 @@ onMounted(() => {
     </section>
 
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
+    <p v-if="preflightMessage" class="mode-note">{{ preflightMessage }}</p>
 
     <section v-if="props.dataSource !== 'api'" class="subtle-panel empty-panel">
       <Boxes :size="22" aria-hidden="true" />
@@ -253,6 +299,10 @@ onMounted(() => {
                 <Archive :size="16" aria-hidden="true" />
                 {{ t("runtime.archive") }}
               </button>
+              <button class="text-button" type="button" :disabled="saving" @click="runPreflight">
+                <Stethoscope :size="16" aria-hidden="true" />
+                Preflight
+              </button>
               <button class="primary-action" type="button" :disabled="saving" @click="saveProfile">
                 <Save :size="16" aria-hidden="true" />
                 {{ saving ? t("runtime.saving") : t("runtime.save") }}
@@ -304,6 +354,18 @@ onMounted(() => {
             <label>
               <span>{{ t("runtime.timeoutSeconds") }}</span>
               <input v-model.number="form.timeoutSeconds" min="1" type="number" />
+            </label>
+            <label>
+              <span>Replay concurrency</span>
+              <input v-model.number="form.replayConcurrency" min="1" type="number" />
+            </label>
+            <label>
+              <span>Max retries</span>
+              <input v-model.number="form.maxRetries" min="0" type="number" />
+            </label>
+            <label>
+              <span>Retry backoff</span>
+              <input v-model.number="form.retryBackoffSeconds" min="0" step="0.1" type="number" />
             </label>
             <label class="wide">
               <span>Artifact policy</span>

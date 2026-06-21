@@ -217,6 +217,7 @@ class ExperimentCreate(BaseModel):
     name: str
     dataset_id: str
     runtime_profile_id: str | None = None
+    runtime_profile_bindings: dict[str, str] = Field(default_factory=dict)
     strategy_version_ids: list[str] = Field(min_length=1)
     repeat_count: int = Field(default=1, ge=1)
     llm_override: LlmOverride | None = None
@@ -234,6 +235,7 @@ class ExperimentOut(BaseModel):
     name: str
     dataset_id: str
     runtime_profile_id: str | None = None
+    runtime_profile_bindings: dict[str, str] = Field(default_factory=dict)
     repeat_count: int
     llm_override: dict | None = None
     status: str

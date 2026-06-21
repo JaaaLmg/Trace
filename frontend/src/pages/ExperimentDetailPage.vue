@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
 import { ArrowLeft, Database, RefreshCw } from "@lucide/vue";
-import { cleanupExperiment, getExperiment, getExperimentMetrics } from "../api/experiments";
+import {
+  cleanupExperiment,
+  cleanupExperimentReplayCache,
+  getExperiment,
+  getExperimentArtifactInventory,
+  getExperimentMetrics,
+  getExperimentReplayCache
+} from "../api/experiments";
 import CaptureMatrix from "../components/experiment/CaptureMatrix.vue";
 import CleanRunTable from "../components/experiment/CleanRunTable.vue";
 import EvaluationEventTimeline from "../components/experiment/EvaluationEventTimeline.vue";
@@ -30,6 +37,8 @@ const loading = ref(false);
 const errorMessage = ref<string | null>(null);
 const selectedReplayId = ref<string | null>(null);
 const cleanupMessage = ref<string | null>(null);
+const lifecycle = ref<Record<string, unknown> | null>(null);
+const cacheInfo = ref<Record<string, unknown> | null>(null);
 
 const metricsRequest = useLatestRequest();
 
@@ -109,14 +118,47 @@ async function runCleanup(dryRun: boolean) {
   }
 }
 
+async function loadLifecycle() {
+  if (props.dataSource !== "api") {
+    return;
+  }
+  try {
+    const [inventory, cache] = await Promise.all([
+      getExperimentArtifactInventory(props.experimentId),
+      getExperimentReplayCache(props.experimentId)
+    ]);
+    lifecycle.value = inventory;
+    cacheInfo.value = cache;
+  } catch (error) {
+    cleanupMessage.value = error instanceof Error ? error.message : "Lifecycle load failed.";
+  }
+}
+
+async function runCacheCleanup(dryRun: boolean) {
+  if (props.dataSource !== "api") {
+    return;
+  }
+  try {
+    const result = await cleanupExperimentReplayCache(props.experimentId, { dry_run: dryRun });
+    cleanupMessage.value = dryRun
+      ? `Cache cleanup dry run: ${String(result.candidate_count ?? 0)} candidates.`
+      : `Cache cleanup completed: ${String(result.deleted_count ?? 0)} workspaces deleted.`;
+    await loadLifecycle();
+  } catch (error) {
+    cleanupMessage.value = error instanceof Error ? error.message : "Cache cleanup failed.";
+  }
+}
+
 onMounted(() => {
   void loadMetrics();
+  void loadLifecycle();
 });
 
 watch(
   () => [props.experimentId, props.dataSource],
   () => {
     void loadMetrics();
+    void loadLifecycle();
   }
 );
 </script>
@@ -211,10 +253,37 @@ watch(
           <span>Replay work</span>
           <strong>{{ metrics.runtime_execution.observed_replay_count }} observed / {{ metrics.runtime_execution.reused_replay_count }} reused</strong>
         </article>
+        <article>
+          <span>Retries</span>
+          <strong>
+            {{ String(metrics.runtime_execution.retries?.retried_replay_count ?? 0) }} replays /
+            {{ String(metrics.runtime_execution.retries?.retry_attempts ?? 0) }} attempts
+          </strong>
+        </article>
         <div v-if="props.dataSource === 'api'" class="cleanup-actions">
           <button class="text-button" type="button" @click="runCleanup(true)">Dry-run cleanup</button>
           <button class="text-button" type="button" @click="runCleanup(false)">Clean workspaces</button>
+          <button class="text-button" type="button" @click="runCacheCleanup(true)">Dry-run cache</button>
+          <button class="text-button" type="button" @click="runCacheCleanup(false)">Clean cache</button>
         </div>
+      </section>
+
+      <section v-if="props.dataSource === 'api'" class="lifecycle-grid">
+        <article class="subtle-panel lifecycle-tile">
+          <span>Artifact inventory</span>
+          <strong>{{ String(lifecycle?.artifact_count ?? metrics.runtime_execution.artifact_inventory?.artifact_count ?? 0) }}</strong>
+          <small>{{ String(lifecycle?.artifact_bytes ?? metrics.runtime_execution.artifact_inventory?.artifact_bytes ?? 0) }} bytes</small>
+        </article>
+        <article class="subtle-panel lifecycle-tile">
+          <span>Workspaces</span>
+          <strong>{{ String(lifecycle?.workspace_count ?? metrics.runtime_execution.artifact_inventory?.workspace_count ?? 0) }}</strong>
+          <small>{{ String(lifecycle?.workspace_bytes ?? metrics.runtime_execution.artifact_inventory?.workspace_bytes ?? 0) }} bytes</small>
+        </article>
+        <article class="subtle-panel lifecycle-tile">
+          <span>Replay cache entries</span>
+          <strong>{{ String((cacheInfo?.entries as unknown[] | undefined)?.length ?? 0) }}</strong>
+          <small>{{ countText(metrics.runtime_execution.replay_cache_counts) }}</small>
+        </article>
       </section>
 
       <ExperimentMetricsTable :rows="metrics.rows" />
@@ -241,13 +310,14 @@ watch(
 <style scoped>
 .detail-head,
 .hero-band,
-.metadata-grid {
+.metadata-grid,
+.lifecycle-grid {
   margin-top: 18px;
 }
 
 .runtime-band {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
   gap: 12px;
   align-items: start;
   margin-top: 18px;
@@ -331,6 +401,32 @@ watch(
   gap: 12px;
 }
 
+.lifecycle-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.lifecycle-tile {
+  display: grid;
+  gap: 3px;
+  padding: 14px;
+}
+
+.lifecycle-tile span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.lifecycle-tile small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 .meta-tile {
   display: grid;
   gap: 3px;
@@ -377,7 +473,8 @@ watch(
 
 @media (max-width: 1080px) {
   .hero-band,
-  .metadata-grid {
+  .metadata-grid,
+  .lifecycle-grid {
     grid-template-columns: 1fr;
   }
 

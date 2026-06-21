@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 
 from sqlalchemy import select
@@ -150,6 +151,7 @@ def _serialize_experiment(session: Session, experiment: Experiment) -> dict:
         "name": experiment.name,
         "dataset_id": experiment.dataset_id,
         "runtime_profile_id": experiment.runtime_profile_id,
+        "runtime_profile_bindings": experiment.runtime_profile_bindings or {},
         "repeat_count": experiment.repeat_count,
         "llm_override": experiment.llm_override,
         "status": experiment.status,
@@ -243,6 +245,7 @@ def create_experiment(
     name: str,
     dataset_id: str,
     runtime_profile_id: str | None = None,
+    runtime_profile_bindings: dict[str, str] | None = None,
     strategy_version_ids: list[str],
     repeat_count: int,
     llm_override: LlmOverride | dict | None = None,
@@ -259,6 +262,7 @@ def create_experiment(
             .where(EvalTask.dataset_id == dataset_id)
         )
     }
+    bindings = dict(runtime_profile_bindings or {})
     if runtime_profile_id is not None:
         profile = get_runtime_profile(session, runtime_profile_id)
         if profile is None:
@@ -267,6 +271,7 @@ def create_experiment(
             raise ExperimentConflictError("archived runtime profile cannot be used for a new experiment")
         if dataset_project_ids and profile.project_id not in dataset_project_ids:
             raise ExperimentConflictError("runtime profile does not belong to the selected dataset project")
+    _validate_runtime_profile_bindings(session, dataset_id=dataset_id, default_profile_id=runtime_profile_id, bindings=bindings)
     if experiment_id is not None and session.get(Experiment, experiment_id) is not None:
         raise ExperimentConflictError("experiment id already exists")
     for strategy_version_id in strategy_version_ids:
@@ -288,6 +293,7 @@ def create_experiment(
         name=name,
         dataset_id=dataset_id,
         runtime_profile_id=runtime_profile_id,
+        runtime_profile_bindings=bindings,
         repeat_count=repeat_count,
         llm_override=override_payload,
         status="draft",
@@ -364,6 +370,76 @@ def _task_bugs_and_variants(session: Session, task_id: str) -> list[tuple[Seeded
         .order_by(SeededBug.created_at.asc(), SeededBug.id.asc(), BugVariant.created_at.asc(), BugVariant.id.asc())
     )
     return list(session.execute(stmt).all())
+
+
+def _dataset_task_project_map(session: Session, dataset_id: str) -> dict[str, str]:
+    rows = session.execute(
+        select(EvalTask.id, ProjectSnapshot.project_id)
+        .join(ProjectSnapshot, ProjectSnapshot.id == EvalTask.project_snapshot_id)
+        .where(EvalTask.dataset_id == dataset_id)
+    )
+    return {str(task_id): str(project_id) for task_id, project_id in rows}
+
+
+def _binding_project_for_key(key: str, *, task_projects: dict[str, str], project_ids: set[str]) -> str | None:
+    if key.startswith("task:"):
+        return task_projects.get(key.split(":", 1)[1])
+    if key.startswith("project:"):
+        project_id = key.split(":", 1)[1]
+        return project_id if project_id in project_ids else None
+    if key in task_projects:
+        return task_projects[key]
+    if key in project_ids:
+        return key
+    return None
+
+
+def _validate_runtime_profile_bindings(
+    session: Session,
+    *,
+    dataset_id: str,
+    default_profile_id: str | None,
+    bindings: dict[str, str],
+) -> None:
+    task_projects = _dataset_task_project_map(session, dataset_id)
+    project_ids = set(task_projects.values())
+    covered_project_ids: set[str] = set()
+    if default_profile_id and len(project_ids) > 1 and not bindings:
+        raise ExperimentConflictError("multi-project dataset requires runtime_profile_bindings")
+    if default_profile_id:
+        profile = get_runtime_profile(session, default_profile_id)
+        if profile is None:
+            raise ExperimentNotFoundError("runtime profile not found")
+        if profile.archived_at is not None:
+            raise ExperimentConflictError("archived runtime profile cannot be used for a new experiment")
+        if len(project_ids) == 1 and profile.project_id not in project_ids:
+            raise ExperimentConflictError("runtime profile does not belong to the selected dataset project")
+        if profile.project_id in project_ids:
+            covered_project_ids.add(profile.project_id)
+    for key, profile_id in bindings.items():
+        project_id = _binding_project_for_key(str(key), task_projects=task_projects, project_ids=project_ids)
+        if project_id is None:
+            raise ExperimentConflictError(f"runtime profile binding key is not in dataset scope: {key}")
+        profile = get_runtime_profile(session, str(profile_id))
+        if profile is None:
+            raise ExperimentNotFoundError(f"runtime profile not found: {profile_id}")
+        if profile.archived_at is not None:
+            raise ExperimentConflictError(f"archived runtime profile cannot be used: {profile_id}")
+        if profile.project_id != project_id:
+            raise ExperimentConflictError("runtime profile binding does not belong to the bound project")
+        covered_project_ids.add(project_id)
+    if len(project_ids) > 1 and covered_project_ids != project_ids:
+        missing = sorted(project_ids - covered_project_ids)
+        raise ExperimentConflictError(f"runtime profile bindings missing projects: {missing}")
+
+
+def _runtime_profile_id_for_task(experiment: Experiment, task: EvalTask, snapshot: ProjectSnapshot) -> str | None:
+    bindings = experiment.runtime_profile_bindings or {}
+    for key in (f"task:{task.id}", task.id, f"project:{snapshot.project_id}", snapshot.project_id):
+        value = bindings.get(key)
+        if value:
+            return str(value)
+    return experiment.runtime_profile_id
 
 
 def _raise_if_cancelled(session: Session, experiment_id: str) -> None:
@@ -606,6 +682,7 @@ def _replay_cache_runtime_fingerprint(runtime_snapshot: dict) -> dict:
         "network_policy": runtime_snapshot.get("network_policy"),
         "timeout_seconds": runtime_snapshot.get("timeout_seconds"),
         "resource_limits": runtime_snapshot.get("resource_limits") or {},
+        "replay_policy": runtime_snapshot.get("replay_policy") or {},
         "env_keys": runtime_snapshot.get("env_keys") or [],
         "executor_capabilities": runtime_snapshot.get("executor_capabilities") or {},
     }
@@ -853,8 +930,10 @@ def _replay_timeout_seconds(runtime_snapshot: dict | None, *, default: int = DEF
 
 def _replay_concurrency(runtime_snapshot: dict | None) -> int:
     snapshot = runtime_snapshot or {}
+    replay_policy = snapshot.get("replay_policy") if isinstance(snapshot.get("replay_policy"), dict) else {}
     candidates = [
         os.environ.get("TRACE_REPLAY_CONCURRENCY"),
+        replay_policy.get("replay_concurrency"),
         (snapshot.get("resource_limits") or {}).get("replay_concurrency") if isinstance(snapshot.get("resource_limits"), dict) else None,
     ]
     for candidate in candidates:
@@ -865,6 +944,81 @@ def _replay_concurrency(runtime_snapshot: dict | None) -> int:
         except (TypeError, ValueError):
             continue
     return 1
+
+
+def _replay_retry_policy(runtime_snapshot: dict | None) -> dict:
+    snapshot = runtime_snapshot or {}
+    policy = snapshot.get("replay_policy") if isinstance(snapshot.get("replay_policy"), dict) else {}
+    limits = snapshot.get("resource_limits") if isinstance(snapshot.get("resource_limits"), dict) else {}
+    max_retries = policy.get("max_retries", limits.get("max_retries", 0))
+    backoff = policy.get("retry_backoff_seconds", limits.get("retry_backoff_seconds", 0))
+    try:
+        max_retries = max(0, int(max_retries))
+    except (TypeError, ValueError):
+        max_retries = 0
+    try:
+        backoff = max(0.0, float(backoff))
+    except (TypeError, ValueError):
+        backoff = 0.0
+    return {
+        "max_retries": max_retries,
+        "retry_backoff_seconds": backoff,
+        "retryable_error_codes": ["EXECUTOR_UNAVAILABLE", "EXECUTOR_TIMEOUT", "SETUP_FAILED", "PYTEST_REPLAY_ERROR"],
+    }
+
+
+def _replay_error_is_retryable(replay: TestReplay) -> bool:
+    if replay.error_code in {"EXECUTOR_UNAVAILABLE", "EXECUTOR_TIMEOUT", "SETUP_FAILED", "PYTEST_REPLAY_ERROR"}:
+        return True
+    return False
+
+
+def _run_replay_with_retry(
+    session: Session,
+    *,
+    clean_run: ExperimentCleanRun,
+    artifact: RunArtifact,
+    target_snapshot: ProjectSnapshot,
+    variant: BugVariant | None,
+    clean_passed: set[str],
+    timeout_seconds: int,
+) -> tuple[TestReplay, list[str], list[str]]:
+    clean_test_run = session.get(TestRun, clean_run.clean_run_id)
+    runtime_snapshot = dict((clean_test_run.runtime_snapshot if clean_test_run is not None else {}) or {})
+    policy = _replay_retry_policy(runtime_snapshot)
+    attempts = []
+    last: tuple[TestReplay, list[str], list[str]] | None = None
+    for attempt_index in range(policy["max_retries"] + 1):
+        replay_row, capturing, assertion_failures = _run_replay(
+            session,
+            clean_run=clean_run,
+            artifact=artifact,
+            target_snapshot=target_snapshot,
+            variant=variant,
+            clean_passed=clean_passed,
+            timeout_seconds=timeout_seconds,
+        )
+        attempts.append(
+            {
+                "attempt_index": attempt_index,
+                "replay_id": replay_row.id,
+                "status": replay_row.status,
+                "error_code": replay_row.error_code,
+            }
+        )
+        metadata = dict(replay_row.executor_metadata or {})
+        metadata["retry_policy"] = policy
+        metadata["retry_attempts"] = attempts
+        metadata["retry_count"] = attempt_index
+        replay_row.executor_metadata = metadata
+        session.commit()
+        last = (replay_row, capturing, assertion_failures)
+        if replay_row.status == "completed" or not _replay_error_is_retryable(replay_row):
+            return last
+        if attempt_index < policy["max_retries"] and policy["retry_backoff_seconds"] > 0:
+            time.sleep(policy["retry_backoff_seconds"])
+    assert last is not None
+    return last
 
 
 def _flaky_mismatch_reason(expected: dict[str, str], actual: dict[str, str]) -> str | None:
@@ -908,7 +1062,7 @@ def _run_clean_flaky_gate(
     reasons: list[str] = []
 
     for index in range(1, required_runs):
-        replay_row, _capturing, _assertion_failures = _run_replay(
+        replay_row, _capturing, _assertion_failures = _run_replay_with_retry(
             session,
             clean_run=clean_run,
             artifact=artifact,
@@ -1095,7 +1249,8 @@ def _run_replay(
             **dict(replay_row.executor_metadata or {}),
             **dict(executor_metadata or {}),
         }
-        replay_row.error_code = "PYTEST_REPLAY_ERROR" if out.error else None
+        error_text = str(out.error or "")
+        replay_row.error_code = "EXECUTOR_TIMEOUT" if out.error and "timeout" in error_text.lower() else "PYTEST_REPLAY_ERROR" if out.error else None
         replay_row.error_message = out.error
         replay_row.finished_at = _now()
         session.commit()
@@ -1126,7 +1281,7 @@ def _run_variant_replay_job(job: VariantReplayJob) -> VariantReplayJobOutput:
         variant = worker_session.get(BugVariant, job.variant_id)
         if clean_run is None or artifact is None or target_snapshot is None or variant is None:
             raise ExperimentError("variant replay job references missing database rows")
-        replay_row, capturing, assertion_failures = _run_replay(
+        replay_row, capturing, assertion_failures = _run_replay_with_retry(
             worker_session,
             clean_run=clean_run,
             artifact=artifact,
@@ -1298,7 +1453,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         plan_id=plan.id,
                         snapshot_id=clean_snapshot.id,
                         strategy_version_id=strategy_version_id,
-                        runtime_profile_id=experiment.runtime_profile_id,
+                        runtime_profile_id=_runtime_profile_id_for_task(experiment, task, snapshot),
                         llm_provider=override.get("provider"),
                         llm_model=override.get("model"),
                         llm_temperature=temperature,
@@ -1470,7 +1625,7 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                     session.refresh(clean_row)
 
                     replay_timeout_seconds = _replay_timeout_seconds(run.runtime_snapshot)
-                    clean_replay_row, _clean_capturing, clean_assertion_failures = _run_replay(
+                    clean_replay_row, _clean_capturing, clean_assertion_failures = _run_replay_with_retry(
                         session,
                         clean_run=clean_row,
                         artifact=artifact,
@@ -1540,10 +1695,12 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                     session.commit()
 
                     concurrency = _replay_concurrency(run.runtime_snapshot)
+                    retry_policy = _replay_retry_policy(run.runtime_snapshot)
                     clean_metrics = dict(clean_row.clean_metrics or {})
                     clean_metrics["replay_scheduler"] = {
                         "variant_concurrency": concurrency,
                         "variant_job_count": len(variants),
+                        "retry_policy": retry_policy,
                         "clean_replay_before_variants": True,
                         "flaky_gate_before_variants": True,
                     }
