@@ -520,6 +520,38 @@ export interface ExperimentCleanRunOut {
   created_at: string;
 }
 
+export interface ExperimentProgressTraceStepOut {
+  step_index: number;
+  step_type: StepType | string;
+  name: string;
+  tool_name: string | null;
+  status: "ok" | "error" | string;
+  created_at: string;
+}
+
+export interface ExperimentProgressOut {
+  experiment_id: string;
+  status: ExperimentStatus;
+  dataset_id: string;
+  strategy_version_ids: string[];
+  current_strategy_version_id: string | null;
+  current_strategy_index: number | null;
+  strategy_count: number;
+  current_clean_run_id: string | null;
+  current_test_run_id: string | null;
+  current_eval_task_id: string | null;
+  current_repeat_index: number | null;
+  repeat_count: number;
+  clean_runs_completed: number;
+  clean_runs_total_estimate: number;
+  replay_runs_completed: number;
+  replay_runs_running: number;
+  run_status: RunStatus | string | null;
+  run_stage: RunStage | string | null;
+  latest_trace_step: ExperimentProgressTraceStepOut | null;
+  updated_at: string;
+}
+
 export interface TestReplayOut {
   id: string;
   experiment_clean_run_id: string;

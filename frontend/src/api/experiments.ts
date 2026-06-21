@@ -4,6 +4,7 @@ import type {
   ExperimentCleanRunOut,
   ExperimentDefinition,
   ExperimentMetricsResponse,
+  ExperimentProgressOut,
   TestReplayOut
 } from "../types/api";
 
@@ -44,6 +45,10 @@ export function listExperimentReplayRuns(experimentId: string): Promise<TestRepl
 
 export function getExperimentMetrics(experimentId: string): Promise<ExperimentMetricsResponse> {
   return requestJson<ExperimentMetricsResponse>(`/api/v1/experiments/${experimentId}/metrics`);
+}
+
+export function getExperimentProgress(experimentId: string): Promise<ExperimentProgressOut> {
+  return requestJson<ExperimentProgressOut>(`/api/v1/experiments/${experimentId}/progress`);
 }
 
 export function cleanupExperiment(

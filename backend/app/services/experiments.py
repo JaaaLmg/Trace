@@ -9,7 +9,7 @@ import shutil
 import time
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agents.final_attempts import final_attempts_from_records
@@ -32,6 +32,7 @@ from app.models import (
     SeededBug,
     TestReplay,
     TestRun,
+    TraceStep,
 )
 from app.repositories.strategies import get_strategy_version
 from app.repositories.runtime_profiles import get_runtime_profile
@@ -1443,7 +1444,11 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         target_scope=task_targets,
                         goal=task.goal,
                         budget={"allow_reflection": strategy.allow_reflection, "timeout_seconds": 120},
-                        output_options={"experiment_id": experiment.id, "eval_task_id": task.id},
+                        output_options={
+                            "experiment_id": experiment.id,
+                            "eval_task_id": task.id,
+                            "repeat_index": repeat_index,
+                        },
                         default_strategy_version_id=strategy_version_id,
                     )
                     override = experiment.llm_override or {}
@@ -1461,7 +1466,11 @@ def run_experiment(session: Session, experiment_id: str) -> dict:
                         llm_model_params=dict(override.get("model_params") or {}),
                         llm_repeat_index=repeat_index,
                         budget_override={"allow_reflection": strategy.allow_reflection, "timeout_seconds": 120},
-                        output_options={"experiment_id": experiment.id, "eval_task_id": task.id},
+                        output_options={
+                            "experiment_id": experiment.id,
+                            "eval_task_id": task.id,
+                            "repeat_index": repeat_index,
+                        },
                     )
                     session.refresh(run)
                     clean_id = new_id()
@@ -1769,6 +1778,135 @@ def list_replay_runs(session: Session, experiment_id: str) -> list[TestReplay]:
         .order_by(TestReplay.created_at.asc(), TestReplay.id.asc())
     )
     return list(session.scalars(stmt))
+
+
+def _run_experiment_options(run: TestRun) -> dict:
+    runtime_snapshot = run.runtime_snapshot or {}
+    output_options = runtime_snapshot.get("output_options")
+    return dict(output_options) if isinstance(output_options, dict) else {}
+
+
+def _experiment_running_run(session: Session, experiment_id: str) -> TestRun | None:
+    stmt = select(TestRun).where(TestRun.status.in_(["queued", "running"])).order_by(TestRun.created_at.desc(), TestRun.id.asc())
+    candidates = [
+        run
+        for run in session.scalars(stmt)
+        if _run_experiment_options(run).get("experiment_id") == experiment_id
+    ]
+    return candidates[0] if candidates else None
+
+
+def _latest_experiment_clean_run(session: Session, experiment_id: str) -> tuple[ExperimentCleanRun, TestRun | None] | None:
+    rows = session.execute(
+        select(ExperimentCleanRun, TestRun)
+        .join(TestRun, TestRun.id == ExperimentCleanRun.clean_run_id)
+        .where(ExperimentCleanRun.experiment_id == experiment_id)
+        .order_by(TestRun.created_at.desc(), ExperimentCleanRun.created_at.desc(), ExperimentCleanRun.id.asc())
+    ).all()
+    return rows[0] if rows else None
+
+
+def _strategy_index(strategy_ids: list[str], strategy_version_id: str | None) -> int | None:
+    if strategy_version_id is None:
+        return None
+    try:
+        return strategy_ids.index(strategy_version_id) + 1
+    except ValueError:
+        return None
+
+
+def _optional_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_trace_step(session: Session, run_id: str | None) -> dict | None:
+    if run_id is None:
+        return None
+    step = session.scalar(
+        select(TraceStep)
+        .where(TraceStep.run_id == run_id)
+        .order_by(TraceStep.step_index.desc(), TraceStep.created_at.desc(), TraceStep.id.asc())
+        .limit(1)
+    )
+    if step is None:
+        return None
+    return {
+        "step_index": step.step_index,
+        "step_type": step.step_type,
+        "name": step.name,
+        "tool_name": step.tool_name,
+        "status": step.status,
+        "created_at": step.created_at,
+    }
+
+
+def get_experiment_progress(session: Session, experiment_id: str) -> dict:
+    experiment = session.get(Experiment, experiment_id)
+    if experiment is None:
+        raise ExperimentNotFoundError("experiment not found")
+    strategy_ids = _experiment_strategy_ids(session, experiment.id)
+    task_count = session.scalar(select(func.count()).select_from(EvalTask).where(EvalTask.dataset_id == experiment.dataset_id)) or 0
+    clean_total = int(task_count) * len(strategy_ids) * int(experiment.repeat_count or 0)
+    clean_completed = session.scalar(
+        select(func.count()).select_from(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == experiment.id)
+    ) or 0
+    replay_completed = session.scalar(
+        select(func.count())
+        .select_from(TestReplay)
+        .join_from(TestReplay, ExperimentCleanRun)
+        .where(ExperimentCleanRun.experiment_id == experiment.id, TestReplay.status == "completed")
+    ) or 0
+    replay_running = session.scalar(
+        select(func.count())
+        .select_from(TestReplay)
+        .join_from(TestReplay, ExperimentCleanRun)
+        .where(ExperimentCleanRun.experiment_id == experiment.id, TestReplay.status.in_(["queued", "running"]))
+    ) or 0
+
+    current_clean_run_id = None
+    current_eval_task_id = None
+    current_repeat_index = None
+    current_run = _experiment_running_run(session, experiment.id)
+    if current_run is None:
+        latest_clean = _latest_experiment_clean_run(session, experiment.id)
+        if latest_clean is not None:
+            clean_row, clean_run = latest_clean
+            current_run = clean_run
+            current_clean_run_id = clean_row.id
+            current_eval_task_id = clean_row.eval_task_id
+            current_repeat_index = clean_row.repeat_index
+    else:
+        options = _run_experiment_options(current_run)
+        current_eval_task_id = str(options["eval_task_id"]) if options.get("eval_task_id") else None
+        current_repeat_index = _optional_int(options.get("repeat_index"))
+
+    return {
+        "experiment_id": experiment.id,
+        "status": experiment.status,
+        "dataset_id": experiment.dataset_id,
+        "strategy_version_ids": strategy_ids,
+        "current_strategy_version_id": current_run.strategy_version_id if current_run is not None else None,
+        "current_strategy_index": _strategy_index(strategy_ids, current_run.strategy_version_id if current_run is not None else None),
+        "strategy_count": len(strategy_ids),
+        "current_clean_run_id": current_clean_run_id,
+        "current_test_run_id": current_run.id if current_run is not None else None,
+        "current_eval_task_id": current_eval_task_id,
+        "current_repeat_index": current_repeat_index,
+        "repeat_count": experiment.repeat_count,
+        "clean_runs_completed": int(clean_completed),
+        "clean_runs_total_estimate": clean_total,
+        "replay_runs_completed": int(replay_completed),
+        "replay_runs_running": int(replay_running),
+        "run_status": current_run.status if current_run is not None else None,
+        "run_stage": current_run.stage if current_run is not None else None,
+        "latest_trace_step": _latest_trace_step(session, current_run.id if current_run is not None else None),
+        "updated_at": _now(),
+    }
 
 
 def get_experiment_metrics(session: Session, experiment_id: str) -> dict:

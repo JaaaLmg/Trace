@@ -25,6 +25,7 @@ from app.models import (
     TestPlan,
     TestReplay as ReplayModel,
     TestRun,
+    TraceStep,
 )
 from app.core.ids import new_id
 from app.services.evaluation import create_bug_variant, create_eval_dataset, create_eval_task, create_seeded_bug
@@ -474,6 +475,85 @@ def test_experiment_metrics_missing_experiment_returns_404(clean_db):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "experiment not found"
+
+
+def test_experiment_progress_reports_running_strategy_and_trace_step(clean_db):
+    _seed_v2_demo()
+    app = create_app()
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/experiments",
+            json={
+                "id": "exp-progress-running",
+                "name": "progress running",
+                "dataset_id": DEMO_DATASET_ID,
+                "strategy_version_ids": ["sv-direct-v1", "sv-plan-v1", "sv-react-v1"],
+                "repeat_count": 2,
+                "llm_override": {"provider": "mock", "model": "mock-1"},
+            },
+        )
+        assert created.status_code == 200, created.text
+
+        with Session(get_engine()) as session:
+            snapshot = session.get(ProjectSnapshot, DEMO_SNAPSHOT_ID)
+            assert snapshot is not None
+            experiment = session.get(Experiment, "exp-progress-running")
+            assert experiment is not None
+            experiment.status = "running"
+            plan = TestPlan(
+                id="plan-progress-running",
+                project_id=snapshot.project_id,
+                name="progress running",
+                target_scope=[],
+                goal="progress",
+                budget={},
+                output_options={},
+                default_strategy_version_id="sv-plan-v1",
+            )
+            run = TestRun(
+                id=new_id(),
+                test_plan_id=plan.id,
+                project_snapshot_id=snapshot.id,
+                strategy_version_id="sv-plan-v1",
+                runtime_snapshot={
+                    "output_options": {
+                        "experiment_id": experiment.id,
+                        "eval_task_id": "task-demo-shop-pricing-v2",
+                        "repeat_index": 1,
+                    }
+                },
+                strategy_snapshot={},
+                status="running",
+                stage="generating",
+                pytest_summary={},
+            )
+            session.add_all([plan, run])
+            session.flush()
+            session.add(
+                TraceStep(
+                    id=new_id(),
+                    run_id=run.id,
+                    step_index=3,
+                    step_type="tool_call",
+                    name="read source",
+                    tool_name="read_file",
+                    status="ok",
+                )
+            )
+            session.commit()
+
+        response = client.get("/api/v1/experiments/exp-progress-running/progress")
+        assert response.status_code == 200, response.text
+        progress = response.json()
+        assert progress["status"] == "running"
+        assert progress["current_strategy_version_id"] == "sv-plan-v1"
+        assert progress["current_strategy_index"] == 2
+        assert progress["current_eval_task_id"] == "task-demo-shop-pricing-v2"
+        assert progress["current_repeat_index"] == 1
+        assert progress["run_stage"] == "generating"
+        assert progress["latest_trace_step"]["tool_name"] == "read_file"
+        assert progress["clean_runs_total_estimate"] == 6
 
 
 def test_completed_experiment_is_not_rerun_in_place(monkeypatch, clean_db):

@@ -9,6 +9,7 @@ from app.schemas.api_evaluation import (
     ExperimentCleanRunOut,
     ExperimentCreate,
     ExperimentOut,
+    ExperimentProgressOut,
     TestReplayOut,
 )
 from app.schemas.evaluation import ExperimentMetricsResponse
@@ -20,6 +21,7 @@ from app.services.experiments import (
     enqueue_experiment,
     get_experiment,
     get_experiment_metrics,
+    get_experiment_progress,
     list_clean_runs,
     list_experiments,
     list_replay_runs,
@@ -102,6 +104,14 @@ def list_replay_runs_route(experiment_id: str, db: Session = Depends(get_db)):
 def get_experiment_metrics_route(experiment_id: str, db: Session = Depends(get_db)):
     try:
         return get_experiment_metrics(db, experiment_id)
+    except ExperimentError as e:
+        raise _experiment_http_error(e) from e
+
+
+@router.get("/api/v1/experiments/{experiment_id}/progress", response_model=ExperimentProgressOut)
+def get_experiment_progress_route(experiment_id: str, db: Session = Depends(get_db)):
+    try:
+        return get_experiment_progress(db, experiment_id)
     except ExperimentError as e:
         raise _experiment_http_error(e) from e
 

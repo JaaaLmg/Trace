@@ -295,6 +295,38 @@ class TestReplayOut(BaseModel):
         return snapshot
 
 
+class ExperimentProgressTraceStepOut(BaseModel):
+    step_index: int
+    step_type: str
+    name: str
+    tool_name: str | None = None
+    status: str
+    created_at: datetime
+
+
+class ExperimentProgressOut(BaseModel):
+    experiment_id: str
+    status: str
+    dataset_id: str
+    strategy_version_ids: list[str]
+    current_strategy_version_id: str | None = None
+    current_strategy_index: int | None = None
+    strategy_count: int
+    current_clean_run_id: str | None = None
+    current_test_run_id: str | None = None
+    current_eval_task_id: str | None = None
+    current_repeat_index: int | None = None
+    repeat_count: int
+    clean_runs_completed: int
+    clean_runs_total_estimate: int
+    replay_runs_completed: int
+    replay_runs_running: int
+    run_status: str | None = None
+    run_stage: str | None = None
+    latest_trace_step: ExperimentProgressTraceStepOut | None = None
+    updated_at: datetime
+
+
 class ExperimentCleanupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
