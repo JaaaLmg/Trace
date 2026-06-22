@@ -58,6 +58,19 @@ if ($frontend.StatusCode -ne 200 -or $frontend.Content -notmatch "TRACE") {
 }
 
 if ($RunExperiment) {
+    $datasetDetail = Invoke-JsonCheck -Name "Dataset detail" -Url "$ApiBase/api/v1/eval-datasets/dataset-demo-v2"
+    $tasks = @($datasetDetail.tasks)
+    $taskCount = $tasks.Count
+    $bugVariantCount = 0
+    foreach ($task in $tasks) {
+        foreach ($bug in @($task.seeded_bugs)) {
+            $bugVariantCount += @($bug.variants).Count
+        }
+    }
+    if ($taskCount -lt 1 -or $bugVariantCount -lt 1) {
+        throw "dataset-demo-v2 must include at least one task and one bug variant"
+    }
+
     $profiles = Invoke-JsonCheck -Name "Runtime profiles" -Url "$ApiBase/api/v1/eval-datasets/dataset-demo-v2/runtime-profiles"
     $profile = @($profiles)[0]
     if (-not $profile.id) {
@@ -96,11 +109,19 @@ if ($RunExperiment) {
     $rows = @($metrics.rows)
     $replays = @($metrics.replay_runs)
     $llmCalls = @($replays | ForEach-Object { $_.llm_calls } | Sort-Object -Unique)
+    $expectedCleanRuns = $taskCount
+    $expectedVariantReplayRuns = $bugVariantCount
     if ($rows.Count -ne 1 -or $rows[0].metric_status -ne "ok") {
         throw "Expected one ok metric row for $experimentId"
     }
-    if ($progress.clean_runs_completed -ne 1 -or $progress.replay_runs_completed -ne 9) {
-        throw "Expected 1 clean run and 9 replay runs for $experimentId"
+    if ($progress.clean_runs_completed -ne $expectedCleanRuns) {
+        throw "Expected $expectedCleanRuns clean runs for $experimentId"
+    }
+    if (@($metrics.experiment_replay_runs).Count -ne $expectedVariantReplayRuns) {
+        throw "Expected $expectedVariantReplayRuns variant replay records for $experimentId"
+    }
+    if ($progress.replay_runs_completed -lt $expectedVariantReplayRuns) {
+        throw "Expected at least $expectedVariantReplayRuns replay runs for $experimentId"
     }
     if ($llmCalls.Count -ne 1 -or $llmCalls[0] -ne 0) {
         throw "Expected replay llm_calls=[0] for $experimentId"

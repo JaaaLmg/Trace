@@ -42,7 +42,7 @@ from app.services.experiments import (
 )
 from app.services.strategies import seed_strategy_versions
 from app.workers.celery_app import celery_app
-from eval.demo.bugs import BUGS
+from eval.demo.bugs import BUGS, TASKS
 from eval.harness.run_eval import run_full_eval, run_full_eval_via_service
 
 
@@ -215,16 +215,16 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
         metrics = metrics_response.json()
 
     rows = {row["strategy_id"]: row for row in metrics["rows"]}
-    assert rows["direct"]["captured_per_repeat"] == [5]
+    assert rows["direct"]["captured_per_repeat"] == [14]
     assert rows["direct"]["false_positive_rate"] == 1.0
     assert rows["direct"]["cost_per_captured_bug_status"] == "ok"
     assert rows["direct"]["avg_duration_ms"] > 0
     assert rows["direct"]["pytest_collection_success_rate"] == 1.0
     assert rows["direct"]["reflection_contract_pass_rate"] is None
     assert rows["direct"]["reflection_acceptance_rate"] is None
-    assert rows["plan_execute"]["captured_per_repeat"] == [6]
+    assert rows["plan_execute"]["captured_per_repeat"] == [16]
     assert rows["plan_execute"]["false_positive_rate"] == 0.0
-    assert rows["react_reflection"]["captured_per_repeat"] == [6]
+    assert rows["react_reflection"]["captured_per_repeat"] == [16]
     assert rows["react_reflection"]["reflection_used"] is True
     assert rows["react_reflection"]["reflection_contract_pass_rate"] == 1.0
     assert rows["react_reflection"]["reflection_acceptance_rate"] == 1.0
@@ -237,15 +237,19 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
     assert matrix_counts["variant-wrong-status"]["direct"]["captured_count"] == 0
     assert matrix_counts["variant-wrong-status"]["direct"]["repeat_count"] == 1
     assert matrix_counts["variant-wrong-status"]["plan_execute"]["capture_rate"] == 1.0
+    assert matrix["variant-inventory-wrong-status"]["direct"] is False
+    assert matrix["variant-inventory-wrong-status"]["plan_execute"] is True
+    assert matrix["variant-inventory-wrong-status"]["react_reflection"] is True
     assert metrics["capture_matrix_counts"] == matrix_counts
     assert metrics["capture_scope"]["unit"] == "bug_variant"
+    assert metrics["capture_scope"]["total_bug_variants"] == 16
     assert metrics["capture_scope"]["single_variant_per_seeded_bug"] is True
     assert metrics["data_source"]["kind"] == "mock"
     sampled = metrics["sampled_mutation_score"]
     sampled_rows = {row["strategy_id"]: row for row in sampled["rows"]}
     assert sampled["status"] == "ok"
     assert sampled["included_variant_ids"] == ["variant-wrong-status"]
-    assert sampled["excluded_variant_counts"]["non_auto_mutation"] == 5
+    assert sampled["excluded_variant_counts"]["non_auto_mutation"] == 15
     assert sampled_rows["direct"]["score"] == 0.0
     assert sampled_rows["direct"]["captured_mutant_count"] == 0
     assert sampled_rows["plan_execute"]["score"] == 1.0
@@ -258,8 +262,8 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
     assert rows["plan_execute"]["captured_per_repeat"] == harness_rows["sv-plan-v1"]["captured_per_repeat"]
     assert rows["react_reflection"]["captured_per_repeat"] == harness_rows["sv-react-v1"]["captured_per_repeat"]
 
-    assert len(metrics["clean_runs"]) == 3
-    assert len(metrics["experiment_replay_runs"]) == 18
+    assert len(metrics["clean_runs"]) == 9
+    assert len(metrics["experiment_replay_runs"]) == 48
     assert all(replay["llm_calls"] == 0 for replay in metrics["replay_runs"])
     assert any(replay["bug_variant_id"] is None for replay in metrics["replay_runs"])
     events = metrics["evaluation_events"]
@@ -283,9 +287,9 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
         assert probe_check["buggy_actual"] == probe_check["buggy_expected"]
 
     with Session(get_engine()) as session:
-        assert session.scalar(select(func.count()).select_from(ExperimentCleanRun)) == 3
-        assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 18
-        assert session.scalar(select(func.count()).select_from(ReplayModel)) == 27
+        assert session.scalar(select(func.count()).select_from(ExperimentCleanRun)) == 9
+        assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 48
+        assert session.scalar(select(func.count()).select_from(ReplayModel)) == 75
 
         strategy_key = {
             "sv-direct-v1": "direct",
@@ -295,7 +299,7 @@ def test_experiment_runner_creates_clean_runs_replays_and_db_metrics(monkeypatch
         audited_captures: dict[str, dict[int, int]] = {key: {} for key in strategy_key.values()}
         audited_matrix: dict[str, dict[str, bool]] = {variant_id: {} for variant_id in matrix}
         artifacts = list(session.scalars(select(RunArtifact).where(RunArtifact.artifact_type == "generated_test_set")))
-        assert len(artifacts) == 3
+        assert len(artifacts) == 9
         for artifact in artifacts:
             data = Path(artifact.uri).read_bytes()
             assert hashlib.sha256(data).hexdigest() == artifact.content_hash
@@ -420,7 +424,7 @@ def test_sampled_mutation_score_denominator_requires_confirmed_probe_passed(clea
     assert sampled["mutant_count"] == 1
     assert sampled["included_variant_ids"] == ["variant-wrong-status"]
     assert sampled["excluded_variant_counts"] == {
-        "non_auto_mutation": 3,
+        "non_auto_mutation": 13,
         "probe_check_not_passed": 2,
     }
     assert "variant-cmp-flip-discount" not in sampled["included_variant_ids"]
@@ -681,7 +685,7 @@ def test_experiment_progress_reports_running_strategy_and_trace_step(clean_db):
         assert progress["current_repeat_index"] == 1
         assert progress["run_stage"] == "generating"
         assert progress["latest_trace_step"]["tool_name"] == "read_file"
-        assert progress["clean_runs_total_estimate"] == 6
+        assert progress["clean_runs_total_estimate"] == 18
 
 
 def test_completed_experiment_is_not_rerun_in_place(monkeypatch, clean_db):
@@ -711,7 +715,7 @@ def test_completed_experiment_is_not_rerun_in_place(monkeypatch, clean_db):
         clean_count = session.scalar(
             select(func.count()).select_from(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-no-rerun")
         )
-        assert clean_count == 1
+        assert clean_count == len(TASKS)
 
 
 def test_run_experiment_observes_mid_run_cancel(monkeypatch, clean_db):
@@ -818,7 +822,6 @@ def _add_second_demo_task() -> None:
 def test_metrics_group_multiple_tasks_into_one_repeat(monkeypatch, clean_db):
     _run_celery_eager(monkeypatch)
     _seed_v2_demo()
-    _add_second_demo_task()
     app = create_app()
 
     with TestClient(app) as client:
@@ -839,9 +842,9 @@ def test_metrics_group_multiple_tasks_into_one_repeat(monkeypatch, clean_db):
 
     [row] = metrics["rows"]
     assert row["repeats"] == 1
-    assert row["total_in_scope"] == 12
+    assert row["total_in_scope"] == 16
     assert len(row["captured_per_repeat"]) == 1
-    assert len(metrics["clean_runs"]) == 2
+    assert len(metrics["clean_runs"]) == len(TASKS)
 
 
 def test_experiment_metrics_use_null_cost_when_no_bug_is_captured(monkeypatch, clean_db):
@@ -1276,8 +1279,9 @@ def test_clean_setup_failure_marks_invalid_test_set(monkeypatch, clean_db):
         )
         result = run_experiment(session, "exp-setup-fail")
         assert result["status"] == "completed"
-        [clean] = list(session.scalars(select(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-setup-fail")))
-        assert clean.clean_metrics["invalid_reason"] == "setup_failed"
+        cleans = list(session.scalars(select(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-setup-fail")))
+        assert len(cleans) == len(TASKS)
+        assert all(clean.clean_metrics["invalid_reason"] == "setup_failed" for clean in cleans)
         assert session.scalar(select(func.count()).select_from(ReplayModel)) == 0
         metrics = get_experiment_metrics(session, "exp-setup-fail")
         assert any(event["event_type"] == "setup_failed" for event in metrics["evaluation_events"])
@@ -1332,26 +1336,28 @@ def test_experiment_marks_flaky_clean_replay_invalid_and_skips_variants(monkeypa
         result = run_experiment(session, "exp-flaky-clean")
         assert result["status"] == "completed"
 
-        [clean] = list(
+        cleans = list(
             session.scalars(select(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-flaky-clean"))
         )
-        assert clean.false_positive is False
-        assert clean.clean_metrics["validity_status"] == "invalid_test_set"
-        assert clean.clean_metrics["invalid_reason"] == "flaky_clean_replay"
-        assert clean.clean_metrics["flaky_check"]["stable"] is False
-        assert "status changed" in clean.clean_metrics["flaky_check"]["reasons"][0]
+        assert len(cleans) == len(TASKS)
+        for clean in cleans:
+            assert clean.false_positive is False
+            assert clean.clean_metrics["validity_status"] == "invalid_test_set"
+            assert clean.clean_metrics["invalid_reason"] == "flaky_clean_replay"
+            assert clean.clean_metrics["flaky_check"]["stable"] is False
+            assert "status changed" in clean.clean_metrics["flaky_check"]["reasons"][0]
         metrics = get_experiment_metrics(session, "exp-flaky-clean")
         assert any(event["event_type"] == "flaky_clean_replay" for event in metrics["evaluation_events"])
 
         replays = list(
             session.scalars(
-                select(ReplayModel)
-                .where(ReplayModel.experiment_clean_run_id == clean.id)
+                select(ReplayModel).join_from(ReplayModel, ExperimentCleanRun)
+                .where(ExperimentCleanRun.experiment_id == "exp-flaky-clean")
                 .order_by(ReplayModel.created_at.asc())
             )
         )
-        assert len(replays) == 1
-        assert replays[0].bug_variant_id is None
+        assert len(replays) == len(TASKS)
+        assert all(replay.bug_variant_id is None for replay in replays)
         assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 0
 
         [row] = metrics["rows"]
@@ -1432,18 +1438,19 @@ def test_experiment_backfeeds_previous_evaluation_events_to_later_repeats(monkey
         assert result["status"] == "completed"
         metrics = get_experiment_metrics(session, "exp-event-backfeed")
 
-    assert len(seen_event_types) == 2
-    assert seen_event_types[0] == []
-    assert seen_event_types[1] == ["flaky_clean_replay"]
+    assert len(seen_event_types) == len(TASKS) * 2
+    for index in range(0, len(seen_event_types), 2):
+        assert seen_event_types[index] == []
+        assert seen_event_types[index + 1] == ["flaky_clean_replay"]
     second_repeat_audit = [
         audit for audit in metrics["reflection_event_backfeed"] if audit["repeat_index"] == 1
     ]
-    assert len(second_repeat_audit) == 1
-    [decision] = second_repeat_audit[0]["decisions"]
-    assert decision["event_type"] == "flaky_clean_replay"
-    assert decision["action"] == "included"
-    assert decision["reason"] == "reflection-consumable failure event"
-    assert second_repeat_audit[0]["included_event_ids"] == [decision["event_id"]]
+    assert len(second_repeat_audit) == len(TASKS)
+    for audit in second_repeat_audit:
+        [decision] = [item for item in audit["decisions"] if item["action"] == "included"]
+        assert decision["event_type"] == "flaky_clean_replay"
+        assert decision["reason"] == "reflection-consumable failure event"
+        assert audit["included_event_ids"] == [decision["event_id"]]
 
 
 def test_experiment_blocks_seeded_bug_run_when_target_source_context_is_missing(clean_db):
@@ -1552,14 +1559,16 @@ def test_experiment_marks_pipeline_reject_as_invalid_test_set(monkeypatch, clean
         result = run_experiment(session, "exp-pipeline-reject")
         assert result["status"] == "completed"
 
-        [clean] = list(
+        cleans = list(
             session.scalars(select(ExperimentCleanRun).where(ExperimentCleanRun.experiment_id == "exp-pipeline-reject"))
         )
-        assert clean.false_positive is False
-        assert clean.clean_metrics["validity_status"] == "invalid_test_set"
-        assert clean.clean_metrics["invalid_reason"] == "pipeline_reject"
-        assert "空洞断言" in clean.clean_metrics["pipeline_reject_error"]
-        assert clean.clean_metrics["total_tokens"] == 123
+        assert len(cleans) == len(TASKS)
+        for clean in cleans:
+            assert clean.false_positive is False
+            assert clean.clean_metrics["validity_status"] == "invalid_test_set"
+            assert clean.clean_metrics["invalid_reason"] == "pipeline_reject"
+            assert "空洞断言" in clean.clean_metrics["pipeline_reject_error"]
+            assert clean.clean_metrics["total_tokens"] == 123
         assert session.scalar(select(func.count()).select_from(ReplayModel)) == 0
         assert session.scalar(select(func.count()).select_from(ExperimentReplayRun)) == 0
 
@@ -1573,7 +1582,7 @@ def test_eval_cli_service_path_reuses_experiment_service(clean_db):
     result = run_full_eval_via_service(repeats=1, llm_override={"provider": "mock", "model": "mock-1"})
     rows = {row["strategy_id"]: row for row in result["rows"]}
 
-    assert rows["direct"]["captured_per_repeat"] == [5]
-    assert rows["plan_execute"]["captured_per_repeat"] == [6]
-    assert rows["react_reflection"]["captured_per_repeat"] == [6]
+    assert rows["direct"]["captured_per_repeat"] == [14]
+    assert rows["plan_execute"]["captured_per_repeat"] == [16]
+    assert rows["react_reflection"]["captured_per_repeat"] == [16]
     assert "variant-wrong-status" in result["matrix_md"]

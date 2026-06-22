@@ -1,5 +1,5 @@
 # 评测 harness 端到端 + 指标聚合自测。
-# 端到端跑真 pytest 子进程：干净生成 → 6 变体重放，验证三策略的捕获/假阳性/反思故事。
+# 端到端跑真 pytest 子进程：干净生成 → demo suite 变体重放，验证三策略的捕获/假阳性/反思故事。
 # 聚合用合成数据快测，证明 3 次重复的均值/标准差/假阳性/成本口径，无需起子进程。
 from __future__ import annotations
 
@@ -17,11 +17,14 @@ def test_full_eval_story(tmp_path):
     result = run_full_eval(tmp_path, repeats=1)
     rows = {r["strategy_id"]: r for r in result["rows"]}
 
-    # Direct：单发把路由测试状态码写反 → 干净上失败=假阳性；且漏掉 wrong-status（5/6）
+    total_bugs = len(BUGS)
+
+    # Direct：单发把路由测试状态码写反 → 干净上失败=假阳性；且漏掉两个 wrong-status（14/16）
     d = rows["sv-direct-v1"]
     assert d["false_positive_rate"] == 1.0
     assert d["reflection_used"] is False
-    assert abs(d["capture_rate_mean"] - 5 / 6) < 1e-9
+    assert d["captured_per_repeat"] == [total_bugs - 2]
+    assert abs(d["capture_rate_mean"] - (total_bugs - 2) / total_bugs) < 1e-9
 
     # Plan-and-Execute：逐目标，路由写对，全捕获、无假阳性
     p = rows["sv-plan-v1"]
@@ -42,6 +45,9 @@ def test_full_eval_story(tmp_path):
     assert m["wrong-status"]["sv-plan-v1"] is True
     assert m["wrong-status"]["sv-react-v1"] is True
     assert m["wrong-status"]["sv-direct-v1"] is False
+    assert m["inventory-wrong-status"]["sv-plan-v1"] is True
+    assert m["inventory-wrong-status"]["sv-react-v1"] is True
+    assert m["inventory-wrong-status"]["sv-direct-v1"] is False
     for runs in result["runs_by_strategy"].values():
         for run in runs:
             for variant in run.variants.values():

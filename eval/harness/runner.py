@@ -17,7 +17,7 @@ from eval.harness.final_set import final_test_set
 from eval.harness.probes import check_variant_probe
 from eval.harness.replay import replay
 
-GOAL = "为 shop 模块生成 pytest 测试，覆盖定价函数与价格查询路由"
+GOAL = "为 demo 项目生成 pytest 测试，覆盖 shop、inventory、accounts 的函数和 API 契约"
 
 
 @dataclass
@@ -38,7 +38,15 @@ class CleanRun:
     variants: dict = field(default_factory=dict)  # bug_id -> {captured, capturing_tests, bug_type, target}
 
 
-def run_clean(strategy_spec, make_llm, repeat: int, workdir: Path) -> CleanRun:
+def run_clean(
+    strategy_spec,
+    make_llm,
+    repeat: int,
+    workdir: Path,
+    *,
+    target_scope: list[str] | None = None,
+    goal: str = GOAL,
+) -> CleanRun:
     clean_root = dataset.materialize_clean(Path(workdir) / "clean")
     ctx = ToolContext(root=clean_root, test_write_dir=clean_root / "tests" / "generated")
     rec = InMemoryRecorder()
@@ -50,7 +58,7 @@ def run_clean(strategy_spec, make_llm, repeat: int, workdir: Path) -> CleanRun:
             llm=llm,
             recorder=rec,
             strategy_spec=strategy_spec,
-            plan_input=PlanInput(target_scope=[], goal=GOAL, allow_reflection=True),
+            plan_input=PlanInput(target_scope=list(target_scope or []), goal=goal, allow_reflection=True),
             artifacts_dir=Path(workdir) / "artifacts",
         )
     finally:
@@ -110,8 +118,17 @@ def evaluate_variants(clean: CleanRun, bugs, workdir: Path) -> None:
         }
 
 
-def run_one(strategy_spec, make_llm, repeat: int, workdir: Path, bugs) -> CleanRun:
-    clean = run_clean(strategy_spec, make_llm, repeat, workdir)
+def run_one(
+    strategy_spec,
+    make_llm,
+    repeat: int,
+    workdir: Path,
+    bugs,
+    *,
+    target_scope: list[str] | None = None,
+    goal: str = GOAL,
+) -> CleanRun:
+    clean = run_clean(strategy_spec, make_llm, repeat, workdir, target_scope=target_scope, goal=goal)
     if clean.status != "completed":
         return clean
     evaluate_variants(clean, bugs, workdir)

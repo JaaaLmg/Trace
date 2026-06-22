@@ -39,7 +39,7 @@ TRACE 关注三个问题：
 
 ## Docker Compose 一键运行
 
-推荐交付方式是 Docker Compose。它会启动 PostgreSQL、Redis、Backend API、Worker 和前端，并自动初始化 demo benchmark：
+推荐交付方式是 Docker Compose。它会启动 PostgreSQL、Redis、Backend API、Worker 和前端，并自动初始化 demo benchmark suite（3 个 task、16 个 seeded bug variants）：
 
 ```powershell
 docker compose up --build
@@ -61,6 +61,19 @@ powershell -ExecutionPolicy Bypass -File scripts/compose_smoke.ps1
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/compose_smoke.ps1 -RunExperiment
+```
+
+三策略 benchmark：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/compose_benchmark.ps1
+```
+
+生成验收证据时建议显式 repeat=3 并输出 JSON：
+
+```powershell
+$id = "compose-benchmark-suite-r3-" + (Get-Date -Format "yyyyMMddHHmmss")
+powershell -ExecutionPolicy Bypass -File scripts/compose_benchmark.ps1 -ExperimentId $id -RepeatCount 3 -OutputPath "docs\evidence\$id.json"
 ```
 
 详细说明见 `docs/Docker交付运行说明.md`。

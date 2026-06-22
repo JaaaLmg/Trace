@@ -61,9 +61,10 @@ def _prevalidate_demo_patches(bugs) -> None:
 
 
 def seed_demo_dataset(session: Session) -> dict:
-    from eval.demo.bugs import BUGS
+    from eval.demo.bugs import BUGS, TASKS
 
     _prevalidate_demo_patches(BUGS)
+    bugs_by_task = {task_id: [bug for bug in BUGS if bug.task_id == task_id] for task_id in TASKS}
 
     try:
         project = _ensure_demo_project(session)
@@ -75,38 +76,59 @@ def seed_demo_dataset(session: Session) -> dict:
                 id=DEMO_DATASET_ID,
                 name="TRACE demo seeded bugs",
                 version="v2",
-                description="Demo shop pricing/API seeded bug dataset for V2 experiment plumbing.",
+                description="Demo seeded bug suite for V2 experiment plumbing.",
                 project_snapshot_ids=[snapshot.id],
             )
             session.add(dataset)
 
-        task = session.get(EvalTask, DEMO_TASK_ID)
-        if task is None:
-            target_refs = [bug.target for bug in BUGS]
-            task = EvalTask(
-                id=DEMO_TASK_ID,
-                dataset_id=dataset.id,
-                project_snapshot_id=snapshot.id,
-                target_scope={"targets": target_refs, "bug_count": len(BUGS), "source": "eval.demo.bugs"},
-                goal="Generate tests that characterize demo shop pricing and price API behavior.",
-                expected_capabilities=["boundary_value", "comparison_logic", "input_validation", "http_status_contract"],
-            )
-            session.add(task)
+        tasks: dict[str, EvalTask] = {}
+        for task_id, task_spec in TASKS.items():
+            task_bugs = bugs_by_task.get(task_id, [])
+            task = session.get(EvalTask, task_id)
+            target_scope = {
+                "targets": list(task_spec.targets),
+                "bug_count": len(task_bugs),
+                "source": "eval.demo.bugs",
+            }
+            if task is None:
+                task = EvalTask(
+                    id=task_id,
+                    dataset_id=dataset.id,
+                    project_snapshot_id=snapshot.id,
+                    target_scope=target_scope,
+                    goal=task_spec.goal,
+                    expected_capabilities=list(task_spec.expected_capabilities),
+                )
+                session.add(task)
+            else:
+                task.dataset_id = dataset.id
+                task.project_snapshot_id = snapshot.id
+                task.target_scope = target_scope
+                task.goal = task_spec.goal
+                task.expected_capabilities = list(task_spec.expected_capabilities)
+            tasks[task_id] = task
+        session.flush()
 
         created_bugs = 0
         created_variants = 0
         for bug in BUGS:
+            task = tasks[bug.task_id]
             seeded_bug = session.get(SeededBug, bug.id)
             if seeded_bug is None:
                 seeded_bug = SeededBug(
                     id=bug.id,
-                    eval_task_id=task.id,
+                    eval_task_id=bug.task_id,
                     bug_type=bug.bug_type,
                     description=bug.description,
                     expected_detection=bug.expected_detection,
                 )
                 session.add(seeded_bug)
                 created_bugs += 1
+            else:
+                seeded_bug.eval_task_id = bug.task_id
+                seeded_bug.bug_type = bug.bug_type
+                seeded_bug.description = bug.description
+                seeded_bug.expected_detection = bug.expected_detection
 
             variant_id = f"variant-{bug.id}"
             if session.get(BugVariant, variant_id) is None:
@@ -145,7 +167,9 @@ def seed_demo_dataset(session: Session) -> dict:
 
     return {
         "dataset_id": dataset.id,
-        "task_id": task.id,
+        "task_id": DEMO_TASK_ID,
+        "task_count": len(TASKS),
+        "task_ids": list(TASKS),
         "project_id": project.id,
         "snapshot_id": snapshot.id,
         "seeded_bug_count": len(BUGS),

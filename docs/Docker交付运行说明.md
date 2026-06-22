@@ -57,6 +57,19 @@ powershell -ExecutionPolicy Bypass -File scripts/compose_smoke.ps1
 powershell -ExecutionPolicy Bypass -File scripts/compose_smoke.ps1 -RunExperiment
 ```
 
+如果要跑三策略 benchmark，执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/compose_benchmark.ps1
+```
+
+如果要生成更像验收 benchmark 的稳定证据，建议显式 repeat=3：
+
+```powershell
+$id = "compose-benchmark-suite-r3-" + (Get-Date -Format "yyyyMMddHHmmss")
+powershell -ExecutionPolicy Bypass -File scripts/compose_benchmark.ps1 -ExperimentId $id -RepeatCount 3 -OutputPath "docs\evidence\$id.json"
+```
+
 期望输出：
 
 ```text
@@ -75,8 +88,14 @@ TRACE Compose smoke passed.
 - 创建 `sv-direct-v1` 单策略 experiment。
 - 启动 Worker 执行。
 - 等待 `completed`。
-- 验证 1 个 clean run、9 个 replay run。
+- 按 `dataset-demo-v2` 的 task / variant 数动态验证 clean run 和 variant replay records。
 - 验证 `metric_status=ok`，replay `llm_calls=[0]`。
+
+`compose_benchmark.ps1` 额外检查：
+
+- 创建 Direct / Plan / ReAct 三策略 experiment。
+- 按 `dataset-demo-v2` 的 task / variant 数动态验证 clean run 和 variant replay records。
+- 验证三行 `metric_status=ok`，replay `llm_calls=[0]`。
 
 ## 4. 演示路径
 
@@ -164,12 +183,16 @@ docker compose down -v
 | PostgreSQL | `trace-postgres` healthy |
 | Redis | `trace-redis` healthy |
 | Basic smoke | `TRACE Compose smoke passed.` |
-| Worker/eval smoke | `compose-smoke-20260622091526` completed |
-| Worker/eval smoke metrics | `direct` / `metric_status=ok` / `capture_rate_mean=0.8333` / `false_positive_rate=1.0` |
-| Worker/eval smoke replay | 9 replay runs，`llm_calls=[0]` |
+| Worker/eval smoke | `compose-smoke-20260622113028` completed |
+| Worker/eval smoke metrics | `direct` / `metric_status=ok` / `capture_rate_mean=0.875` / `false_positive_rate=1.0` |
+| Worker/eval smoke replay | 25 replay runs，16 variant replay records，`llm_calls=[0]` |
 | Real LLM option | `openai_chat_compat` / `deepseek-v4-flash`，`selectable=true` |
 | Real LLM smoke | `real-llm-smoke-20260622093052` completed |
 | Real LLM smoke metrics | `direct` / `metric_status=ok` / `capture_rate_mean=1.0` / `false_positive_rate=0.0` |
 | Real LLM smoke replay | 9 replay runs，`llm_calls=[0]` |
+| Compose benchmark suite | `compose-benchmark-suite-r3-20260622112519` completed，repeat=3 |
+| Compose benchmark dataset | 3 tasks，16 bug variants |
+| Compose benchmark metrics | Direct 0.875 / Plan 1.0 / ReAct 1.0，三行 `metric_status=ok` |
+| Compose benchmark replay | 225 replay runs，144 variant replay records，`llm_calls=[0]` |
 
 备注：首次构建期间 Docker Hub token 请求曾短暂超时；单独 `docker pull python:3.12-slim`、`docker pull node:20-alpine`、`docker pull nginx:1.27-alpine` 后继续构建成功。

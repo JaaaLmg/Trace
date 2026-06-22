@@ -20,9 +20,10 @@ for _p in (str(_TRACE_ROOT / "backend"), str(_TRACE_ROOT)):
 from app.agents.llm import MockLLM  # noqa: E402
 from app.agents.seeds import seed_list  # noqa: E402
 
+from eval.demo.bugs import TASKS  # noqa: E402
 from eval.harness import dataset, metrics  # noqa: E402
 from eval.harness.authors import demo_author  # noqa: E402
-from eval.harness.runner import run_one  # noqa: E402
+from eval.harness.runner import CleanRun, run_one  # noqa: E402
 
 
 def _format_run_error(run) -> str:
@@ -43,6 +44,28 @@ def _failed_smoke_runs(result: dict) -> list:
     ]
 
 
+def _merge_task_runs(strategy_spec, repeat: int, task_runs: list[CleanRun]) -> CleanRun:
+    first_failed = next((run for run in task_runs if run.status != "completed"), None)
+    merged = CleanRun(
+        strategy_id=strategy_spec.id,
+        strategy_name=strategy_spec.name,
+        repeat=repeat,
+        status=first_failed.status if first_failed else "completed",
+        files={path: content for run in task_runs for path, content in run.files.items()},
+        clean_passed=set().union(*(run.clean_passed for run in task_runs)) if task_runs else set(),
+        clean_failed=any(run.clean_failed for run in task_runs),
+        n_cases=sum(run.n_cases for run in task_runs),
+        tokens=sum(run.tokens for run in task_runs),
+        tool_calls=sum(run.tool_calls for run in task_runs),
+        reflection_used=any(run.reflection_used for run in task_runs),
+        error_code=first_failed.error_code if first_failed else None,
+        error_message=first_failed.error_message if first_failed else None,
+    )
+    for run in task_runs:
+        merged.variants.update(run.variants)
+    return merged
+
+
 def run_full_eval(workdir, repeats: int = 3, *, make_llm=None, author=demo_author, specs=None) -> dict:
     # make_llm 工厂 () -> LLMClient。缺省 = MockLLM(author)，mock 路径与现状完全一致。
     if make_llm is None:
@@ -54,9 +77,23 @@ def run_full_eval(workdir, repeats: int = 3, *, make_llm=None, author=demo_autho
     spec_list = specs if specs is not None else seed_list()
     runs_by_strategy: dict = {}
     for spec in spec_list:
-        runs_by_strategy[spec.id] = [
-            run_one(spec, make_llm, r, Path(workdir) / spec.id / f"rep{r}", bugs) for r in range(repeats)
-        ]
+        runs_by_strategy[spec.id] = []
+        for r in range(repeats):
+            task_runs = []
+            for task_id, task in TASKS.items():
+                task_bugs = [bug for bug in bugs if bug.task_id == task_id]
+                task_runs.append(
+                    run_one(
+                        spec,
+                        make_llm,
+                        r,
+                        Path(workdir) / spec.id / f"rep{r}" / task_id,
+                        task_bugs,
+                        target_scope=task.targets,
+                        goal=task.goal,
+                    )
+                )
+            runs_by_strategy[spec.id].append(_merge_task_runs(spec, r, task_runs))
     rows = metrics.aggregate(runs_by_strategy, total_in_scope=len(bugs))
     matrix = metrics.capture_matrix(runs_by_strategy, bugs)
     return {
@@ -289,6 +326,7 @@ def main() -> None:
         return
 
     experiment_info = result.get("experiment") or {}
+    bug_count = len(dataset.load_bugs())
 
     if args.real:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -300,7 +338,7 @@ def main() -> None:
             "",
             f"> provider={provider}　model={model}　temperature={temperature}　reasoning_effort={reasoning_effort}　repeats={args.repeats}　生成于 {stamp}",
             f"> experiment_id={experiment_info.get('id', 'unknown')}",
-            f"> 数据来自 `eval/harness/run_eval.py --real`：3 策略 × {args.repeats} 重复，干净代码生成 → 6 个 bug 变体重放。",
+            f"> 数据来自 `eval/harness/run_eval.py --real`：3 策略 × {args.repeats} 重复，干净代码生成 → {bug_count} 个 bug 变体重放。",
             "> 与 MockLLM 的 comparison.md 并存：本表是真实测量，捕获/假阳性/反思/token 皆来自真模型，逐次可能不同。",
             "",
         ]
@@ -309,7 +347,7 @@ def main() -> None:
         header = [
             "# TRACE 策略评测对比（demo seeded bugs）",
             "",
-            "> 数据来自 `eval/harness/run_eval.py`：3 策略 × 3 重复，干净代码生成 → 6 个 bug 变体重放。",
+            f"> 数据来自 `eval/harness/run_eval.py`：3 策略 × 3 重复，干净代码生成 → {bug_count} 个 bug 变体重放。",
             "> demo 用 scripted MockLLM 作者建模三种策略的典型行为；harness 与指标计算与 LLM 无关。",
             "",
         ]
