@@ -100,7 +100,8 @@ const variantForm = ref({
 const datasetRequest = useLatestRequest();
 
 const isCreateOnly = computed(() => props.dataSource === "api" && props.datasetId === "new");
-const canCreateExperimentFromDataset = computed(() => props.dataSource === "api" && Boolean(dataset.value) && !isCreateOnly.value);
+const showCreateExperimentFromDataset = computed(() => props.dataSource === "api" && Boolean(dataset.value) && !isCreateOnly.value);
+const canCreateExperimentFromDataset = computed(() => showCreateExperimentFromDataset.value && (dataset.value?.tasks.length ?? 0) > 0);
 const selectedTask = computed<EvalTaskDetailOut | null>(() => {
   const current = dataset.value;
   if (!current) {
@@ -641,7 +642,7 @@ function capabilityText(task: EvalTaskDetailOut): string {
 }
 
 function openExperimentCreateForDataset() {
-  if (!dataset.value) {
+  if (!dataset.value || !canCreateExperimentFromDataset.value) {
     return;
   }
   emit("navigate", `#/experiments?dataset=${encodeURIComponent(dataset.value.id)}`);
@@ -998,7 +999,14 @@ watch(
         <ArrowLeft :size="16" aria-hidden="true" />
         {{ t("experiments.back") }}
       </button>
-      <button v-if="canCreateExperimentFromDataset" class="text-button" type="button" @click="openExperimentCreateForDataset">
+      <button
+        v-if="showCreateExperimentFromDataset"
+        class="text-button"
+        type="button"
+        :disabled="!canCreateExperimentFromDataset"
+        :title="canCreateExperimentFromDataset ? t('experiments.create') : t('datasets.createExperimentRequiresTasks')"
+        @click="openExperimentCreateForDataset"
+      >
         <FlaskConical :size="16" aria-hidden="true" />
         {{ t("experiments.create") }}
       </button>
@@ -1010,6 +1018,9 @@ watch(
 
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
     <p v-if="createMessage" class="mode-note">{{ createMessage }}</p>
+    <p v-if="showCreateExperimentFromDataset && !canCreateExperimentFromDataset" class="warning-banner">
+      {{ t("datasets.createExperimentRequiresTasks") }}
+    </p>
     <p v-if="loading" class="mode-note">{{ t("datasets.loading") }}</p>
 
     <section v-if="props.dataSource === 'api'" class="subtle-panel create-dataset-panel">
