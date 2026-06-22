@@ -1705,3 +1705,108 @@ def test_generation_contract_rejects_redefining_target_function_in_test_file():
     )
 
     assert any("重新定义被测目标" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_bound_method_called_as_free_function():
+    content = (
+        "from json_repair.parse_array import parse_array\n\n"
+        "def test_parse_array_basic():\n"
+        "    assert parse_array('[1, 2]') == [1, 2]\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_parse_array_basic",
+                "target_function": "parse_array",
+                "assertion_summary": "数组正常解析",
+            }
+        ],
+        target_type="function",
+        target_ref="parse_array",
+        target_signature="parse_array(self: 'JSONParser', schema: dict | None=None)",
+    )
+
+    assert any("内部方法不能当自由函数调用" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_project_class_constructor_without_context_evidence():
+    content = (
+        "from json_repair import JSONParser\n\n"
+        "def test_parse_array_basic():\n"
+        "    parser = JSONParser('[1, 2]')\n"
+        "    assert parser.parse_array() == [1, 2]\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_parse_array_basic",
+                "target_function": "parse_array",
+                "assertion_summary": "数组正常解析",
+            }
+        ],
+        target_type="function",
+        target_ref="parse_array",
+        target_signature="parse_array(self: 'JSONParser', schema: dict | None=None)",
+        source_context="## src/json_repair/parse_array.py\n```python\ndef parse_array(self: 'JSONParser'):\n    pass\n```",
+    )
+
+    assert any("构造类缺少可调用性证据" in violation for violation in violations)
+
+
+def test_generation_contract_allows_project_class_constructor_with_class_context():
+    content = (
+        "from json_repair.json_parser import JSONParser\n\n"
+        "def test_parse_array_basic():\n"
+        "    parser = JSONParser('[1, 2]', None, False, 0, False, False)\n"
+        "    assert parser.parse_array() == [1, 2]\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_parse_array_basic",
+                "target_function": "parse_array",
+                "assertion_summary": "数组正常解析",
+            }
+        ],
+        target_type="function",
+        target_ref="parse_array",
+        target_signature="parse_array(self: 'JSONParser', schema: dict | None=None)",
+        source_context=(
+            "## src/json_repair/json_parser.py\n"
+            "```python\n"
+            "class JSONParser:\n"
+            "    def __init__(self, json_str, json_fd, logging, chunk_length, stream_stable, strict):\n"
+            "        pass\n"
+            "```\n"
+        ),
+    )
+
+    assert not any("构造类缺少可调用性证据" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_broad_pytest_raises_exception():
+    content = (
+        "import pytest\n"
+        "from json_repair import loads\n\n"
+        "def test_unrepairable_garbage():\n"
+        "    with pytest.raises(Exception):\n"
+        "        loads('hello world')\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_unrepairable_garbage",
+                "target_function": "loads",
+                "assertion_summary": "垃圾输入抛异常",
+            }
+        ],
+        target_type="function",
+        target_ref="loads",
+    )
+
+    assert any("宽泛异常" in violation for violation in violations)
+

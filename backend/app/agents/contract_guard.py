@@ -15,6 +15,19 @@ _HTTP_VERBS = {"get", "post", "put", "delete", "patch", "options", "head"}
 _REQUEST_FIELD_PAYLOAD_KWARGS = {"json", "params", "data"}
 _EXCEPTION_BASES_ENV_KEY = "__trace_contract_guard_exception_bases__"
 _RESPONSE_MODEL_LIST_CONTAINERS = {"list", "List", "Sequence"}
+_EXTERNAL_CLASS_IMPORT_MODULES = {
+    "datetime",
+    "decimal",
+    "fastapi",
+    "fastapi.testclient",
+    "httpx",
+    "pathlib",
+    "pydantic",
+    "starlette.testclient",
+    "typing",
+    "unittest.mock",
+}
+_EXTERNAL_CLASS_NAMES = {"AsyncClient", "Decimal", "MagicMock", "Mock", "Path", "TestClient"}
 _PYTEST_BUILTIN_FIXTURES = {
     "cache",
     "capsys",
@@ -79,6 +92,7 @@ def check_generation_contract(
     allowed_request_fields: Sequence[str] | None = None,
     allowed_fixtures: Sequence[str] | None = None,
     source_context: str | None = None,
+    target_signature: str | None = None,
 ) -> list[str]:
     """校验生成测试本身是否有基本测试价值和目标绑定。"""
     violations: list[str] = []
@@ -98,6 +112,15 @@ def check_generation_contract(
         violations.append("生成测试出现空洞断言（assert True / assert 1 / ... or True 之类）")
     if _has_broad_except(tree):
         violations.append("生成测试用宽泛 except 吞掉失败（bare except / except Exception）")
+    broad_pytest_raises = _broad_pytest_raises(tree)
+    if broad_pytest_raises:
+        violations.append("pytest.raises 使用宽泛异常：" + ", ".join(broad_pytest_raises))
+    bound_method_calls = _bound_method_free_function_calls(tree, target_ref, target_signature)
+    if bound_method_calls:
+        violations.append("内部方法不能当自由函数调用：" + ", ".join(bound_method_calls))
+    unsupported_constructors = _constructor_calls_without_context(tree, source_context or "")
+    if unsupported_constructors:
+        violations.append("构造类缺少可调用性证据：" + ", ".join(unsupported_constructors))
     if _count_tests(tree) == 0:
         violations.append("生成测试没有任何测试函数")
     if _count_checks(tree) == 0:
@@ -196,6 +219,82 @@ def _target_matches(target_type: str | None, target_ref: str | None, target_func
         route_target = _route_path_without_method(target_route)
         return route_target == route_ref or target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
     return True
+
+
+def _bound_method_free_function_calls(
+    tree: ast.AST,
+    target_ref: str | None,
+    target_signature: str | None,
+) -> list[str]:
+    if not target_ref or not _signature_first_param_is_self(target_signature or ""):
+        return []
+    target_name = target_ref.rsplit(".", 1)[-1]
+    offenders: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == target_name:
+                offenders.add(fn.name)
+    return sorted(offenders)
+
+
+def _signature_first_param_is_self(signature: str) -> bool:
+    if "(" not in signature or ")" not in signature:
+        return False
+    params = signature.split("(", 1)[1].split(")", 1)[0].strip()
+    if not params:
+        return False
+    first = params.split(",", 1)[0].strip().split(":", 1)[0].split("=", 1)[0].strip()
+    return first in {"self", "cls"}
+
+
+def _constructor_calls_without_context(tree: ast.AST, source_context: str) -> list[str]:
+    imported = _imported_project_class_names(tree)
+    if not imported:
+        return []
+    offenders: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            name = node.func.id
+            if name in imported and not _class_constructor_supported_by_context(name, source_context):
+                offenders.add(name)
+    return sorted(offenders)
+
+
+def _imported_project_class_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = (node.module or "").strip()
+            if module in _EXTERNAL_CLASS_IMPORT_MODULES:
+                continue
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if _looks_like_project_class(local):
+                    names.add(local)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.rsplit(".", 1)[-1]
+                if _looks_like_project_class(local):
+                    names.add(local)
+    return names
+
+
+def _looks_like_project_class(name: str) -> bool:
+    return bool(name) and name[0].isupper() and name not in _EXTERNAL_CLASS_NAMES
+
+
+def _class_constructor_supported_by_context(name: str, source_context: str) -> bool:
+    if re.search(rf"(?m)^\s*class\s+{re.escape(name)}(?:\(|:)", source_context):
+        return True
+    if re.search(rf"(?m)^\s*from\s+[\w.]+\s+import\s+.*\b{re.escape(name)}\b", source_context):
+        return True
+    if re.search(rf"(?m)^\s*import\s+[\w.]*{re.escape(name)}\b", source_context):
+        return True
+    if re.search(rf"__all__\s*=\s*\[[^\]]*['\"]{re.escape(name)}['\"]", source_context, flags=re.S):
+        return True
+    return False
 
 
 def _route_path_without_method(value: str) -> str:
@@ -1748,6 +1847,24 @@ def _has_broad_except(tree) -> bool:
     return False
 
 
+def _broad_pytest_raises(tree: ast.AST) -> list[str]:
+    offenders: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for stmt in ast.walk(fn):
+            if not isinstance(stmt, ast.With):
+                continue
+            for item in stmt.items:
+                call = item.context_expr
+                if not isinstance(call, ast.Call) or _last(call.func) != "raises":
+                    continue
+                expected = _pytest_raises_expected_exceptions(call)
+                if expected & _BROAD_EXC:
+                    offenders.add(fn.name)
+    return sorted(offenders)
+
+
 def _count_asserts(tree) -> int:
     return sum(isinstance(n, ast.Assert) for n in ast.walk(tree))
 
@@ -1769,3 +1886,4 @@ def _count_tests(tree) -> int:
         isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test")
         for n in ast.walk(tree)
     )
+

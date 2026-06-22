@@ -57,6 +57,7 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
         goal,
         draft,
         source_context=ctx.source_context_text,
+        context_completeness=ctx.context_completeness,
     )
     gen: GenerationOutput | None = None
     violations: list[str] = []
@@ -76,6 +77,7 @@ def do_generate(ctx, attempt, analysis, scope, goal, item, target_path, *, previ
             allowed_request_fields=_model_field_names(analysis, draft),
             allowed_fixtures=_fixture_names(analysis),
             source_context=ctx.source_context_text,
+            target_signature=_target_signature(analysis, draft),
         )
         if not violations:
             break
@@ -427,6 +429,16 @@ def _target_function_name(analysis, target_type: str | None, target_ref: str | N
     if target_type == "route":
         route = next((_route for _route in getattr(analysis, "routes", []) or [] if _route_matches(_route, ref)), None)
         return getattr(route, "handler", None) if route is not None else None
+    return None
+
+
+def _target_signature(analysis, item) -> str | None:
+    fn_name = _target_function_name(analysis, getattr(item, "target_type", None), getattr(item, "target_ref", None))
+    if not fn_name:
+        return None
+    for fn in getattr(analysis, "functions", []) or []:
+        if getattr(fn, "name", None) == fn_name:
+            return getattr(fn, "signature", None)
     return None
 
 

@@ -1,6 +1,8 @@
 # Plan-and-Execute：先让 LLM 把目标拆成多个任务，每个任务各生成各执行。不反思。
 from __future__ import annotations
 
+import re
+
 from app.agents import prompts
 from app.agents.runtime import AgentContext, PlanInput
 from app.agents.strategies import common
@@ -71,6 +73,9 @@ def _canonical_function_ref(ref: str, analysis: AnalyzeProjectOutput) -> str | N
     for fn in analysis.functions:
         if wanted == fn.name or wanted == _signature_name(fn.signature):
             return fn.name
+    for fn in sorted(analysis.functions, key=lambda item: len(item.name), reverse=True):
+        if _contains_symbol_ref(ref, fn.name):
+            return fn.name
     return None
 
 
@@ -102,3 +107,9 @@ def _split_route_ref(ref: str) -> tuple[str | None, str | None]:
 
 def _signature_name(signature: str) -> str:
     return signature.split("(", 1)[0].strip()
+
+
+def _contains_symbol_ref(value: str, symbol: str) -> bool:
+    if not symbol:
+        return False
+    return re.search(rf"(?<!\w){re.escape(symbol)}(?!\w)", value, flags=re.IGNORECASE) is not None

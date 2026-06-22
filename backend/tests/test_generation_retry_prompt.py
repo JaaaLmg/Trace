@@ -16,6 +16,7 @@ def test_generation_retry_fix_hints_cover_common_real_api_contract_rejections():
             "路由测试请求路径不匹配目标路由：test_price",
             "test_price 的目标绑定不匹配 plan item：route:GET /price/{item}",
             "异常类型与目标源码不一致：test_validate",
+            "生成测试无法解析为 Python：invalid syntax. Perhaps you forgot a comma? (<unknown>, line 46)",
         ]
     )
 
@@ -27,6 +28,8 @@ def test_generation_retry_fix_hints_cover_common_real_api_contract_rejections():
     assert "method/path" in joined
     assert "target_route" in joined
     assert "pytest.raises" in joined
+    assert "ast.parse" in joined
+    assert "JSON 示例" in joined
 
 
 def test_generate_retry_message_keeps_previous_content_and_output_invariants():

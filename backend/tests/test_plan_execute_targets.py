@@ -58,3 +58,23 @@ def test_plan_execute_normalizes_qualified_function_to_name():
     normalized = _normalize_plan_items(items, analysis)
 
     assert normalized[0].target_ref == "apply_discount"
+
+
+def test_plan_execute_strips_scenario_words_from_function_target_ref():
+    analysis = AnalyzeProjectOutput(
+        functions=[FunctionInfo(name="repair_json", signature="repair_json(json_str, strict=False)", file="pkg/repair.py")]
+    )
+    items = [
+        PlanItemDraft(
+            index=0,
+            target_type="function",
+            target_ref="repair_json strict mode",
+            goal="覆盖 strict mode 的异常路径",
+            planned_assertions=["strict duplicate keys raise"],
+        )
+    ]
+
+    normalized = _normalize_plan_items(items, analysis)
+
+    assert normalized[0].target_ref == "repair_json"
+    assert normalized[0].goal == "覆盖 strict mode 的异常路径"

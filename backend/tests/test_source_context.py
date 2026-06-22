@@ -66,6 +66,79 @@ def test_slices_target_function_not_whole_file(tmp_path):
     assert "def helper" in bundle.source_context_text
 
 
+def test_file_path_scope_expands_to_symbol_slices_instead_of_whole_file(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "parser.py").write_text(
+        "NOISE = '" + ("x" * 10000) + "'\n"
+        "\n"
+        "def parse(value):\n"
+        "    return value.strip()\n"
+        "\n"
+        "def _private_helper():\n"
+        "    return NOISE\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["pkg/parser.py"]))
+
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["pkg/parser.py"],
+        analysis,
+        max_file_bytes=100,
+        max_total_bytes=200,
+        max_dependency_snippets=0,
+        max_reference_snippets=0,
+    )
+
+    assert bundle.context_completeness.status == "complete"
+    assert "def parse" in bundle.source_context_text
+    assert "NOISE" not in bundle.source_context_text
+    assert "_private_helper" not in bundle.source_context_text
+    assert bundle.snippets[0].target == "pkg/parser.py::parse"
+
+
+def test_file_path_scope_prefers_symbol_matching_file_stem_tokens(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "json_repair.py").write_text(
+        "def repair_json(value):\n"
+        "    return value\n"
+        "\n"
+        "def loads(value):\n"
+        "    return value\n",
+        encoding="utf-8",
+    )
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["pkg/json_repair.py"]))
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["pkg/json_repair.py"], analysis)
+
+    assert "def repair_json" in bundle.source_context_text
+    assert "def loads" not in bundle.source_context_text
+    assert [snippet.symbol for snippet in bundle.snippets if snippet.source_kind == "target_source"] == ["repair_json"]
+
+
+def test_symbol_slice_prefers_non_overload_implementation(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "api.py").write_text(
+        "from typing import overload\n"
+        "\n"
+        "@overload\n"
+        "def parse(value: str) -> str: ...\n"
+        "\n"
+        "@overload\n"
+        "def parse(value: bytes) -> bytes: ...\n"
+        "\n"
+        "def parse(value):\n"
+        "    return 'impl'\n",
+        encoding="utf-8",
+    )
+    analysis = AnalyzeProjectOutput(functions=[FunctionInfo(name="parse", signature="parse(value)", file="pkg/api.py")])
+
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["parse"], analysis)
+
+    assert "return 'impl'" in bundle.source_context_text
+    assert "-> str: ..." not in bundle.source_context_text
+
+
 def test_slices_module_constant_used_by_target_function(tmp_path):
     (tmp_path / "shop").mkdir()
     (tmp_path / "shop" / "api.py").write_text(
@@ -674,6 +747,100 @@ def test_source_context_includes_fixture_and_existing_test_evidence(tmp_path):
     assert "existing_test:tests/test_pricing.py::test_existing_pricing_case" in refs
     assert "def client" in bundle.source_context_text
     assert "def test_existing_pricing_case" in bundle.source_context_text
+
+
+def test_source_path_scope_scans_existing_tests_as_support_context(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+    (tmp_path / "tests" / "test_pricing.py").write_text(
+        "from shop.pricing import target_fn\n"
+        "\n"
+        "def test_existing_pricing_case():\n"
+        "    assert target_fn(2, 3) == 7\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["shop/pricing.py"]))
+    bundle = build_source_context_bundle(_ctx(tmp_path), ["shop/pricing.py"], analysis)
+
+    assert analysis.existing_tests
+    assert bundle.context_completeness.status == "complete"
+    assert "def target_fn" in bundle.source_context_text
+    assert "def test_existing_pricing_case" in bundle.source_context_text
+    assert any(snippet.source_kind == "existing_test" for snippet in bundle.snippets)
+
+
+def test_existing_test_support_prioritizes_target_references_for_source_path_scope(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "shop" / "pricing.py").write_text(_SAMPLE, encoding="utf-8")
+    (tmp_path / "tests" / "test_a_unrelated.py").write_text(
+        "def test_unrelated_case():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_z_pricing_errors.py").write_text(
+        "import pytest\n"
+        "from shop.pricing import target_fn\n"
+        "\n"
+        "def test_target_fn_rejects_negative():\n"
+        "    with pytest.raises(ValueError):\n"
+        "        target_fn(-1, 2)\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["shop/pricing.py"]))
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["shop/pricing.py"],
+        analysis,
+        max_support_snippets=1,
+    )
+
+    assert "def test_target_fn_rejects_negative" in bundle.source_context_text
+    assert "def test_unrelated_case" not in bundle.source_context_text
+
+
+def test_existing_test_support_prioritizes_strict_exception_oracles(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pkg" / "repair.py").write_text(
+        "def repair_json(value, *, strict=False):\n"
+        "    if strict and value == 'bad':\n"
+        "        raise ValueError('bad')\n"
+        "    return value\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_a_repair.py").write_text(
+        "from pkg.repair import repair_json\n"
+        "\n"
+        "def test_repair_json_basic():\n"
+        "    assert repair_json('ok') == 'ok'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_z_strict_mode.py").write_text(
+        "import pytest\n"
+        "from pkg.repair import repair_json\n"
+        "\n"
+        "def test_strict_rejects_bad_value():\n"
+        "    with pytest.raises(ValueError, match='bad'):\n"
+        "        repair_json('bad', strict=True)\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(_ctx(tmp_path), AnalyzeProjectInput(target_scope=["pkg/repair.py"]))
+    bundle = build_source_context_bundle(
+        _ctx(tmp_path),
+        ["pkg/repair.py"],
+        analysis,
+        max_support_snippets=1,
+        max_dependency_snippets=0,
+        max_reference_snippets=0,
+    )
+
+    assert "def test_strict_rejects_bad_value" in bundle.source_context_text
+    assert "def test_repair_json_basic" not in bundle.source_context_text
 
 
 def test_source_context_includes_lsp_reference_evidence(tmp_path):

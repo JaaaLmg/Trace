@@ -31,6 +31,8 @@ def analyze_project(ctx: ToolContext, inp: AnalyzeProjectInput) -> AnalyzeProjec
 
     for f in _collect_py_files(scopes):
         rel = ctx.relpath(f)
+        if _is_generated_test_artifact(rel, ctx):
+            continue
         try:
             tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
         except SyntaxError as e:
@@ -58,6 +60,7 @@ def _analysis_scopes(ctx: ToolContext, target_scope: list[str]) -> tuple[list[Pa
         return [ctx.root], []
 
     scopes: list[Path] = []
+    has_source_path_scope = False
     needs_project_scan = False
     warnings: list[str] = []
     for raw in target_scope:
@@ -68,6 +71,8 @@ def _analysis_scopes(ctx: ToolContext, target_scope: list[str]) -> tuple[list[Pa
         if path_candidate is None:
             needs_project_scan = True
             continue
+        if not _is_test_path_scope(path_candidate):
+            has_source_path_scope = True
         try:
             scopes.append(ctx.resolve_read(path_candidate))
         except Exception as exc:
@@ -75,6 +80,8 @@ def _analysis_scopes(ctx: ToolContext, target_scope: list[str]) -> tuple[list[Pa
 
     if needs_project_scan:
         scopes.insert(0, ctx.root)
+    elif has_source_path_scope:
+        scopes.extend(_test_support_scopes(ctx))
     deduped = list(dict.fromkeys(scopes))
     return (deduped or [ctx.root]), warnings
 
@@ -90,6 +97,35 @@ def _path_scope_from_target(norm: str) -> str | None:
     if "/" in norm and not norm.startswith("/"):
         return norm
     return None
+
+
+def _is_test_path_scope(rel: str) -> bool:
+    norm = rel.replace("\\", "/").strip("/")
+    name = norm.rsplit("/", 1)[-1]
+    return (
+        norm in {"tests", "test"}
+        or norm.startswith("tests/")
+        or norm.startswith("test/")
+        or "/tests/" in norm
+        or "/test/" in norm
+        or name == "conftest.py"
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+    )
+
+
+def _test_support_scopes(ctx: ToolContext) -> list[Path]:
+    scopes: list[Path] = []
+    for dirname in ("tests", "test"):
+        candidate = ctx.root / dirname
+        if candidate.exists():
+            scopes.append(candidate)
+    conftest = ctx.root / "conftest.py"
+    if conftest.exists():
+        scopes.append(conftest)
+    for pattern in ("test_*.py", "*_test.py"):
+        scopes.extend(sorted(ctx.root.glob(pattern)))
+    return scopes
 
 
 def _collect_py_files(scopes: list[Path]) -> list[Path]:
@@ -114,6 +150,15 @@ def _is_test_file(rel: str) -> bool:
         or name.startswith("test_")
         or name.endswith("_test.py")
     )
+
+
+def _is_generated_test_artifact(rel: str, ctx: ToolContext) -> bool:
+    norm = rel.replace("\\", "/").strip("/")
+    candidates = {"tests/generated", "test/generated"}
+    generated_dir = ctx.relpath(ctx.test_write_dir).replace("\\", "/").strip("/")
+    if generated_dir and (generated_dir == "generated" or generated_dir.endswith("/generated")):
+        candidates.add(generated_dir)
+    return any(norm == candidate or norm.startswith(candidate + "/") for candidate in candidates)
 
 
 def _signature(node) -> str:

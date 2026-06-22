@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.agents.llm import Message
 from app.schemas.agent import PlanItemDraft
+from app.schemas.evaluation import ContextCompletenessEvidence
 from app.schemas.strategy import StrategyVersionSpec
 from app.schemas.tools import AnalyzeProjectOutput, RunPytestOutput
 
@@ -53,6 +54,31 @@ def summarize_analysis(analysis: AnalyzeProjectOutput, limit: int = 40) -> str:
     return "\n".join(lines) or "（分析未发现可测对象）"
 
 
+def summarize_context_completeness(context: ContextCompletenessEvidence | None, limit: int = 8) -> str:
+    if context is None:
+        return "上下文完整性：\n  - status: unknown\n  - context_incomplete: true"
+
+    lines = [
+        "上下文完整性：",
+        f"  - status: {context.status}",
+        f"  - context_incomplete: {str(context.context_incomplete).lower()}",
+    ]
+    if context.missing_targets:
+        lines.append("  - missing_targets:")
+        for target in context.missing_targets[:limit]:
+            lines.append(f"    - {target}")
+    if context.risk_notes:
+        lines.append("  - risk_notes:")
+        for note in context.risk_notes[:limit]:
+            lines.append(f"    - {note}")
+    if context.context_incomplete:
+        lines.append(
+            "  - 生成要求：上下文不完整时，缺失或截断的源码不能当作 oracle 证据；"
+            "不要为不可见行为写 pytest.raises、精确异常消息或边界期望。"
+        )
+    return "\n".join(lines)
+
+
 _GEN_SCHEMA_HINT = (
     '返回 JSON：{"test_file_content":"完整 pytest 文件源码字符串",'
     '"cases":[{"test_name":"test_xxx","target_route":null,"target_function":"fn","assertion_summary":"断言要点"}],'
@@ -64,8 +90,13 @@ GEN_PREFIX = "生成一个 pytest 测试文件。"
 
 GEN_CONTRACT = """生成硬约束（违反会被 PIPELINE_REJECT）：
 - 每个检查必须写成 assert 或 pytest.raises；不要写裸表达式，例如 response.json()["total"] == 270.0。
+- 不要写 `pytest.raises(Exception/BaseException)`；异常 oracle 必须是源码或已有测试能证明的具体异常类型。
 - 成功路由测试不能只断言 2xx status_code，必须断言响应 JSON 的业务字段和值。
 - 边界/负数/阈值/异常路径的预期必须来自目标源码片段；源码没有 raise 证据时不要写 pytest.raises。
+- `pytest.raises(..., match=...)` 的 match 必须来自同一输入的源码 raise 或已有测试证据；只有相似场景、相似错误类型时不要写精确异常消息。
+- 单次生成保持紧凑：优先 4-8 个高价值测试函数，最多 12 个；不要枚举大量同质输入。
+- 若目标函数签名第一个参数是 self/cls，它是内部方法：不要把它当自由函数调用，不要猜测构造内部类；优先通过已有测试或公开 API 间接触达该行为。
+- 不要从包根导入未在项目分析/已有测试/源码片段中证明可导出的内部类；只有看见类定义和 __init__ 调用证据时才允许手动构造对象。
 - 对 `/x/{param}` 这类 path 参数路由，不要把 `/x/` 空 path 段当成 `param=""` 的 handler 业务用例。
 - 不要给测试函数添加未知参数；只能使用 pytest 内置 fixture（如 monkeypatch/tmp_path）或项目分析中列出的 fixture。没有 `client` fixture 证据时，FastAPI 路由测试应在测试内构造 `TestClient(app)`，不要把 `client` 写成函数参数。
 - 使用 unittest.mock.patch(..., new_value) 时不要额外声明 mock 参数；可优先使用 pytest 内置 monkeypatch。
@@ -97,6 +128,8 @@ def generation_retry_fix_hints(violations: list[str]) -> list[str]:
 
 
 def _generation_retry_fix_hint(violation: str) -> str | None:
+    if "无法解析为 Python" in violation or "invalid syntax" in violation:
+        return "先修 Python 语法：检查括号、逗号和字符串引号；JSON 示例优先写成单引号包裹的 Python 字符串（如 '{\"key\": \"value\"}'），内部换行用 \\n 或三引号，确保 test_file_content 可被 ast.parse。"
     if "真实测试函数缺少 cases 声明" in violation or "cases 声明未对应真实测试函数" in violation:
         return "修正 cases 映射：逐个读取 test_file_content 中的真实 pytest 函数名，并让 cases[*].test_name 与函数名完全一致；参数化测试使用基础函数名即可。"
     if "缺少 assertion_summary" in violation:
@@ -113,6 +146,12 @@ def _generation_retry_fix_hint(violation: str) -> str | None:
         return "修正 TestClient 请求 method/path，使其与 target_route 或 plan item 的 method/path 一致。"
     if "空 path 参数" in violation:
         return "不要用空 path 段测试 path 参数；选择源码常量或 fixture 证据中的有效 path 参数值。"
+    if "内部方法不能当自由函数调用" in violation:
+        return "目标签名含 self/cls 时，不要直接调用该函数名；改用已有测试或源码片段中出现的公开 API 间接覆盖该内部方法，并保持 cases 的 target_function 绑定本次目标。"
+    if "构造类缺少可调用性证据" in violation:
+        return "删除无证据的内部类构造；不要从包根导入未证明导出的类。若源码片段没有类定义和 __init__ 签名，优先使用已有测试中出现的 public API。"
+    if "宽泛异常" in violation:
+        return "不要使用 pytest.raises(Exception/BaseException)；改成源码或已有测试能证明的具体异常类型。若没有具体异常证据，删除异常 oracle。"
     if "没有可见 raise 证据" in violation or "异常类型" in violation or "异常消息" in violation:
         return "异常 oracle 必须来自目标源码片段中的 raise 语句；没有 raise 证据时改测返回值或状态，不要写 pytest.raises。"
     if "源码行为" in violation or "路由响应 oracle" in violation or "响应模型字段" in violation:
@@ -125,7 +164,10 @@ def _generation_retry_fix_hint(violation: str) -> str | None:
 
 PLAN_INSTRUCTION = (
     '把目标拆成若干测试任务，返回 JSON：'
-    '{"items":[{"index":0,"target_type":"function|route|module","target_ref":"标识","goal":"该任务测什么","planned_assertions":["..."]}]}'
+    '{"items":[{"index":0,"target_type":"function|route|module","target_ref":"标识","goal":"该任务测什么","planned_assertions":["..."]}]}。'
+    '最多 4 个 items，优先选择覆盖面最大、oracle 最明确的任务；'
+    'target_ref 必须是项目分析中出现的精确函数名、路由（METHOD path）或模块/文件标识；'
+    '不要把 strict mode、边界条件、场景描述拼进 target_ref，这些细节放进 goal/planned_assertions。'
 )
 
 REFLECT_JSON_TAIL = (
@@ -170,17 +212,53 @@ def build_generate_messages(
     goal: str,
     item: PlanItemDraft | None,
     source_context: str = "",
+    context_completeness: ContextCompletenessEvidence | None = None,
 ) -> list[Message]:
     focus = f"\n本次聚焦任务：{item.goal}（target={item.target_type}:{item.target_ref}）" if item else ""
+    callable_guidance = _callable_guidance(analysis, item)
+    callable_block = f"\n可调用性约束：\n{callable_guidance}\n" if callable_guidance else ""
     source_block = f"\n目标源码片段：\n{source_context}\n" if source_context else "\n目标源码片段：\ncontext_incomplete\n"
+    context_block = summarize_context_completeness(context_completeness)
     user = (
         f"TASK: GENERATE\n总目标：{goal}\n范围：{scope or '整个项目'}{focus}\n\n"
         f"项目分析：\n{summarize_analysis(analysis)}\n\n"
+        f"{callable_block}"
         f"{source_block}\n"
+        f"{context_block}\n\n"
         f"{GEN_CONTRACT}\n"
         f"{GEN_PREFIX}{_GEN_SCHEMA_HINT}"
     )
     return [Message("system", build_system_prompt(strategy)), Message("user", user)]
+
+
+def _callable_guidance(analysis: AnalyzeProjectOutput, item: PlanItemDraft | None) -> str:
+    if item is None or item.target_type != "function":
+        return ""
+    target = item.target_ref.rsplit(".", 1)[-1]
+    for fn in analysis.functions:
+        if fn.name != target and fn.signature.split("(", 1)[0].strip() != target:
+            continue
+        lines = [f"- 目标签名：{fn.signature}（file={fn.file}）"]
+        if _signature_first_param(fn.signature) in {"self", "cls"}:
+            lines.append(
+                "- 这是绑定到对象/类的内部方法；不要把它当自由函数调用，"
+                "也不要猜测内部类构造参数。若上下文没有完整类定义和 __init__，"
+                "应通过已有测试或公开 API 间接触达该行为。"
+            )
+        else:
+            lines.append("- 只按签名中可见参数调用；不要新增签名外参数或无证据 fixture。")
+        return "\n".join(lines)
+    return ""
+
+
+def _signature_first_param(signature: str) -> str | None:
+    if "(" not in signature or ")" not in signature:
+        return None
+    params = signature.split("(", 1)[1].split(")", 1)[0].strip()
+    if not params:
+        return None
+    first = params.split(",", 1)[0].strip()
+    return first.split(":", 1)[0].split("=", 1)[0].strip()
 
 
 def build_reflect_messages(

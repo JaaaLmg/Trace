@@ -95,6 +95,26 @@ def test_analyze_existing_tests_nodeid(tmp_path):
     assert "tests/test_x.py::test_foo" in nodeids
 
 
+def test_analyze_excludes_trace_generated_tests_from_existing_oracles(tmp_path):
+    generated = tmp_path / "tests" / "generated"
+    generated.mkdir(parents=True)
+    (tmp_path / "tests" / "test_real.py").write_text(
+        "def test_real():\n    assert True\n", encoding="utf-8"
+    )
+    (generated / "test_old_trace_output.py").write_text(
+        "def test_bad_oracle():\n    assert False\n", encoding="utf-8"
+    )
+
+    ctx = ToolContext(root=tmp_path, test_write_dir=generated)
+    out = analyze_project(ctx, AnalyzeProjectInput())
+
+    paths = {item.path for item in out.existing_tests}
+    file_paths = {item.path for item in out.files}
+    assert "tests/test_real.py" in paths
+    assert "tests/generated/test_old_trace_output.py" not in paths
+    assert "tests/generated/test_old_trace_output.py" not in file_paths
+
+
 def test_analyze_warns_on_syntax_error(tmp_path):
     (tmp_path / "broken.py").write_text("def (:\n", encoding="utf-8")
     out = analyze_project(_ctx(tmp_path), AnalyzeProjectInput())

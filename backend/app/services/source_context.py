@@ -118,6 +118,7 @@ def build_source_context_bundle(
     analysis: AnalyzeProjectOutput | None = None,
     *,
     max_file_bytes: int = 24000,
+    max_symbol_lookup_bytes: int = 256000,
     max_total_bytes: int = 48000,
     max_snippets: int = 12,
     max_support_snippets: int = 4,
@@ -185,7 +186,8 @@ def build_source_context_bundle(
             continue
         seen.add(key)
         try:
-            out = read_file(ctx, ReadFileInput(path=target.rel_path, max_bytes=max_file_bytes))
+            read_limit = max_symbol_lookup_bytes if target.symbol else max_file_bytes
+            out = read_file(ctx, ReadFileInput(path=target.rel_path, max_bytes=read_limit))
         except Exception:
             missing_targets.append(target.raw)
             retrieval_trace.append(
@@ -332,6 +334,13 @@ def build_source_context_bundle(
     )
 
     if analysis is not None and max_support_snippets > 0:
+        target_source_paths = {
+            target.rel_path
+            for target in targets[:max_snippets]
+            if target.source_kind in {"target_source", "fallback_file"}
+        }
+        target_symbols = _analysis_symbols_for_paths(analysis, target_source_paths)
+        target_symbols.update(target.symbol for target in targets[:max_snippets] if target.symbol)
         total_bytes = _append_support_context(
             ctx,
             analysis,
@@ -340,8 +349,11 @@ def build_source_context_bundle(
             seen,
             total_bytes,
             max_file_bytes=max_file_bytes,
+            max_symbol_lookup_bytes=max_symbol_lookup_bytes,
             max_total_bytes=max_total_bytes,
             max_support_snippets=max_support_snippets,
+            target_source_paths=target_source_paths,
+            target_symbols=target_symbols,
             risk_notes=risk_notes,
             retrieval_trace=retrieval_trace,
         )
@@ -425,6 +437,11 @@ def _resolve_targets(
     unresolved: list[str] = []
     retrieval_trace: list[SourceContextRetrievalTrace] = []
     for raw in target_scope:
+        expanded = _expand_file_scope_targets(ctx, str(raw), analysis)
+        if expanded:
+            targets.extend(expanded)
+            continue
+
         target = _resolve_one(ctx, str(raw), analysis)
         if target is not None:
             targets.append(target)
@@ -464,6 +481,45 @@ def _resolve_targets(
             retrieval_trace.extend(fallback_trace)
             unresolved.append(str(raw))
     return targets, unresolved, retrieval_trace
+
+
+def _expand_file_scope_targets(ctx: ToolContext, raw: str, analysis: AnalyzeProjectOutput | None) -> list[_Target]:
+    if analysis is None:
+        return []
+    norm = raw.replace("\\", "/").strip()
+    if not norm.endswith(".py") or "::" in norm or ":" in norm:
+        return []
+    if _looks_like_route_target(norm):
+        return []
+    try:
+        if not ctx.resolve_read(norm).is_file():
+            return []
+    except Exception:
+        return []
+
+    symbols = _analysis_symbols_for_paths(analysis, {norm})
+    if not symbols:
+        return []
+
+    public = [symbol for symbol in symbols if not symbol.startswith("_")]
+    stem = Path(norm).stem
+    stem_match = _file_stem_symbol_match(stem, public)
+    if stem_match is not None:
+        selected = [stem_match]
+    else:
+        selected = public or list(symbols)
+    ordered = _analysis_symbols_in_file_order(analysis, norm, selected)
+    return [
+        _Target(
+            raw=f"{raw}::{symbol}",
+            rel_path=norm,
+            symbol=symbol,
+            source_kind="target_source",
+            retrieval_source="analysis_ast",
+            confidence=0.9 if symbol in public else 0.75,
+        )
+        for symbol in ordered
+    ]
 
 
 def _resolve_one(ctx: ToolContext, raw: str, analysis: AnalyzeProjectOutput | None) -> _Target | None:
@@ -709,6 +765,53 @@ def _analysis_match(analysis: AnalyzeProjectOutput, target: str) -> _AnalysisMat
     return None
 
 
+def _analysis_symbols_for_paths(analysis: AnalyzeProjectOutput, source_paths: set[str]) -> set[str]:
+    if not source_paths:
+        return set()
+    normalized = {path.replace("\\", "/") for path in source_paths}
+    symbols: set[str] = set()
+    for route in analysis.routes:
+        if route.file.replace("\\", "/") in normalized:
+            symbols.add(route.handler)
+    for fn in analysis.functions:
+        if fn.file.replace("\\", "/") in normalized:
+            symbols.add(fn.name)
+    for model in analysis.models:
+        if model.file.replace("\\", "/") in normalized:
+            symbols.add(model.name)
+    return symbols
+
+
+def _analysis_symbols_in_file_order(analysis: AnalyzeProjectOutput, rel_path: str, allowed: list[str]) -> list[str]:
+    normalized = rel_path.replace("\\", "/")
+    allowed_set = set(allowed)
+    ordered: list[str] = []
+
+    def add(symbol: str, file: str) -> None:
+        if file.replace("\\", "/") == normalized and symbol in allowed_set and symbol not in ordered:
+            ordered.append(symbol)
+
+    for route in analysis.routes:
+        add(route.handler, route.file)
+    for fn in analysis.functions:
+        add(fn.name, fn.file)
+    for model in analysis.models:
+        add(model.name, model.file)
+    return ordered or sorted(allowed)
+
+
+def _file_stem_symbol_match(stem: str, symbols: list[str]) -> str | None:
+    if stem in symbols:
+        return stem
+    stem_tokens = set(stem.split("_"))
+    if not stem_tokens:
+        return None
+    for symbol in symbols:
+        if set(symbol.split("_")) == stem_tokens:
+            return symbol
+    return None
+
+
 
 def _rank_ast_grep_matches(ctx: ToolContext, matches: list[AstGrepMatch]) -> list[AstGrepMatch]:
     generated_tests_dir = ctx.relpath(ctx.test_write_dir)
@@ -818,19 +921,36 @@ def _slice_symbol(content: str, symbol: str) -> tuple[int, int, str] | None:
     except SyntaxError:
         return None
     lines = content.splitlines()
+    candidates: list[ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == short:
-            start = getattr(node, "lineno", None)
-            end = getattr(node, "end_lineno", None)
-            if not start or not end:
-                return None
-            # 把紧贴定义上方的装饰器也带上（路由 handler 的 @router.get 很关键）。
-            decorators = getattr(node, "decorator_list", [])
-            if decorators:
-                start = min(start, min(d.lineno for d in decorators))
-            segment = "\n".join(lines[start - 1 : end])
-            return start, end, segment
-    return None
+            candidates.append(node)
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda node: getattr(node, "lineno", 0))
+    selected = next((node for node in candidates if not _is_overload_definition(node)), candidates[0])
+    start = getattr(selected, "lineno", None)
+    end = getattr(selected, "end_lineno", None)
+    if not start or not end:
+        return None
+    # 把紧贴定义上方的装饰器也带上（路由 handler 的 @router.get 很关键）。
+    decorators = getattr(selected, "decorator_list", [])
+    if decorators:
+        start = min(start, min(d.lineno for d in decorators))
+    segment = "\n".join(lines[start - 1 : end])
+    return start, end, segment
+
+
+def _is_overload_definition(node: ast.AST) -> bool:
+    decorators = getattr(node, "decorator_list", [])
+    for decorator in decorators:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Name) and target.id == "overload":
+            return True
+        if isinstance(target, ast.Attribute) and target.attr == "overload":
+            return True
+    return False
 
 
 def _append_direct_dependencies(
@@ -1105,12 +1225,25 @@ def _append_support_context(
     total_bytes: int,
     *,
     max_file_bytes: int,
+    max_symbol_lookup_bytes: int,
     max_total_bytes: int,
     max_support_snippets: int,
+    target_source_paths: set[str],
+    target_symbols: set[str],
     risk_notes: list[str],
     retrieval_trace: list[SourceContextRetrievalTrace],
 ) -> int:
-    support, duplicate_support = _dedupe_support_targets(_sort_targets(_support_targets(ctx, analysis)), seen)
+    support, duplicate_support = _dedupe_support_targets(
+        _sort_targets(
+            _support_targets(
+                ctx,
+                analysis,
+                target_source_paths=target_source_paths,
+                target_symbols=target_symbols,
+            )
+        ),
+        seen,
+    )
     for target, kept in duplicate_support:
         retrieval_trace.append(
             _trace(
@@ -1146,7 +1279,7 @@ def _append_support_context(
             continue
         seen.add(key)
         try:
-            out = read_file(ctx, ReadFileInput(path=target.rel_path, max_bytes=max_file_bytes))
+            out = read_file(ctx, ReadFileInput(path=target.rel_path, max_bytes=max_symbol_lookup_bytes))
         except Exception:
             risk_notes.append(f"support context unavailable: {target.raw}")
             retrieval_trace.append(
