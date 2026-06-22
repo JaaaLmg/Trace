@@ -1,3 +1,15 @@
+name: trace
+
+x-backend-environment: &backend-environment
+  TRACE_DB_URL: postgresql+psycopg://postgres:postgres@postgres:5432/trace_test
+  TRACE_REDIS_URL: redis://redis:6379/0
+  TRACE_API_HOST: 0.0.0.0
+  TRACE_API_PORT: "8000"
+  TRACE_LLM_PROVIDER: ${TRACE_LLM_PROVIDER:-mock}
+  TRACE_LLM_MODEL: ${TRACE_LLM_MODEL:-mock-1}
+  TRACE_LLM_API_KEY: ${TRACE_LLM_API_KEY:-}
+  TRACE_LLM_BASE_URL: ${TRACE_LLM_BASE_URL:-}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -29,6 +41,73 @@ services:
       timeout: 3s
       retries: 10
 
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: trace-backend:local
+    container_name: trace-api
+    environment:
+      <<: *backend-environment
+    ports:
+      - "8000:8000"
+    volumes:
+      - trace_experiment_work:/app/.pytest_tmp_experiments
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: trace-backend:local
+    container_name: trace-worker
+    command: ["worker"]
+    environment:
+      <<: *backend-environment
+    volumes:
+      - trace_experiment_work:/app/.pytest_tmp_experiments
+    depends_on:
+      api:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    image: trace-frontend:local
+    container_name: trace-frontend
+    ports:
+      - "5186:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
 volumes:
   trace_postgres_data:
+    name: trace_postgres_data
   trace_redis_data:
+    name: trace_redis_data
+  trace_experiment_work:
+    name: trace_experiment_work

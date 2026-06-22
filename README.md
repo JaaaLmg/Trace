@@ -37,7 +37,35 @@ TRACE 关注三个问题：
 - Test/Eval：pytest, seeded bug evaluation
 - LLM：OpenAI Responses API 或 OpenAI Chat Completions 兼容接口
 
-## 快速开始
+## Docker Compose 一键运行
+
+推荐交付方式是 Docker Compose。它会启动 PostgreSQL、Redis、Backend API、Worker 和前端，并自动初始化 demo benchmark：
+
+```powershell
+docker compose up --build
+```
+
+启动后打开：
+
+```text
+http://127.0.0.1:5186
+```
+
+Smoke 检查：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/compose_smoke.ps1
+```
+
+完整 Worker / evaluation smoke：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/compose_smoke.ps1 -RunExperiment
+```
+
+详细说明见 `docs/Docker交付运行说明.md`。
+
+## 本地开发快速开始
 
 建议使用 Python 3.11、Node.js 18+ 和 Docker。
 
@@ -53,7 +81,7 @@ pip install -r backend/requirements.txt
 
 ```powershell
 cd D:\GitRepo\专业实训\TRACE
-docker compose up -d
+docker compose up -d postgres redis
 ```
 
 复制本地环境配置：
@@ -84,7 +112,14 @@ python scripts/seed_eval_demo.py
 
 ## 配置真实 LLM
 
-普通 API run 默认从 `backend/llm.config.json` 读取模型配置。可以从示例文件复制：
+Docker Compose 交付模式读取仓库根目录 `.env`。复制 `.env.example` 为 `.env`，填写 `TRACE_LLM_PROVIDER`、`TRACE_LLM_MODEL`、`TRACE_LLM_API_KEY` 和 `TRACE_LLM_BASE_URL`，然后重建 API / Worker：
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+docker compose up -d --force-recreate api worker
+```
+
+本地直接运行后端时，普通 API run 也可以从 `backend/llm.config.json` 读取模型配置。可以从示例文件复制：
 
 ```powershell
 cd D:\GitRepo\专业实训\TRACE\backend
@@ -104,7 +139,7 @@ Copy-Item llm.config.example.json llm.config.json
 }
 ```
 
-也可以通过环境变量配置：
+也可以通过当前 shell 的环境变量配置：
 
 ```powershell
 $env:TRACE_LLM_PROVIDER="openai"
@@ -122,7 +157,7 @@ $env:TRACE_LLM_API_KEY="你的兼容端点 key"
 $env:TRACE_LLM_BASE_URL="https://api.example.com/v1"
 ```
 
-`backend/llm.config.json` 已被 Git 忽略，不要提交真实 API key。
+`.env`、`.env.local` 和 `backend/llm.config.json` 都已被 Git 忽略，不要提交真实 API key。
 
 ## 正式运行
 
