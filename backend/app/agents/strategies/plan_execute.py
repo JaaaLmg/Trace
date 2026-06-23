@@ -51,21 +51,33 @@ class PlanExecuteStrategy(Strategy):
 def _normalize_plan_items(items: list[PlanItemDraft], analysis: AnalyzeProjectOutput) -> list[PlanItemDraft]:
     normalized: list[PlanItemDraft] = []
     for item in items:
-        target_ref = _canonical_target_ref(item, analysis)
-        if target_ref == item.target_ref:
+        target_type, target_ref = _canonical_target(item, analysis)
+        if target_type == item.target_type and target_ref == item.target_ref:
             normalized.append(item)
         else:
-            normalized.append(item.model_copy(update={"target_ref": target_ref}))
+            normalized.append(item.model_copy(update={"target_type": target_type, "target_ref": target_ref}))
     return normalized
 
 
 def _canonical_target_ref(item: PlanItemDraft, analysis: AnalyzeProjectOutput) -> str:
+    return _canonical_target(item, analysis)[1]
+
+
+def _canonical_target(item: PlanItemDraft, analysis: AnalyzeProjectOutput) -> tuple[str, str]:
     ref = item.target_ref.strip()
     if item.target_type == "function":
-        return _canonical_function_ref(ref, analysis) or ref
+        function_ref = _canonical_function_ref(ref, analysis)
+        if function_ref:
+            return "function", function_ref
+        file_ref = _canonical_file_ref(ref, analysis)
+        if file_ref:
+            return "file", file_ref
+        return item.target_type, ref
     if item.target_type == "route":
-        return _canonical_route_ref(ref, analysis) or ref
-    return ref
+        return item.target_type, _canonical_route_ref(ref, analysis) or ref
+    if item.target_type in {"file", "module"}:
+        return item.target_type, _canonical_file_ref(ref, analysis) or ref
+    return item.target_type, ref
 
 
 def _canonical_function_ref(ref: str, analysis: AnalyzeProjectOutput) -> str | None:
@@ -98,8 +110,27 @@ def _canonical_route_ref(ref: str, analysis: AnalyzeProjectOutput) -> str | None
     return None
 
 
+def _canonical_file_ref(ref: str, analysis: AnalyzeProjectOutput) -> str | None:
+    normalized = ref.replace("\\", "/").strip()
+    if not normalized.endswith(".py"):
+        return None
+    known_files = {fn.file.replace("\\", "/") for fn in analysis.functions}
+    known_files.update(route.file.replace("\\", "/") for route in analysis.routes)
+    for file in sorted(known_files, key=len):
+        if normalized == file or normalized.endswith(f"/{file}") or file.endswith(f"/{normalized}"):
+            return file
+    return normalized
+
+
 def _split_route_ref(ref: str) -> tuple[str | None, str | None]:
-    parts = ref.strip().split(maxsplit=1)
+    normalized = ref.strip()
+    if normalized.lower().startswith("route:"):
+        normalized = normalized.split(":", 1)[1].strip()
+    if "::" in normalized:
+        normalized = normalized.rsplit("::", 1)[-1].strip()
+    if "->" in normalized:
+        normalized = normalized.split("->", 1)[0].strip()
+    parts = normalized.split(maxsplit=1)
     if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
         return parts[0].upper(), parts[1].strip()
     return None, None

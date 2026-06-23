@@ -55,28 +55,44 @@ def seed_strategy_versions(session: Session) -> None:
 
         prompt_payload = prompt_bundle(spec)
         prompt_version_id = _prompt_version_id_for(spec)
-        if get_prompt_version(session, prompt_version_id) is None:
+        prompt_hash = _hash_json(prompt_payload)
+        prompt_version = get_prompt_version(session, prompt_version_id)
+        if prompt_version is None:
             session.add(
                 PromptVersion(
                     id=prompt_version_id,
                     name=f"{spec.name} Prompt",
                     version="v1",
                     content=prompt_payload,
-                    content_hash=_hash_json(prompt_payload),
+                    content_hash=prompt_hash,
                     source_ref=spec.prompt_ref,
                 )
             )
+        elif prompt_version.content_hash != prompt_hash:
+            prompt_version.name = f"{spec.name} Prompt"
+            prompt_version.version = "v1"
+            prompt_version.content = prompt_payload
+            prompt_version.content_hash = prompt_hash
+            prompt_version.source_ref = spec.prompt_ref
+            session.add(prompt_version)
 
         tool_schema_id = _tool_schema_version_id_for(spec)
-        if get_tool_schema_version(session, tool_schema_id) is None:
+        tool_schema_hash = _hash_json(tool_schema_payload)
+        tool_schema_version = get_tool_schema_version(session, tool_schema_id)
+        if tool_schema_version is None:
             session.add(
                 ToolSchemaVersion(
                     id=tool_schema_id,
                     version="v1",
                     schema_json=tool_schema_payload,
-                    content_hash=_hash_json(tool_schema_payload),
+                    content_hash=tool_schema_hash,
                 )
             )
+        elif tool_schema_version.content_hash != tool_schema_hash:
+            tool_schema_version.version = "v1"
+            tool_schema_version.schema_json = tool_schema_payload
+            tool_schema_version.content_hash = tool_schema_hash
+            session.add(tool_schema_version)
 
         existing = get_strategy_version(session, spec.id)
         if existing is not None:

@@ -141,6 +141,9 @@ def check_generation_contract(
     shadowed_targets = _shadowed_target_definitions(tree, declared_by_name, target_type, target_ref)
     if shadowed_targets:
         violations.append("生成测试重新定义被测目标：" + ", ".join(shadowed_targets))
+    source_state_mutations = _source_state_mutations(tree)
+    if source_state_mutations:
+        violations.append("测试修改被测源码状态：" + ", ".join(source_state_mutations))
 
     if not declared_by_name:
         violations.append("生成测试缺少 cases 元数据声明")
@@ -213,12 +216,21 @@ def _target_matches(target_type: str | None, target_ref: str | None, target_func
     if not ref or ref == "all":
         return True
     if target_type == "function":
-        return target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
+        return _function_symbol(target_function) == _function_symbol(ref)
     if target_type == "route":
         route_ref = _route_path_without_method(ref)
         route_target = _route_path_without_method(target_route)
-        return route_target == route_ref or target_function.rsplit(".", 1)[-1] == ref.rsplit(".", 1)[-1]
+        return route_target == route_ref or _function_symbol(target_function) == _function_symbol(ref)
     return True
+
+
+def _function_symbol(value: str) -> str:
+    normalized = (value or "").strip()
+    if normalized.lower().startswith("function:"):
+        normalized = normalized.split(":", 1)[1].strip()
+    if "::" in normalized:
+        normalized = normalized.rsplit("::", 1)[-1].strip()
+    return normalized.rsplit(".", 1)[-1]
 
 
 def _bound_method_free_function_calls(
@@ -305,6 +317,10 @@ def _route_method_and_path(value: str) -> tuple[str | None, str]:
     normalized = value.strip()
     if normalized.lower().startswith("route:"):
         normalized = normalized.split(":", 1)[1].strip()
+    if "::" in normalized:
+        normalized = normalized.rsplit("::", 1)[-1].strip()
+    if "->" in normalized:
+        normalized = normalized.split("->", 1)[0].strip()
     parts = normalized.split(maxsplit=1)
     if len(parts) == 2 and parts[0].upper() in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
         return parts[0].lower(), parts[1].strip()
@@ -1697,6 +1713,60 @@ def _route_tests_with_request_fields(tree: ast.AST, declared_by_name: dict[str, 
             if _is_http_request_call(node) and any(kw.arg in _REQUEST_FIELD_PAYLOAD_KWARGS for kw in node.keywords):
                 offenders.add(fn.name)
     return sorted(offenders)
+
+
+def _source_state_mutations(tree: ast.AST) -> list[str]:
+    offenders: set[str] = set()
+    imported_modules = _imported_module_aliases(tree)
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            if _attr_chain(node.func) != "monkeypatch.setattr" or len(node.args) < 2:
+                continue
+            target = _monkeypatch_target_name(node, imported_modules)
+            if target and _looks_like_source_state_target(target):
+                offenders.add(f"{fn.name} -> {target}")
+    return sorted(offenders)
+
+
+def _imported_module_aliases(tree: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Import):
+            continue
+        for alias in node.names:
+            local = alias.asname or alias.name.rsplit(".", 1)[-1]
+            aliases[local] = alias.name
+    return aliases
+
+
+def _monkeypatch_target_name(node: ast.Call, imported_modules: dict[str, str]) -> str | None:
+    first = node.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+        base = _attr_chain(first)
+        if isinstance(first, ast.Name):
+            base = imported_modules.get(first.id, first.id)
+        if base:
+            return f"{base}.{node.args[1].value}"
+    return None
+
+
+def _looks_like_source_state_target(target: str) -> bool:
+    parts = [part for part in target.split(".") if part]
+    if not parts:
+        return False
+    name = parts[-1]
+    module = ".".join(parts[:-1])
+    if name.startswith("_"):
+        return True
+    if module and not module.startswith(("pytest", "unittest", "os", "sys")):
+        return True
+    return False
 
 
 def _is_http_request_call(node: ast.AST) -> bool:

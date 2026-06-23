@@ -124,6 +124,52 @@ def test_generation_contract_accepts_target_bound_assertion():
     assert violations == []
 
 
+def test_generation_contract_accepts_file_qualified_function_target_binding():
+    content = "def test_target():\n    assert apply_discount(100, True) == 90\n"
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_target",
+                "target_function": "apply_discount",
+                "assertion_summary": "验证会员折扣",
+            }
+        ],
+        target_type="function",
+        target_ref="shop/pricing.py::apply_discount",
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_accepts_multiple_functions_for_file_target():
+    content = (
+        "def test_can_withdraw_exact_balance():\n"
+        "    assert can_withdraw(100, 100) is True\n\n"
+        "def test_risk_tier_high_score():\n"
+        "    assert risk_tier(750) == 'low'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_can_withdraw_exact_balance",
+                "target_function": "can_withdraw",
+                "assertion_summary": "验证余额等于金额时允许取款",
+            },
+            {
+                "test_name": "test_risk_tier_high_score",
+                "target_function": "risk_tier",
+                "assertion_summary": "验证高分为低风险",
+            },
+        ],
+        target_type="file",
+        target_ref="accounts/policy.py",
+    )
+
+    assert violations == []
+
+
 def test_generation_contract_rejects_unknown_json_request_field():
     content = (
         "def test_create(client):\n"
@@ -446,6 +492,112 @@ def test_generation_contract_accepts_route_target_with_type_and_method_prefix():
     )
 
     assert violations == []
+
+
+def test_generation_contract_accepts_file_qualified_route_target_binding():
+    content = (
+        "def test_price(client):\n"
+        "    response = client.get('/price/apple')\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['item'] == 'apple'\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_price",
+                "target_route": "shop/api.py::GET /price/{item}",
+                "assertion_summary": "验证价格查询",
+            }
+        ],
+        target_type="route",
+        target_ref="route:shop/api.py::GET /price/{item}",
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_accepts_route_target_with_handler_suffix():
+    content = (
+        "def test_sku(client):\n"
+        "    response = client.get('/sku/pencil', params={'requested': 8})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['can_fulfill'] is True\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_sku",
+                "target_route": "GET /sku/{sku} -> inventory.api.get_sku",
+                "assertion_summary": "验证 requested 等于库存时可满足",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /sku/{sku} -> inventory.api.get_sku",
+        allowed_request_fields=["requested"],
+        allowed_fixtures=["client"],
+    )
+
+    assert violations == []
+
+
+def test_generation_contract_rejects_monkeypatching_source_module_private_state_by_string():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_price_patched_private_prices(monkeypatch):\n"
+        "    monkeypatch.setattr('shop.api._PRICES', {'vip_book': 100.0})\n"
+        "    response = TestClient(app).get('/price/vip_book', params={'member': True})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['total'] == 90.0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_patched_private_prices",
+                "target_route": "GET /price/{item}",
+                "assertion_summary": "patched private price store",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_request_fields=["member"],
+        allowed_fixtures=["monkeypatch"],
+    )
+
+    assert any("测试修改被测源码状态" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_monkeypatching_source_module_private_state_by_module_object():
+    content = (
+        "from fastapi.testclient import TestClient\n"
+        "from shop.api import app\n\n"
+        "def test_get_price_patched_private_prices(monkeypatch):\n"
+        "    import shop.api as shop_api\n"
+        "    monkeypatch.setattr(shop_api, '_PRICES', {'vip_book': 100.0})\n"
+        "    response = TestClient(app).get('/price/vip_book', params={'member': True})\n"
+        "    assert response.status_code == 200\n"
+        "    assert response.json()['total'] == 90.0\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_get_price_patched_private_prices",
+                "target_route": "GET /price/{item}",
+                "assertion_summary": "patched private price store",
+            }
+        ],
+        target_type="route",
+        target_ref="GET /price/{item}",
+        allowed_request_fields=["member"],
+        allowed_fixtures=["monkeypatch"],
+    )
+
+    assert any("测试修改被测源码状态" in violation for violation in violations)
 
 
 def test_generation_contract_rejects_route_call_that_misses_target_route():
@@ -1047,7 +1199,7 @@ def test_generation_contract_rejects_route_oracle_that_contradicts_handler_sourc
     assert any("路由响应 oracle" in violation for violation in violations)
 
 
-def test_generation_contract_accepts_route_oracle_matching_handler_source():
+def test_generation_contract_rejects_route_oracle_that_requires_patched_source_state():
     content = (
         "import pytest\n"
         "from fastapi.testclient import TestClient\n"
@@ -1080,10 +1232,10 @@ def test_generation_contract_accepts_route_oracle_matching_handler_source():
         source_context=PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT,
     )
 
-    assert violations == []
+    assert any("测试修改被测源码状态" in violation for violation in violations)
 
 
-def test_generation_contract_accepts_route_oracle_with_query_string_matching_source():
+def test_generation_contract_rejects_route_query_oracle_that_requires_patched_source_state():
     content = (
         "from fastapi.testclient import TestClient\n"
         "from shop.api import app\n"
@@ -1116,7 +1268,7 @@ def test_generation_contract_accepts_route_oracle_with_query_string_matching_sou
         source_context=PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT,
     )
 
-    assert violations == []
+    assert any("测试修改被测源码状态" in violation for violation in violations)
 
 
 def test_generation_contract_rejects_route_error_oracle_that_contradicts_handler_source():
@@ -1148,7 +1300,7 @@ def test_generation_contract_rejects_route_error_oracle_that_contradicts_handler
     assert any("路由响应 oracle" in violation for violation in violations)
 
 
-def test_generation_contract_accepts_route_error_oracle_matching_handler_source():
+def test_generation_contract_rejects_route_error_oracle_that_requires_patched_source_state():
     content = (
         "from fastapi.testclient import TestClient\n"
         "from shop.api import app\n\n"
@@ -1174,7 +1326,7 @@ def test_generation_contract_accepts_route_error_oracle_matching_handler_source(
         source_context=PRICE_ROUTE_WITH_PRICING_SOURCE_CONTEXT,
     )
 
-    assert violations == []
+    assert any("测试修改被测源码状态" in violation for violation in violations)
 
 
 def test_generation_contract_rejects_boundary_raises_without_source_raise():

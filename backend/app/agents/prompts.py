@@ -95,10 +95,13 @@ GEN_CONTRACT = """生成硬约束（违反会被 PIPELINE_REJECT）：
 - 边界/负数/阈值/异常路径的预期必须来自目标源码片段；源码没有 raise 证据时不要写 pytest.raises。
 - `pytest.raises(..., match=...)` 的 match 必须来自同一输入的源码 raise 或已有测试证据；只有相似场景、相似错误类型时不要写精确异常消息。
 - 单次生成保持紧凑：优先 4-8 个高价值测试函数，最多 12 个；不要枚举大量同质输入。
+- 若存在“本次聚焦任务 target=...”，本文件只能为该 target 生成 pytest 函数和 cases；不要顺手测试其它函数、其它路由或其它模块。
+- 其它函数只能作为被当前目标调用到的依赖行为来观察；不能把依赖函数写成独立 case，也不能在 cases 中绑定到依赖函数。
 - 若目标函数签名第一个参数是 self/cls，它是内部方法：不要把它当自由函数调用，不要猜测构造内部类；优先通过已有测试或公开 API 间接触达该行为。
 - 不要从包根导入未在项目分析/已有测试/源码片段中证明可导出的内部类；只有看见类定义和 __init__ 调用证据时才允许手动构造对象。
 - 对 `/x/{param}` 这类 path 参数路由，不要把 `/x/` 空 path 段当成 `param=""` 的 handler 业务用例。
 - 不要给测试函数添加未知参数；只能使用 pytest 内置 fixture（如 monkeypatch/tmp_path）或项目分析中列出的 fixture。没有 `client` fixture 证据时，FastAPI 路由测试应在测试内构造 `TestClient(app)`，不要把 `client` 写成函数参数。
+- 不要 monkeypatch、mock 或 setattr 修改被测源码模块的业务状态、私有全局变量、路由数据源、handler 或 app wiring 来制造额外输入；clean-run 测试只能观察真实公开输入和源码已有数据。
 - 使用 unittest.mock.patch(..., new_value) 时不要额外声明 mock 参数；可优先使用 pytest 内置 monkeypatch。
 - cases[*].test_name 必须对应真实 test 函数名；参数化测试可使用 test_x[...]。"""
 
@@ -107,6 +110,7 @@ GEN_RETRY_INSTRUCTION = """上次生成被 Contract Guard 拒绝。
 如果 violation 是 `fixture 缺少项目证据：client`，不要继续声明 `client` 参数；改为导入 FastAPI app 并在测试内使用 `TestClient(app)` 构造局部 client。
 如果 violation 是 `目标绑定不匹配 plan item`，必须围绕本次聚焦任务的 target_type/target_ref 重写测试和 cases，不要切换到其它函数或路由。
 如果 violation 是 `路由响应 oracle 与目标源码行为不一致`，必须按 handler 源码和被调用函数重新计算响应 JSON 期望值；不要手写与源码条件矛盾的折扣、阈值或状态。
+如果 violation 是 `测试修改被测源码状态`，必须删除对项目模块、私有全局变量、路由数据源、handler 或 app wiring 的 monkeypatch/mock/setattr；改用真实公开输入和源码已有数据。
 不要降低有源码证据的业务断言；继续只返回要求的 GenerationOutput JSON。"""
 
 GEN_RETRY_OUTPUT_INVARIANTS = """重试输出不变量：
@@ -138,6 +142,8 @@ def _generation_retry_fix_hint(violation: str) -> str | None:
         return "修正目标绑定：函数任务填写 target_function；路由任务填写 target_route，并确保测试请求仍命中本次 plan item 的目标。"
     if "测试函数 fixture 缺少项目证据" in violation:
         return "删除无证据 fixture 参数；FastAPI 路由测试在测试内导入 app 并用 TestClient(app) 构造局部 client，pytest 内置 fixture 如 monkeypatch/tmp_path 可继续使用。"
+    if "测试修改被测源码状态" in violation:
+        return "删除对项目模块、私有全局变量、路由数据源、handler 或 app wiring 的 monkeypatch/mock/setattr；clean-run 测试只能使用真实公开输入和源码中已有数据。"
     if "请求字段缺少证据" in violation or "请求字段缺少模型证据" in violation:
         return "只使用模型 schema、路由 query 参数或源码证据中出现的 request 字段；删除 made-up json/params/data 字段。"
     if "业务 oracle" in violation:
@@ -167,6 +173,9 @@ PLAN_INSTRUCTION = (
     '{"items":[{"index":0,"target_type":"function|route|module","target_ref":"标识","goal":"该任务测什么","planned_assertions":["..."]}]}。'
     '最多 4 个 items，优先选择覆盖面最大、oracle 最明确的任务；'
     'target_ref 必须是项目分析中出现的精确函数名、路由（METHOD path）或模块/文件标识；'
+    '如果 target_ref 是 .py 文件路径，target_type 必须是 file 或 module，不要写 function；'
+    '每个 item 只能覆盖一个 target_ref，goal 和 planned_assertions 不要夹带其它函数或路由的独立测试目标；'
+    '如果要覆盖另一个函数或路由，必须拆成另一个 item；'
     '不要把 strict mode、边界条件、场景描述拼进 target_ref，这些细节放进 goal/planned_assertions。'
 )
 
