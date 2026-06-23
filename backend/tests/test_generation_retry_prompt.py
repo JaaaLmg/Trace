@@ -57,3 +57,7 @@ def test_prompt_bundle_freezes_generate_retry_invariants():
 
     assert "generate_retry_output_invariants" in bundle
     assert "完整 GenerationOutput JSON" in bundle["generate_retry_output_invariants"]
+    assert ".py 文件路径" in bundle["plan_instruction"]
+    assert "不要写 function" in bundle["plan_instruction"]
+    assert "每个 item 只能覆盖一个 target_ref" in bundle["plan_instruction"]
+    assert "只能为该 target 生成 pytest 函数和 cases" in bundle["generate_contract"]

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ArrowRight, Beaker, Play, Plus, RefreshCw, ServerCrash } from "@lucide/vue";
+import { ApiError } from "../api/client";
 import { createExperiment, listExperiments, runExperiment } from "../api/experiments";
 import { listEvalDatasets } from "../api/evaluation";
 import { listLlmOptions } from "../api/llmOptions";
@@ -35,6 +36,7 @@ const projectRuntimeProfiles = ref<Record<string, RuntimeProfileOut[]>>({});
 const projectLabels = ref<Record<string, string>>({});
 const runtimeProfileBindings = ref<Record<string, string>>({});
 const dockerAvailable = ref<boolean | null>(null);
+const selectedDatasetHasTasks = ref<boolean | null>(null);
 const loading = ref(false);
 const creating = ref(false);
 const creatingRuntime = ref(false);
@@ -76,6 +78,7 @@ const canCreate = computed(
     !loadingCreateOptions.value &&
     form.value.name.trim() &&
     form.value.datasetId &&
+    selectedDatasetHasTasks.value !== false &&
     (isMultiProjectDataset.value
       ? datasetProjectIds.value.every((projectId) => Boolean(runtimeProfileBindings.value[`project:${projectId}`]))
       : form.value.runtimeProfileId) &&
@@ -84,7 +87,7 @@ const canCreate = computed(
     Boolean(selectedLlmOption.value?.selectable)
 );
 
-type CreateBlockerId = "loading" | "name" | "dataset" | "runtime" | "strategy" | "repeat" | "llm";
+type CreateBlockerId = "loading" | "name" | "dataset" | "datasetTasks" | "runtime" | "strategy" | "repeat" | "llm";
 
 type CreateBlocker = {
   id: CreateBlockerId;
@@ -104,6 +107,8 @@ const createBlockers = computed<CreateBlocker[]>(() => {
   }
   if (!form.value.datasetId || datasets.value.length === 0) {
     blockers.push({ id: "dataset", message: t("experiments.blockerDataset") });
+  } else if (selectedDatasetHasTasks.value === false) {
+    blockers.push({ id: "datasetTasks", message: t("experiments.blockerDatasetTasks") });
   } else if (
     isMultiProjectDataset.value
       ? datasetProjectIds.value.some((projectId) => !runtimeProfileBindings.value[`project:${projectId}`])
@@ -151,6 +156,18 @@ function openDataset(datasetId: string) {
 
 function showRuntimeProfileBox() {
   dockerProfileBox.value?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function resetRuntimeProfileSelection() {
+  runtimeProfiles.value = [];
+  runtimeBindingManifest.value = null;
+  projectRuntimeProfiles.value = {};
+  runtimeProfileBindings.value = {};
+  form.value.runtimeProfileId = "";
+}
+
+function isDatasetWithoutTasksError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.message.includes("dataset has no eval tasks");
 }
 
 function applyInitialDatasetId(nextDatasets: EvalDatasetOut[]): boolean {
@@ -210,6 +227,7 @@ async function loadCreateOptions() {
     return;
   }
   loadingCreateOptions.value = true;
+  createError.value = null;
   try {
     const [nextDatasets, strategies, executorStatus, llmOptionResponse] = await Promise.all([
       listEvalDatasets(),
@@ -249,35 +267,45 @@ async function loadCreateOptions() {
 
 async function loadRuntimeProfilesForDataset() {
   if (!form.value.datasetId || props.dataSource !== "api") {
-    runtimeProfiles.value = [];
-    runtimeBindingManifest.value = null;
-    projectRuntimeProfiles.value = {};
-    runtimeProfileBindings.value = {};
-    form.value.runtimeProfileId = "";
+    resetRuntimeProfileSelection();
+    selectedDatasetHasTasks.value = null;
     return;
   }
-  const manifest = await getDatasetRuntimeBindingManifest(form.value.datasetId);
-  runtimeBindingManifest.value = manifest;
-  const nextProjectLabels: Record<string, string> = {};
-  runtimeProfiles.value = await listDatasetRuntimeProfiles(form.value.datasetId);
-  const grouped: Record<string, RuntimeProfileOut[]> = {};
-  for (const project of manifest.projects) {
-    nextProjectLabels[project.project_id] = project.project_name ?? project.project_id;
-    grouped[project.project_id] = project.profiles;
-  }
-  projectLabels.value = nextProjectLabels;
-  const projectIds = manifest.projects.map((project) => project.project_id).sort();
-  projectRuntimeProfiles.value = grouped;
-  const nextBindings: Record<string, string> = {};
-  for (const projectId of projectIds) {
-    const key = `project:${projectId}`;
-    const current = runtimeProfileBindings.value[key];
-    const choices = grouped[projectId] ?? [];
-    nextBindings[key] = choices.some((profile) => profile.id === current) ? current : choices[0]?.id ?? "";
-  }
-  runtimeProfileBindings.value = nextBindings;
-  if (!runtimeProfiles.value.some((profile) => profile.id === form.value.runtimeProfileId)) {
-    form.value.runtimeProfileId = runtimeProfiles.value[0]?.id ?? "";
+  try {
+    const manifest = await getDatasetRuntimeBindingManifest(form.value.datasetId);
+    runtimeBindingManifest.value = manifest;
+    const nextProjectLabels: Record<string, string> = {};
+    runtimeProfiles.value = await listDatasetRuntimeProfiles(form.value.datasetId);
+    const grouped: Record<string, RuntimeProfileOut[]> = {};
+    for (const project of manifest.projects) {
+      nextProjectLabels[project.project_id] = project.project_name ?? project.project_id;
+      grouped[project.project_id] = project.profiles;
+    }
+    projectLabels.value = nextProjectLabels;
+    const projectIds = manifest.projects.map((project) => project.project_id).sort();
+    projectRuntimeProfiles.value = grouped;
+    const nextBindings: Record<string, string> = {};
+    for (const projectId of projectIds) {
+      const key = `project:${projectId}`;
+      const current = runtimeProfileBindings.value[key];
+      const choices = grouped[projectId] ?? [];
+      nextBindings[key] = choices.some((profile) => profile.id === current) ? current : choices[0]?.id ?? "";
+    }
+    runtimeProfileBindings.value = nextBindings;
+    if (!runtimeProfiles.value.some((profile) => profile.id === form.value.runtimeProfileId)) {
+      form.value.runtimeProfileId = runtimeProfiles.value[0]?.id ?? "";
+    }
+    selectedDatasetHasTasks.value = true;
+    createError.value = null;
+  } catch (error) {
+    resetRuntimeProfileSelection();
+    if (isDatasetWithoutTasksError(error)) {
+      selectedDatasetHasTasks.value = false;
+      createError.value = null;
+      return;
+    }
+    selectedDatasetHasTasks.value = null;
+    createError.value = error instanceof Error ? error.message : t("experiments.optionsFailed");
   }
 }
 
@@ -326,7 +354,7 @@ async function submitExperiment() {
 }
 
 async function createDockerRuntimeProfile() {
-  if (!form.value.datasetId || creatingRuntime.value) {
+  if (!form.value.datasetId || selectedDatasetHasTasks.value === false || creatingRuntime.value) {
     return;
   }
   creatingRuntime.value = true;
@@ -515,6 +543,9 @@ watch(
             <button v-if="blocker.id === 'dataset'" class="inline-link" type="button" @click="emit('navigate', '#/datasets/new')">
               {{ t("datasets.create") }}
             </button>
+            <button v-else-if="blocker.id === 'datasetTasks' && form.datasetId" class="inline-link" type="button" @click="openDataset(form.datasetId)">
+              {{ t("experiments.openDataset") }}
+            </button>
             <button v-else-if="blocker.id === 'runtime' && form.datasetId" class="inline-link" type="button" @click="showRuntimeProfileBox">
               {{ t("experiments.createDockerProfileAction") }}
             </button>
@@ -553,7 +584,7 @@ watch(
         <div ref="dockerProfileBox" class="docker-profile-box">
           <div class="docker-profile-head">
             <span>{{ t("experiments.createDockerProfile") }}</span>
-            <button class="text-button" type="button" :disabled="!form.datasetId || creatingRuntime" @click="createDockerRuntimeProfile">
+            <button class="text-button" type="button" :disabled="!form.datasetId || selectedDatasetHasTasks === false || creatingRuntime" @click="createDockerRuntimeProfile">
               <Plus :size="15" aria-hidden="true" />
               {{ creatingRuntime ? t("experiments.creatingDockerProfile") : t("experiments.createDockerProfileAction") }}
             </button>

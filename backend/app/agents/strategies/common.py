@@ -307,8 +307,11 @@ def _model_field_names(analysis, item=None) -> list[str]:
     if item is None:
         return _field_names(getattr(analysis, "models", []) or [])
     names = _field_names(selected_models)
-    if getattr(item, "target_type", None) == "route":
+    target_type = getattr(item, "target_type", None)
+    if target_type == "route":
         names.extend(_route_query_param_names(analysis, item, selected_models))
+    elif target_type in {"goal", "module", "file"}:
+        names.extend(_broad_route_query_param_names(analysis, item, selected_models))
     return _unique_names(names)
 
 
@@ -334,18 +337,76 @@ def _unique_names(names: list[str]) -> list[str]:
 
 
 def _route_query_param_names(analysis, item, selected_models) -> list[str]:
-    fn_name = _target_function_name(analysis, getattr(item, "target_type", None), getattr(item, "target_ref", None))
+    route = _target_route(analysis, getattr(item, "target_ref", None))
+    if route is None:
+        return []
+    return _query_param_names_for_route(analysis, route, selected_models)
+
+
+def _target_route(analysis, target_ref: str | None):
+    ref = str(target_ref or "").strip()
+    if not ref:
+        return None
+    return next((_route for _route in getattr(analysis, "routes", []) or [] if _route_matches(_route, ref)), None)
+
+
+def _broad_route_query_param_names(analysis, item, selected_models) -> list[str]:
+    names: list[str] = []
+    for route in _routes_for_broad_target(analysis, getattr(item, "target_ref", None)):
+        names.extend(_query_param_names_for_route(analysis, route, selected_models))
+    return names
+
+
+def _query_param_names_for_route(analysis, route, selected_models) -> list[str]:
+    fn_name = getattr(route, "handler", None)
     if not fn_name:
         return []
     signature = next((getattr(fn, "signature", "") for fn in getattr(analysis, "functions", []) or [] if fn.name == fn_name), "")
     if not signature:
         return []
     model_names = {str(getattr(model, "name", "")) for model in selected_models if getattr(model, "name", None)}
+    path_params = _route_path_param_names(getattr(route, "path", ""))
     return [
         name
         for name, annotation, default in _signature_params(signature)
-        if not _is_non_query_route_param(name, annotation, default, model_names)
+        if name not in path_params and not _is_non_query_route_param(name, annotation, default, model_names)
     ]
+
+
+def _routes_for_broad_target(analysis, target_ref: str | None) -> list:
+    routes = list(getattr(analysis, "routes", []) or [])
+    ref = str(target_ref or "").strip()
+    if not ref or ref in {"all", ".", "./"}:
+        return routes
+    tokens = [token.strip() for token in ref.split(",") if token.strip()]
+    matched = [route for route in routes if any(_route_in_scope_token(route, token) for token in tokens)]
+    return matched or routes
+
+
+def _route_in_scope_token(route, token: str) -> bool:
+    norm = token.removeprefix("route:").strip().replace("\\", "/")
+    file_part, _, symbol_part = norm.partition("::")
+    if symbol_part:
+        file_matches = _path_scope_matches_route(file_part, route)
+        symbol_matches = _route_matches(route, symbol_part) or symbol_part.rsplit(".", 1)[-1] == route.handler
+        return file_matches and symbol_matches
+    return (
+        _path_scope_matches_route(norm, route)
+        or _route_matches(route, norm)
+        or norm.rsplit(".", 1)[-1] == route.handler
+    )
+
+
+def _path_scope_matches_route(scope: str, route) -> bool:
+    norm = scope.strip("/").replace("\\", "/")
+    route_file = str(getattr(route, "file", "")).strip("/").replace("\\", "/")
+    if not norm or not route_file:
+        return False
+    return route_file == norm or route_file.startswith(norm.rstrip("/") + "/")
+
+
+def _route_path_param_names(path: str) -> set[str]:
+    return set(re.findall(r"{([^}:]+)(?::[^}]+)?}", path or ""))
 
 
 def _signature_params(signature: str) -> list[tuple[str, str, str | None]]:
@@ -444,6 +505,8 @@ def _target_signature(analysis, item) -> str | None:
 
 def _route_matches(route, target_ref: str) -> bool:
     norm = target_ref.removeprefix("route:").strip()
+    if "->" in norm:
+        norm = norm.split("->", 1)[0].strip()
     parts = norm.split(maxsplit=1)
     method = parts[0].upper() if len(parts) == 2 else None
     path = parts[1].strip() if len(parts) == 2 else norm

@@ -8,10 +8,13 @@ import app.models.test_plan as test_plan_models
 import app.models.test_run as test_run_models
 from app.db.session import get_engine
 from app.main import create_app
+from app.agents.prompts import prompt_bundle
+from app.agents.seeds import seed_list
 from app.models.runtime_profile import RuntimeProfile
 from app.models.evaluation import EvalDataset, EvalTask
 from app.models.project import Project, ProjectSnapshot
 from app.models.versioning import PromptVersion, Strategy, ToolSchemaVersion
+from app.services.strategies import _hash_json, _tool_schema_payload, seed_strategy_versions
 from app.services.evaluation_seed import DEMO_DATASET_ID, seed_demo_dataset
 
 
@@ -25,6 +28,36 @@ def test_stage1_seed_creates_versioning_records(clean_db):
     assert {item.id for item in strategies} == {"direct", "plan_execute", "react_reflection"}
     assert {item.id for item in prompt_versions} == {"pv-direct_v1", "pv-plan_v1", "pv-react_v1"}
     assert {item.id for item in tool_schema_versions} == {"tsv-tools_v1"}
+
+
+def test_stage1_seed_refreshes_changed_prompt_and_tool_schema_versions(clean_db):
+    create_app()
+    with Session(get_engine()) as session:
+        prompt_version = session.get(PromptVersion, "pv-plan_v1")
+        tool_schema_version = session.get(ToolSchemaVersion, "tsv-tools_v1")
+        assert prompt_version is not None
+        assert tool_schema_version is not None
+
+        prompt_version.content = {"generate_contract": "old prompt"}
+        prompt_version.content_hash = "old-prompt-hash"
+        tool_schema_version.schema_json = {"tools": []}
+        tool_schema_version.content_hash = "old-tool-hash"
+        session.commit()
+
+        seed_strategy_versions(session)
+
+        plan_spec = next(spec for spec in seed_list() if spec.id == "sv-plan-v1")
+        expected_prompt = prompt_bundle(plan_spec)
+        expected_tool_schema = _tool_schema_payload()
+        refreshed_prompt = session.get(PromptVersion, "pv-plan_v1")
+        refreshed_tool_schema = session.get(ToolSchemaVersion, "tsv-tools_v1")
+
+        assert refreshed_prompt is not None
+        assert refreshed_prompt.content == expected_prompt
+        assert refreshed_prompt.content_hash == _hash_json(expected_prompt)
+        assert refreshed_tool_schema is not None
+        assert refreshed_tool_schema.schema_json == expected_tool_schema
+        assert refreshed_tool_schema.content_hash == _hash_json(expected_tool_schema)
 
 
 def test_create_run_binds_default_runtime_profile_and_freezes_full_snapshots(monkeypatch, tmp_path, clean_db):

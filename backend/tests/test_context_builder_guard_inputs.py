@@ -102,3 +102,57 @@ def test_model_field_names_exclude_route_dependency_and_request_model_params():
     )
 
     assert _model_field_names(analysis, item) == ["sku"]
+
+
+def test_model_field_names_include_goal_route_query_params_but_not_path_params():
+    analysis = AnalyzeProjectOutput(
+        routes=[RouteInfo(method="GET", path="/price/{item}", handler="get_price", file="shop/api.py")],
+        functions=[FunctionInfo(name="get_price", signature="get_price(item: str, member: bool = False)", file="shop/api.py")],
+    )
+    item = PlanItemDraft(
+        index=0,
+        target_type="goal",
+        target_ref="shop/api.py",
+        goal="test shop pricing route",
+        planned_assertions=[],
+    )
+
+    assert _model_field_names(analysis, item) == ["member"]
+
+
+def test_model_field_names_include_goal_route_query_params_from_file_qualified_scope():
+    analysis = AnalyzeProjectOutput(
+        routes=[RouteInfo(method="GET", path="/sku/{sku}", handler="get_sku", file="inventory/api.py")],
+        functions=[FunctionInfo(name="get_sku", signature="get_sku(sku: str, requested: int = 1)", file="inventory/api.py")],
+    )
+    item = PlanItemDraft(
+        index=0,
+        target_type="goal",
+        target_ref="inventory/api.py::GET /sku/{sku}",
+        goal="test inventory sku route",
+        planned_assertions=[],
+    )
+
+    assert _model_field_names(analysis, item) == ["requested"]
+
+
+def test_model_field_names_include_module_route_query_params_for_matching_scope_only():
+    analysis = AnalyzeProjectOutput(
+        routes=[
+            RouteInfo(method="GET", path="/price/{item}", handler="get_price", file="shop/api.py"),
+            RouteInfo(method="GET", path="/admin", handler="admin", file="admin/api.py"),
+        ],
+        functions=[
+            FunctionInfo(name="get_price", signature="get_price(item: str, member: bool = False)", file="shop/api.py"),
+            FunctionInfo(name="admin", signature="admin(token: str = '')", file="admin/api.py"),
+        ],
+    )
+    item = PlanItemDraft(
+        index=0,
+        target_type="module",
+        target_ref="shop",
+        goal="test shop module",
+        planned_assertions=[],
+    )
+
+    assert _model_field_names(analysis, item) == ["member"]
