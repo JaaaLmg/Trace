@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useI18n } from "../i18n";
 import type { TraceStepOut } from "../types/api";
 import StatusBadge from "./StatusBadge.vue";
@@ -15,6 +15,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const listEl = ref<HTMLElement | null>(null);
 const sortedSteps = computed(() => [...props.steps].sort((a, b) => a.step_index - b.step_index));
 
 function stepTone(step: TraceStepOut): string {
@@ -23,6 +24,29 @@ function stepTone(step: TraceStepOut): string {
   }
   return step.step_type;
 }
+
+async function scrollToBottom() {
+  await nextTick();
+  const el = listEl.value;
+  if (!el) {
+    return;
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+watch(
+  () => {
+    const steps = sortedSteps.value;
+    return [steps.length, steps[steps.length - 1]?.id, props.live] as const;
+  },
+  () => {
+    void scrollToBottom();
+  }
+);
+
+onMounted(() => {
+  void scrollToBottom();
+});
 </script>
 
 <template>
@@ -34,7 +58,7 @@ function stepTone(step: TraceStepOut): string {
       </div>
     </div>
 
-    <div class="timeline-list">
+    <div ref="listEl" class="timeline-list">
       <button
         v-for="step in sortedSteps"
         :key="step.id"
@@ -95,14 +119,21 @@ function stepTone(step: TraceStepOut): string {
 }
 
 .timeline-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  max-height: min(72vh, 860px);
+  overflow: auto;
+  padding-right: 6px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .trace-step {
   width: 100%;
   display: grid;
   grid-template-columns: 54px minmax(0, 1fr) auto;
+  flex: 0 0 auto;
   gap: 12px;
   align-items: start;
   padding: 12px 10px;
@@ -182,6 +213,7 @@ function stepTone(step: TraceStepOut): string {
 .waiting-step {
   display: grid;
   grid-template-columns: 54px minmax(0, 1fr);
+  flex: 0 0 auto;
   gap: 12px;
   align-items: center;
   padding: 12px 10px;
