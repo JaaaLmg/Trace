@@ -58,6 +58,12 @@ node_modules/
 .vite/
 .npm-cache/
 
+# Playwright UI automation artifacts (reports/traces regenerated per run;
+# durable evidence screenshots live under docs/evidence/playwright-ui/)
+frontend/playwright-report/
+frontend/test-results/
+frontend/.playwright/
+
 # Local config and editor noise
 .env
 .env.local
@@ -72,3 +78,4 @@ desktop.ini
 
 demo-project/
 haha.md
+.claude/

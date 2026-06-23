@@ -27,6 +27,14 @@ def is_trace_internal_tmp_path(path: str | Path) -> bool:
     return relative.parts[0].lower().startswith(".pytest_tmp")
 
 
+def is_trace_experiment_workspace_path(path: str | Path) -> bool:
+    path = _resolve_path(path)
+    relative = _relative_to_trace_root(path)
+    if relative is None or not relative.parts:
+        return False
+    return relative.parts[0].lower() == ".pytest_tmp_experiments"
+
+
 def validate_project_root(path: str | Path) -> Path:
     root = _resolve_path(path)
     try:
@@ -54,7 +62,7 @@ def is_valid_project_root(path: str | Path) -> bool:
 def validate_snapshot_root(path: str | Path, *, project_root: str | Path) -> Path:
     root = validate_project_root(path)
     project = validate_project_root(project_root)
-    if is_trace_internal_tmp_path(root):
+    if is_trace_experiment_workspace_path(root):
         return root
     try:
         root.relative_to(project)

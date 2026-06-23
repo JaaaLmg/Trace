@@ -1,0 +1,5 @@
+# Ensure shell scripts and container entrypoints always use LF line endings,
+# even when checked out on Windows. CRLF in a shebang line breaks execution
+# inside Linux containers (e.g. "exec .../entrypoint.sh: no such file or directory").
+*.sh text eol=lf
+backend/docker/entrypoint.sh text eol=lf

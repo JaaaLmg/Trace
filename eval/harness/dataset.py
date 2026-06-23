@@ -14,6 +14,7 @@ from eval.demo.bugs import BUGS, SeededBug
 
 _DEMO_DIR = Path(__file__).resolve().parent.parent / "demo"
 CLEAN_ROOT = _DEMO_DIR / "clean"
+_GENERATED_ARTIFACT_NAMES = {".trace_artifacts", ".trace_junit.xml", ".trace_pytest_report.json"}
 
 
 def load_bugs() -> list[SeededBug]:
@@ -59,7 +60,7 @@ def materialize_clean(dest: Path) -> Path:
     dest = _safe_dest(dest)
     if dest.exists():
         _robust_rmtree(dest)
-    shutil.copytree(CLEAN_ROOT, dest)
+    shutil.copytree(CLEAN_ROOT, dest, ignore=lambda _src, names: [name for name in names if name in _GENERATED_ARTIFACT_NAMES])
     return dest
 
 

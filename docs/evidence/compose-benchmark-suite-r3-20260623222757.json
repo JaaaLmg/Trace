@@ -1,0 +1,91 @@
+﻿{
+    "generated_at":  "2026-06-23T22:30:38.2029537+08:00",
+    "experiment_id":  "compose-benchmark-suite-r3-20260623222757",
+    "dataset_id":  "dataset-demo-v2",
+    "task_count":  3,
+    "bug_variant_count":  16,
+    "runtime_profile_id":  "4648b12c-926d-49b8-bd83-f8f9bf89ca8e",
+    "strategy_version_ids":  [
+                                 "sv-direct-v1",
+                                 "sv-plan-v1",
+                                 "sv-react-v1"
+                             ],
+    "repeat_count":  3,
+    "llm_override":  {
+                         "model":  "mock-1",
+                         "provider":  "mock"
+                     },
+    "status":  "completed",
+    "clean_runs_completed":  27,
+    "replay_runs_completed":  225,
+    "expected_clean_runs":  27,
+    "expected_variant_replay_runs":  144,
+    "metric_statuses":  [
+                            "ok"
+                        ],
+    "replay_llm_calls":  [
+                             0
+                         ],
+    "rows":  [
+                 {
+                     "strategy_id":  "direct",
+                     "strategy_name":  "Direct v1",
+                     "metric_status":  "ok",
+                     "captured_per_repeat":  [
+                                                 14,
+                                                 14,
+                                                 14
+                                             ],
+                     "captured_mean":  14.0,
+                     "total_in_scope":  16,
+                     "capture_rate_mean":  0.875,
+                     "capture_rate_std":  0.0,
+                     "false_positive_rate":  1.0,
+                     "avg_tokens":  4178.0,
+                     "avg_tool_calls":  9.0,
+                     "reflection_used":  false,
+                     "invalid_test_set_count":  0,
+                     "cost_per_captured_bug":  298.42857142857144
+                 },
+                 {
+                     "strategy_id":  "plan_execute",
+                     "strategy_name":  "Plan-and-Execute v1",
+                     "metric_status":  "ok",
+                     "captured_per_repeat":  [
+                                                 16,
+                                                 16,
+                                                 16
+                                             ],
+                     "captured_mean":  16.0,
+                     "total_in_scope":  16,
+                     "capture_rate_mean":  1.0,
+                     "capture_rate_std":  0.0,
+                     "false_positive_rate":  0.0,
+                     "avg_tokens":  18777.0,
+                     "avg_tool_calls":  33.0,
+                     "reflection_used":  false,
+                     "invalid_test_set_count":  0,
+                     "cost_per_captured_bug":  1173.5625
+                 },
+                 {
+                     "strategy_id":  "react_reflection",
+                     "strategy_name":  "ReAct+Reflection v1",
+                     "metric_status":  "ok",
+                     "captured_per_repeat":  [
+                                                 16,
+                                                 16,
+                                                 16
+                                             ],
+                     "captured_mean":  16.0,
+                     "total_in_scope":  16,
+                     "capture_rate_mean":  1.0,
+                     "capture_rate_std":  0.0,
+                     "false_positive_rate":  0.0,
+                     "avg_tokens":  7811.0,
+                     "avg_tool_calls":  13.0,
+                     "reflection_used":  true,
+                     "invalid_test_set_count":  0,
+                     "cost_per_captured_bug":  488.1875
+                 }
+             ]
+}
