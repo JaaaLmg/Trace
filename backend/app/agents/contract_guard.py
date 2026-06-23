@@ -1718,15 +1718,14 @@ def _route_tests_with_request_fields(tree: ast.AST, declared_by_name: dict[str, 
 def _source_state_mutations(tree: ast.AST) -> list[str]:
     offenders: set[str] = set()
     imported_modules = _imported_module_aliases(tree)
+    patch_aliases = _imported_patch_function_aliases(tree)
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for node in ast.walk(fn):
             if not isinstance(node, ast.Call):
                 continue
-            if _attr_chain(node.func) != "monkeypatch.setattr" or len(node.args) < 2:
-                continue
-            target = _monkeypatch_target_name(node, imported_modules)
+            target = _source_mutation_target_name(node, imported_modules, patch_aliases)
             if target and _looks_like_source_state_target(target):
                 offenders.add(f"{fn.name} -> {target}")
     return sorted(offenders)
@@ -1735,25 +1734,100 @@ def _source_state_mutations(tree: ast.AST) -> list[str]:
 def _imported_module_aliases(tree: ast.AST) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Import):
-            continue
-        for alias in node.names:
-            local = alias.asname or alias.name.rsplit(".", 1)[-1]
-            aliases[local] = alias.name
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.rsplit(".", 1)[-1]
+                aliases[local] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            module = (node.module or "").strip()
+            if not module:
+                continue
+            for alias in node.names:
+                local = alias.asname or alias.name
+                aliases[local] = f"{module}.{alias.name}"
     return aliases
 
 
-def _monkeypatch_target_name(node: ast.Call, imported_modules: dict[str, str]) -> str | None:
+def _imported_patch_function_aliases(tree: ast.AST) -> set[str]:
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or (node.module or "").strip() not in {"mock", "unittest.mock"}:
+            continue
+        for alias in node.names:
+            if alias.name == "patch":
+                aliases.add(alias.asname or alias.name)
+    return aliases
+
+
+def _source_mutation_target_name(
+    node: ast.Call,
+    imported_modules: dict[str, str],
+    patch_aliases: set[str],
+) -> str | None:
+    func_chain = _attr_chain(node.func)
+    if func_chain == "monkeypatch.setattr" or func_chain == "setattr":
+        return _setattr_target_name(node, imported_modules)
+    if _is_mock_patch_call(func_chain, imported_modules, patch_aliases):
+        return _mock_patch_target_name(node)
+    if _is_mock_patch_object_call(func_chain, imported_modules, patch_aliases):
+        return _setattr_target_name(node, imported_modules)
+    return None
+
+
+def _setattr_target_name(node: ast.Call, imported_modules: dict[str, str]) -> str | None:
+    if len(node.args) < 2:
+        return None
     first = node.args[0]
     if isinstance(first, ast.Constant) and isinstance(first.value, str):
         return first.value
     if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
-        base = _attr_chain(first)
-        if isinstance(first, ast.Name):
-            base = imported_modules.get(first.id, first.id)
+        base = _resolved_attr_chain(first, imported_modules)
         if base:
             return f"{base}.{node.args[1].value}"
     return None
+
+
+def _mock_patch_target_name(node: ast.Call) -> str | None:
+    if not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return None
+
+
+def _is_mock_patch_call(func_chain: str, imported_modules: dict[str, str], patch_aliases: set[str]) -> bool:
+    if not func_chain:
+        return False
+    if func_chain in patch_aliases:
+        return True
+    if func_chain == "mocker.patch":
+        return True
+    if not func_chain.endswith(".patch"):
+        return False
+    base = func_chain.rsplit(".", 1)[0]
+    return _resolve_module_alias(base, imported_modules) in {"mock", "unittest.mock"}
+
+
+def _is_mock_patch_object_call(func_chain: str, imported_modules: dict[str, str], patch_aliases: set[str]) -> bool:
+    if not func_chain.endswith(".object"):
+        return False
+    return _is_mock_patch_call(func_chain.removesuffix(".object"), imported_modules, patch_aliases)
+
+
+def _resolved_attr_chain(node: ast.AST, imported_modules: dict[str, str]) -> str:
+    chain = _attr_chain(node)
+    if not chain:
+        return ""
+    return _resolve_module_alias(chain, imported_modules)
+
+
+def _resolve_module_alias(chain: str, imported_modules: dict[str, str]) -> str:
+    parts = chain.split(".")
+    if not parts:
+        return chain
+    head = imported_modules.get(parts[0], parts[0])
+    return ".".join([head, *parts[1:]])
 
 
 def _looks_like_source_state_target(target: str) -> bool:

@@ -600,6 +600,106 @@ def test_generation_contract_rejects_monkeypatching_source_module_private_state_
     assert any("测试修改被测源码状态" in violation for violation in violations)
 
 
+def test_generation_contract_rejects_unittest_mock_patch_source_module_state():
+    content = (
+        "from unittest.mock import patch\n"
+        "from shop.pricing import calculate_total\n\n"
+        "def test_calculate_total_patched_discounts():\n"
+        "    with patch('shop.pricing.DISCOUNTS', {'vip': 0.9}):\n"
+        "        assert calculate_total(100) == 90\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_calculate_total_patched_discounts",
+                "target_function": "calculate_total",
+                "assertion_summary": "patched discount table",
+            }
+        ],
+        target_type="function",
+        target_ref="calculate_total",
+        allowed_fixtures=[],
+    )
+
+    assert any("测试修改被测源码状态" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_unittest_mock_patch_via_module_alias():
+    content = (
+        "from unittest import mock\n"
+        "from shop.pricing import calculate_total\n\n"
+        "def test_calculate_total_patched_discounts():\n"
+        "    with mock.patch('shop.pricing.DISCOUNTS', {'vip': 0.9}):\n"
+        "        assert calculate_total(100) == 90\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_calculate_total_patched_discounts",
+                "target_function": "calculate_total",
+                "assertion_summary": "patched discount table",
+            }
+        ],
+        target_type="function",
+        target_ref="calculate_total",
+        allowed_fixtures=[],
+    )
+
+    assert any("测试修改被测源码状态" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_mocker_patch_object_source_module_state():
+    content = (
+        "import shop.pricing as pricing\n"
+        "from shop.pricing import calculate_total\n\n"
+        "def test_calculate_total_patched_discounts(mocker):\n"
+        "    mocker.patch.object(pricing, 'DISCOUNTS', {'vip': 0.9})\n"
+        "    assert calculate_total(100) == 90\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_calculate_total_patched_discounts",
+                "target_function": "calculate_total",
+                "assertion_summary": "patched discount table",
+            }
+        ],
+        target_type="function",
+        target_ref="calculate_total",
+        allowed_fixtures=["mocker"],
+    )
+
+    assert any("测试修改被测源码状态" in violation for violation in violations)
+
+
+def test_generation_contract_rejects_direct_setattr_source_module_state():
+    content = (
+        "import shop.pricing as pricing\n"
+        "from shop.pricing import calculate_total\n\n"
+        "def test_calculate_total_patched_discounts():\n"
+        "    setattr(pricing, 'DISCOUNTS', {'vip': 0.9})\n"
+        "    assert calculate_total(100) == 90\n"
+    )
+    violations = check_generation_contract(
+        content,
+        [
+            {
+                "test_name": "test_calculate_total_patched_discounts",
+                "target_function": "calculate_total",
+                "assertion_summary": "patched discount table",
+            }
+        ],
+        target_type="function",
+        target_ref="calculate_total",
+        allowed_fixtures=[],
+    )
+
+    assert any("测试修改被测源码状态" in violation for violation in violations)
+
+
 def test_generation_contract_rejects_route_call_that_misses_target_route():
     content = (
         "def test_price(client):\n"
