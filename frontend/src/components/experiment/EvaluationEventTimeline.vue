@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { Ban, FileWarning, ShieldCheck } from "@lucide/vue";
+import { computed, ref } from "vue";
+import { Ban, ChevronDown, ChevronUp, FileWarning, ShieldCheck } from "@lucide/vue";
 import { useI18n } from "../../i18n";
 import type {
   EvaluationEventContract,
@@ -14,6 +14,8 @@ const props = defineProps<{
 }>();
 
 const { t } = useI18n();
+const eventsExpanded = ref(false);
+const decisionsExpanded = ref(false);
 
 type DecisionRow = ReflectionEventBackfeedDecisionContract & {
   clean_run_id: string;
@@ -88,23 +90,35 @@ function decisionClass(event: EvaluationEventContract): string {
           <p class="eyebrow">{{ t("experiments.eventTimelineEyebrow") }}</p>
           <h2>{{ t("experiments.eventTimeline") }}</h2>
         </div>
-        <div class="event-counters" :aria-label="t('experiments.eventSummaryAria')">
-          <span class="counter prompt-safe">
-            <ShieldCheck :size="14" aria-hidden="true" />
-            {{ includedCount }} {{ t("experiments.promptSafe") }}
-          </span>
-          <span class="counter audit-only">
-            <Ban :size="14" aria-hidden="true" />
-            {{ filteredCount }} {{ t("experiments.auditOnly") }}
-          </span>
-          <span class="counter blocking">
-            <FileWarning :size="14" aria-hidden="true" />
-            {{ blockingCount }} {{ t("experiments.blockingEvents") }}
-          </span>
+        <div class="event-actions">
+          <div class="event-counters" :aria-label="t('experiments.eventSummaryAria')">
+            <span class="counter prompt-safe">
+              <ShieldCheck :size="14" aria-hidden="true" />
+              {{ includedCount }} {{ t("experiments.promptSafe") }}
+            </span>
+            <span class="counter audit-only">
+              <Ban :size="14" aria-hidden="true" />
+              {{ filteredCount }} {{ t("experiments.auditOnly") }}
+            </span>
+            <span class="counter blocking">
+              <FileWarning :size="14" aria-hidden="true" />
+              {{ blockingCount }} {{ t("experiments.blockingEvents") }}
+            </span>
+          </div>
+          <button
+            v-if="evaluationEvents.length"
+            class="text-button density-toggle"
+            type="button"
+            @click="eventsExpanded = !eventsExpanded"
+          >
+            <ChevronUp v-if="eventsExpanded" :size="15" aria-hidden="true" />
+            <ChevronDown v-else :size="15" aria-hidden="true" />
+            {{ eventsExpanded ? t("common.collapse") : t("common.expandAll") }}
+          </button>
         </div>
       </div>
 
-      <div v-if="evaluationEvents.length" class="event-list">
+      <div v-if="evaluationEvents.length" :class="['event-list', { expanded: eventsExpanded }]">
         <article v-for="event in evaluationEvents" :key="event.event_id" :class="['event-row', eventClass(event)]">
           <div class="event-rail" aria-hidden="true"></div>
           <div class="event-body">
@@ -132,9 +146,23 @@ function decisionClass(event: EvaluationEventContract): string {
     </article>
 
     <aside class="subtle-panel decision-panel">
-      <p class="eyebrow">{{ t("experiments.backfeedAudit") }}</p>
-      <h3>{{ t("experiments.promptBoundary") }}</h3>
-      <div v-if="decisionRows.length" class="decision-list">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">{{ t("experiments.backfeedAudit") }}</p>
+          <h3>{{ t("experiments.promptBoundary") }}</h3>
+        </div>
+        <button
+          v-if="decisionRows.length"
+          class="text-button density-toggle"
+          type="button"
+          @click="decisionsExpanded = !decisionsExpanded"
+        >
+          <ChevronUp v-if="decisionsExpanded" :size="15" aria-hidden="true" />
+          <ChevronDown v-else :size="15" aria-hidden="true" />
+          {{ decisionsExpanded ? t("common.collapse") : t("common.expandAll") }}
+        </button>
+      </div>
+      <div v-if="decisionRows.length" :class="['decision-list', { expanded: decisionsExpanded }]">
         <article v-for="decision in decisionRows" :key="`${decision.clean_run_id}-${decision.event_id}-${decision.action}`">
           <span :class="['decision-chip', decision.action === 'included' ? 'prompt-safe' : 'audit-only']">
             {{ decision.action === "included" ? t("experiments.promptSafe") : t("experiments.auditOnly") }}
@@ -171,11 +199,23 @@ function decisionClass(event: EvaluationEventContract): string {
   align-items: end;
 }
 
+.event-actions {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
 .event-counters {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.density-toggle {
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 12px;
 }
 
 .counter,
@@ -193,13 +233,25 @@ function decisionClass(event: EvaluationEventContract): string {
 }
 
 .event-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  max-height: min(56vh, 620px);
+  overflow: auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.event-list.expanded {
+  max-height: none;
+  overflow: visible;
 }
 
 .event-row {
   display: grid;
   grid-template-columns: 4px minmax(0, 1fr);
+  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -273,14 +325,33 @@ function decisionClass(event: EvaluationEventContract): string {
   padding: 18px;
 }
 
+.panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .decision-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  max-height: min(48vh, 520px);
+  overflow: auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.decision-list.expanded {
+  max-height: none;
+  overflow: visible;
 }
 
 .decision-list article {
   display: grid;
   gap: 6px;
+  flex: 0 0 auto;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -313,8 +384,14 @@ function decisionClass(event: EvaluationEventContract): string {
     align-items: start;
   }
 
+  .event-actions,
   .event-counters {
+    justify-items: start;
     justify-content: flex-start;
+  }
+
+  .panel-heading {
+    display: grid;
   }
 }
 </style>

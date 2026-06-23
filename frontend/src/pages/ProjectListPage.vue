@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { ArrowRight, FolderGit2, Layers3, Play, Plus, RefreshCw, ServerCrash } from "@lucide/vue";
+import { ArrowRight, ChevronDown, ChevronUp, FolderGit2, Layers3, Play, Plus, RefreshCw, ServerCrash } from "@lucide/vue";
 import {
   createProject,
   createSnapshot,
@@ -40,6 +40,9 @@ const creatingProject = ref(false);
 const creatingSnapshot = ref(false);
 const startingRun = ref(false);
 const errorMessage = ref<string | null>(null);
+const snapshotsExpanded = ref(false);
+const plansExpanded = ref(false);
+const runsExpanded = ref(false);
 
 const projectForm = reactive({
   name: "",
@@ -287,6 +290,9 @@ watch(
 );
 
 watch(selectedProjectId, () => {
+  snapshotsExpanded.value = false;
+  plansExpanded.value = false;
+  runsExpanded.value = false;
   void loadProjectDetails();
 });
 </script>
@@ -393,7 +399,19 @@ watch(selectedProjectId, () => {
                   <p class="eyebrow">{{ t("projects.snapshots") }}</p>
                   <h3>{{ snapshots.length }}</h3>
                 </div>
-                <Layers3 :size="18" aria-hidden="true" />
+                <div class="panel-actions">
+                  <button
+                    v-if="snapshots.length"
+                    class="text-button density-toggle"
+                    type="button"
+                    @click="snapshotsExpanded = !snapshotsExpanded"
+                  >
+                    <ChevronUp v-if="snapshotsExpanded" :size="15" aria-hidden="true" />
+                    <ChevronDown v-else :size="15" aria-hidden="true" />
+                    {{ snapshotsExpanded ? t("common.collapse") : t("common.expandAll") }}
+                  </button>
+                  <Layers3 :size="18" aria-hidden="true" />
+                </div>
               </div>
               <form v-if="props.dataSource === 'api'" class="stack-form" @submit.prevent="submitSnapshot">
                 <PathPickerField
@@ -408,7 +426,7 @@ watch(selectedProjectId, () => {
                   {{ creatingSnapshot ? t("projects.creating") : t("projects.createSnapshot") }}
                 </button>
               </form>
-              <div class="compact-list">
+              <div :class="['compact-list bounded-list snapshot-list', { expanded: snapshotsExpanded }]">
                 <label v-for="snapshot in snapshots" :key="snapshot.id" class="choice-row">
                   <input v-model="runForm.snapshotId" type="radio" :value="snapshot.id" />
                   <span>
@@ -473,8 +491,18 @@ watch(selectedProjectId, () => {
                   <p class="eyebrow">{{ t("projects.plans") }}</p>
                   <h3>{{ plans.length }}</h3>
                 </div>
+                <button
+                  v-if="plans.length"
+                  class="text-button density-toggle"
+                  type="button"
+                  @click="plansExpanded = !plansExpanded"
+                >
+                  <ChevronUp v-if="plansExpanded" :size="15" aria-hidden="true" />
+                  <ChevronDown v-else :size="15" aria-hidden="true" />
+                  {{ plansExpanded ? t("common.collapse") : t("common.expandAll") }}
+                </button>
               </div>
-              <div class="compact-list plan-list">
+              <div :class="['compact-list bounded-list plan-list', { expanded: plansExpanded }]">
                 <button
                   v-for="plan in plans"
                   :key="plan.id"
@@ -494,40 +522,6 @@ watch(selectedProjectId, () => {
                 </button>
                 <p v-if="plans.length === 0" class="muted-note">{{ t("projects.noPlans") }}</p>
               </div>
-              <div v-if="selectedPlan" class="plan-detail">
-                <div class="panel-head">
-                  <div>
-                    <p class="eyebrow">{{ t("projects.planDetail") }}</p>
-                    <h3>{{ selectedPlan.name }}</h3>
-                  </div>
-                  <button class="text-button" type="button" @click="usePlan(selectedPlan)">
-                    <Play :size="15" aria-hidden="true" />
-                    {{ t("projects.usePlan") }}
-                  </button>
-                </div>
-                <dl>
-                  <div>
-                    <dt>{{ t("projects.goal") }}</dt>
-                    <dd>{{ selectedPlan.goal }}</dd>
-                  </div>
-                  <div>
-                    <dt>{{ t("projects.planScope") }}</dt>
-                    <dd>{{ planScopeText(selectedPlan) }}</dd>
-                  </div>
-                  <div>
-                    <dt>{{ t("projects.strategy") }}</dt>
-                    <dd>{{ selectedPlan.default_strategy_version_id ?? t("common.none") }}</dd>
-                  </div>
-                  <div>
-                    <dt>{{ t("projects.budget") }}</dt>
-                    <dd>{{ planBudgetText(selectedPlan) }}</dd>
-                  </div>
-                  <div>
-                    <dt>{{ t("projects.created") }}</dt>
-                    <dd>{{ new Date(selectedPlan.created_at).toLocaleString() }}</dd>
-                  </div>
-                </dl>
-              </div>
             </article>
 
             <article class="subtle-panel history-panel">
@@ -540,8 +534,18 @@ watch(selectedProjectId, () => {
                   <ArrowRight :size="15" aria-hidden="true" />
                   {{ t("projects.openLatest") }}
                 </button>
+                <button
+                  v-if="runs.length"
+                  class="text-button density-toggle"
+                  type="button"
+                  @click="runsExpanded = !runsExpanded"
+                >
+                  <ChevronUp v-if="runsExpanded" :size="15" aria-hidden="true" />
+                  <ChevronDown v-else :size="15" aria-hidden="true" />
+                  {{ runsExpanded ? t("common.collapse") : t("common.expandAll") }}
+                </button>
               </div>
-              <div class="compact-list">
+              <div :class="['compact-list bounded-list run-list', { expanded: runsExpanded }]">
                 <button v-for="run in runs" :key="run.id" class="run-row" type="button" @click="emit('navigate', `#/runs/${run.id}`)">
                   <span>
                     <strong>{{ run.status }}</strong>
@@ -551,6 +555,41 @@ watch(selectedProjectId, () => {
                 </button>
                 <p v-if="runs.length === 0" class="muted-note">{{ t("projects.noRuns") }}</p>
               </div>
+            </article>
+
+            <article v-if="selectedPlan" class="subtle-panel history-panel plan-detail-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">{{ t("projects.planDetail") }}</p>
+                  <h3>{{ selectedPlan.name }}</h3>
+                </div>
+                <button class="text-button" type="button" @click="usePlan(selectedPlan)">
+                  <Play :size="15" aria-hidden="true" />
+                  {{ t("projects.usePlan") }}
+                </button>
+              </div>
+              <dl>
+                <div>
+                  <dt>{{ t("projects.goal") }}</dt>
+                  <dd>{{ selectedPlan.goal }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t("projects.planScope") }}</dt>
+                  <dd>{{ planScopeText(selectedPlan) }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t("projects.strategy") }}</dt>
+                  <dd>{{ selectedPlan.default_strategy_version_id ?? t("common.none") }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t("projects.budget") }}</dt>
+                  <dd>{{ planBudgetText(selectedPlan) }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t("projects.created") }}</dt>
+                  <dd>{{ new Date(selectedPlan.created_at).toLocaleString() }}</dd>
+                </div>
+              </dl>
             </article>
           </section>
         </template>
@@ -599,6 +638,19 @@ watch(selectedProjectId, () => {
   flex-wrap: wrap;
 }
 
+.panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.density-toggle {
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 12px;
+}
+
 .create-project {
   margin-top: 18px;
   padding: 18px;
@@ -625,6 +677,22 @@ watch(selectedProjectId, () => {
 .history-panel,
 .empty-state {
   padding: 18px;
+}
+
+.management-panel,
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.management-panel > .bounded-list,
+.history-panel > .bounded-list {
+  flex: 1 1 auto;
+}
+
+.management-panel > .stack-form + .bounded-list {
+  margin-top: 10px;
 }
 
 .project-list {
@@ -714,6 +782,7 @@ small {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+  align-items: stretch;
 }
 
 .stack-form,
@@ -721,6 +790,35 @@ small {
 .empty-state {
   display: grid;
   gap: 10px;
+}
+
+.bounded-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(52vh, 620px);
+  overflow: auto;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.snapshot-list {
+  max-height: min(42vh, 500px);
+}
+
+.run-list {
+  max-height: min(52vh, 600px);
+}
+
+.bounded-list.expanded {
+  max-height: none;
+  overflow: visible;
+}
+
+.bounded-list > * {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .stack-form {
@@ -755,6 +853,7 @@ textarea {
   display: flex;
   gap: 9px;
   align-items: flex-start;
+  flex: 0 0 auto;
 }
 
 .checkbox-row input,
@@ -775,33 +874,43 @@ textarea {
   justify-self: start;
 }
 
-.plan-detail {
-  display: grid;
-  gap: 12px;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+.plan-detail-panel {
+  grid-column: 1 / -1;
 }
 
-.plan-detail dl {
+.plan-detail-panel {
   display: grid;
+  gap: 12px;
+}
+
+.plan-detail-panel dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin: 0;
 }
 
-.plan-detail dl > div {
+.plan-detail-panel dl > div {
   display: grid;
   gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.52);
 }
 
-.plan-detail dt {
+.plan-detail-panel dl > div:first-child {
+  grid-column: 1 / -1;
+}
+
+.plan-detail-panel dt {
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
   text-transform: uppercase;
 }
 
-.plan-detail dd {
+.plan-detail-panel dd {
   margin: 0;
   color: var(--muted-strong);
   overflow-wrap: anywhere;
@@ -819,6 +928,14 @@ textarea {
   .project-form {
     grid-template-columns: 1fr;
   }
+
+  .plan-detail-panel {
+    grid-column: auto;
+  }
+
+  .plan-detail-panel dl {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -827,6 +944,10 @@ textarea {
   .project-overview,
   .panel-head {
     display: grid;
+  }
+
+  .panel-actions {
+    justify-content: flex-start;
   }
 }
 </style>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { CheckCircle2, TestTube2, XCircle } from "@lucide/vue";
+import { computed, ref } from "vue";
+import { CheckCircle2, ChevronDown, ChevronUp, TestTube2, XCircle } from "@lucide/vue";
 import { useI18n } from "../../i18n";
 import type { ExperimentReplayRunContract, TestReplayContract } from "../../types/api";
 
@@ -15,6 +15,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const replayListExpanded = ref(false);
 
 // A clean replay has no bug_variant_id and never has an experiment_replay_runs
 // result — it validates the frozen test set on clean code (false-positive check),
@@ -119,11 +120,23 @@ function replayErrorMessage(replay: TestReplayContract): string {
 <template>
   <section class="replay-grid">
     <article class="section-stack">
-      <div>
-        <p class="eyebrow">REPLAYS</p>
-        <h2>{{ t("experiments.replayDetail") }}</h2>
+      <div class="replay-heading">
+        <div>
+          <p class="eyebrow">REPLAYS</p>
+          <h2>{{ t("experiments.replayDetail") }}</h2>
+        </div>
+        <button
+          v-if="replayRuns.length"
+          class="text-button density-toggle"
+          type="button"
+          @click="replayListExpanded = !replayListExpanded"
+        >
+          <ChevronUp v-if="replayListExpanded" :size="15" aria-hidden="true" />
+          <ChevronDown v-else :size="15" aria-hidden="true" />
+          {{ replayListExpanded ? t("common.collapse") : t("common.expandAll") }}
+        </button>
       </div>
-      <div class="table-shell">
+      <div :class="['table-shell replay-table-shell', { expanded: replayListExpanded }]">
         <table>
           <thead>
             <tr>
@@ -274,8 +287,45 @@ function replayErrorMessage(replay: TestReplayContract): string {
   margin-top: 18px;
 }
 
+.replay-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.density-toggle {
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 12px;
+}
+
+.replay-table-shell {
+  max-height: min(60vh, 680px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.replay-table-shell.expanded {
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+.replay-table-shell thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.96);
+}
+
 .replay-detail-panel {
+  max-height: min(60vh, 680px);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 18px;
+  scrollbar-gutter: stable;
 }
 
 .replay-detail-panel dl {
@@ -351,6 +401,15 @@ tr.selected td {
 @media (max-width: 1080px) {
   .replay-grid {
     grid-template-columns: 1fr;
+  }
+
+  .replay-heading {
+    display: grid;
+    align-items: start;
+  }
+
+  .density-toggle {
+    justify-self: start;
   }
 }
 </style>
